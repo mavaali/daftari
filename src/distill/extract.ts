@@ -84,6 +84,30 @@ export interface ExtractOpts {
   inCallInputCap: number;
 }
 
+// --- claim cap -----------------------------------------------------------------
+
+/** Default claim cap for small sources (the historical flat default). */
+export const DISTILL_MAX_CLAIMS_FLOOR = 50;
+/** Per-chunk claim allowance when no explicit cap is set. */
+export const DISTILL_MAX_CLAIMS_PER_CHUNK = 15;
+/** Ceiling on the scaled default — every claim is a staged proposal to review. */
+export const DISTILL_MAX_CLAIMS_CEILING = 500;
+
+/**
+ * The claim cap for a run over `chunkCount` chunks. An explicit `configured`
+ * value (config `max_claims` or `--max-claims`) is authoritative. Otherwise the
+ * cap scales with source size — DISTILL_MAX_CLAIMS_PER_CHUNK per chunk, never
+ * below DISTILL_MAX_CLAIMS_FLOOR nor above DISTILL_MAX_CLAIMS_CEILING — so a
+ * long source is not truncated by a flat default sized for a short one.
+ */
+export function resolveMaxClaims(configured: number | undefined, chunkCount: number): number {
+  if (configured !== undefined) return configured;
+  return Math.min(
+    DISTILL_MAX_CLAIMS_CEILING,
+    Math.max(DISTILL_MAX_CLAIMS_FLOOR, chunkCount * DISTILL_MAX_CLAIMS_PER_CHUNK),
+  );
+}
+
 // --- prompt ------------------------------------------------------------------
 
 // Exported so the reader-provenance fingerprint (src/distill/reader-fingerprint.ts)

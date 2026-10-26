@@ -165,3 +165,47 @@ describe("distill --propose — a failed run does not poison the next (bead b4m3
     );
   });
 });
+
+// 7 chunks × 30 messages, each chunk yielding 10 distinct claims (70 total) —
+// the shape that the flat 50-claim default truncated after 5 chunks.
+const SEVEN_CHUNK_TRANSCRIPT = Array.from({ length: 210 }, (_, i) => {
+  const h = 9 + Math.floor(i / 60);
+  const m = String(i % 60).padStart(2, "0");
+  return `[1/2/26, ${h}:${m}:00 AM] Alice: Point number ${i}.`;
+}).join("\n");
+
+function tenClaimsPerChunk(): void {
+  let call = 0;
+  fake.completeJson = async () => {
+    const c = call++;
+    return ok({
+      text: "{}",
+      parsed: {
+        claims: Array.from({ length: 10 }, (_, j) => ({ statement: `Chunk ${c} claim ${j}.` })),
+      },
+      input_tokens: 1,
+      output_tokens: 1,
+      stop_reason: "end_turn",
+    });
+  };
+}
+
+describe("distill --propose — claim cap scales with source size", () => {
+  it("does not truncate a 7-chunk source when max_claims is unset", async () => {
+    writeFileSync(source, SEVEN_CHUNK_TRANSCRIPT);
+    tenClaimsPerChunk();
+    expect(await runDistill(["--vault", vault, "--propose", source])).toBe(0);
+    const summary = out.join("");
+    expect(summary).toMatch(/claims:\s+70\b/);
+    expect(summary).toMatch(/truncated:\s+false/);
+  });
+
+  it("keeps an explicit --max-claims authoritative and reports truncation", async () => {
+    writeFileSync(source, SEVEN_CHUNK_TRANSCRIPT);
+    tenClaimsPerChunk();
+    expect(await runDistill(["--vault", vault, "--propose", "--max-claims", "50", source])).toBe(0);
+    const summary = out.join("");
+    expect(summary).toMatch(/claims:\s+50\b/);
+    expect(summary).toMatch(/truncated:\s+true/);
+  });
+});

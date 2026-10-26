@@ -22,7 +22,7 @@ import {
 import type { SourceAdapter } from "./adapters/types.js";
 import { chunkMessages } from "./chunk.js";
 import { buildReceipt, planDistill } from "./cost.js";
-import { extractClaims } from "./extract.js";
+import { extractClaims, resolveMaxClaims } from "./extract.js";
 import { ADAPTER_REGISTRY, DISTILL_NOT_CONFIGURED_MSG, resolveDistillClient } from "./index.js";
 import { makeOverlapHinter } from "./propose.js";
 import { appendDistillReceipt } from "./receipt-store.js";
@@ -72,7 +72,9 @@ Options:
                        Corroboration bar in [0,1] for --auto-safe (default:
                        config distill.corroboration_threshold, else 0.8).
   --max-llm-calls <n>  Override config.maxLlmCalls for this run.
-  --max-claims <n>     Override config.maxClaims for this run.
+  --max-claims <n>     Override config.maxClaims for this run. When neither is
+                       set, the cap scales with source size (15 per chunk,
+                       min 50, max 500).
   --model <id>         Override config.model for this run.
   --transport <t>      LLM transport: anthropic (default) | openrouter | ollama (loopback-only).
   --zdr                Assert zero-data-retention for the receipt (default: false).
@@ -507,12 +509,17 @@ export async function runDistill(argv: string[]): Promise<number> {
   }
   const chunks = chunkMessages(messages);
 
+  // Resolve the claim cap against this source's size: an explicit max_claims /
+  // --max-claims wins, else it scales with chunk count. Every consumer below
+  // (plan, extraction, receipt truncation) reads this one value.
+  const runConfig = { ...config, maxClaims: resolveMaxClaims(config.maxClaims, chunks.length) };
+
   // ---------------------------------------------------------------------------
   // --plan: zero-spend estimate
   // ---------------------------------------------------------------------------
 
   if (mode === "plan") {
-    const plan = planDistill(chunks, config);
+    const plan = planDistill(chunks, runConfig);
 
     const costLine =
       plan.estimatedCostUSD === 0
@@ -562,7 +569,7 @@ export async function runDistill(argv: string[]): Promise<number> {
 
   const outcome = await extractClaims(chunks, budgetedClient, {
     model: config.model,
-    maxClaims: config.maxClaims,
+    maxClaims: runConfig.maxClaims,
     inCallInputCap: config.inCallInputCap,
   });
 
@@ -581,7 +588,7 @@ export async function runDistill(argv: string[]): Promise<number> {
   if (attemptedChunks > 0 && outcome.chunkErrors.length === attemptedChunks) {
     const failedReceipt = buildReceipt({
       outcome,
-      config,
+      config: runConfig,
       provider: transport,
       zdr,
       sourceId,
@@ -626,7 +633,7 @@ export async function runDistill(argv: string[]): Promise<number> {
 
   const receipt = buildReceipt({
     outcome,
-    config,
+    config: runConfig,
     provider: transport,
     zdr,
     sourceId,

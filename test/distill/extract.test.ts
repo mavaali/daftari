@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { withCallBudget } from "../../src/consolidate/call-budget.js";
 import type { NormalizedMessage } from "../../src/distill/adapters/types.js";
 import { chunkMessages } from "../../src/distill/chunk.js";
-import { extractClaims } from "../../src/distill/extract.js";
+import { extractClaims, resolveMaxClaims } from "../../src/distill/extract.js";
 import type { CompleteJsonResult, LlmClient } from "../../src/eval/llm.js";
 import type { CortexEvalError } from "../../src/eval/types.js";
 import { err, ok, type Result } from "../../src/frontmatter/types.js";
@@ -394,5 +394,30 @@ describe("extractClaims — inCallInputCap", () => {
     const transcript = seenUser.slice(seenUser.indexOf("\n\n") + 2);
     expect(transcript.length).toBeLessThanOrEqual(1000);
     expect(transcript.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Default claim cap scales with source size (2026-10-25 benchmark: the flat
+// 50-claim default truncated a 7-chunk source after 5 chunks)
+// ---------------------------------------------------------------------------
+
+describe("resolveMaxClaims", () => {
+  it("keeps the historical 50-claim floor for small sources", () => {
+    expect(resolveMaxClaims(undefined, 1)).toBe(50);
+    expect(resolveMaxClaims(undefined, 0)).toBe(50);
+  });
+
+  it("scales a per-chunk allowance with chunk count", () => {
+    expect(resolveMaxClaims(undefined, 7)).toBe(105);
+  });
+
+  it("caps the scaled default at a ceiling", () => {
+    expect(resolveMaxClaims(undefined, 10_000)).toBe(500);
+  });
+
+  it("treats an explicit value as authoritative, below or above the scaled default", () => {
+    expect(resolveMaxClaims(20, 7)).toBe(20);
+    expect(resolveMaxClaims(1000, 7)).toBe(1000);
   });
 });
