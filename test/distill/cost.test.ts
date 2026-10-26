@@ -509,6 +509,8 @@ describe("price table — current models", () => {
     ["claude-sonnet-5-5", 2, 10],
     ["claude-haiku-4-5", 1, 5],
     ["claude-fable-5-1", 10, 50],
+    ["claude-opus-4-8", 5, 25],
+    ["claude-sonnet-4-6", 3, 15],
   ])("%s is priced at $%d/$%d per MTok", (model, input, output) => {
     expect(isModelPriced(model)).toBe(true);
     expect(estimateCostUSD(model, 1_000_000, 0)).toBeCloseTo(input);
