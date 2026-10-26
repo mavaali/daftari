@@ -37,8 +37,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
-  existsSync,
-  linkSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -314,7 +312,7 @@ export function removeLockIfUnchanged(vaultRoot: string, expected: LockData | st
   const movedRaw = readOptional(grave) ?? "";
   const moved = parseLock(movedRaw);
   if (!isExpected(movedRaw)) {
-    restoreLock(grave, path);
+    restoreLock(grave, path, movedRaw);
     return false;
   }
   try {
@@ -333,62 +331,32 @@ export function removeLockIfUnchanged(vaultRoot: string, expected: LockData | st
   return true;
 }
 
-// Put a lock we moved by mistake back, never overwriting a newer one.
-function restoreLock(grave: string, path: string): void {
-  try {
-    linkSync(grave, path);
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (code !== "EEXIST") {
-      // No hard links on this filesystem: rename back only into an empty slot.
-      if (!existsSync(path)) {
-        try {
-          renameSync(grave, path);
-          return;
-        } catch {
-          // fall through to cleanup
-        }
-      }
-    }
-  }
+// Put a lock we moved by mistake back, never overwriting a newer one: an
+// O_EXCL create of the same bytes (works on every filesystem, unlike link()).
+// Owners recognise their lock by its content (nonce), not its inode.
+function restoreLock(grave: string, path: string, raw: string): void {
+  tryCreateExclusive(path, raw);
   try {
     unlinkSync(grave);
   } catch {
-    // already renamed back
+    // leftover side file; harmless and gitignored
   }
 }
 
 // A succession claim is held for the microseconds it takes to verify and
-// move one stale lock. One that sits unchanged (by our own observation, not
-// by any clock) this long belongs to a breaker that crashed or stalled.
+// move one stale lock. One that sits unchanged this long — by our own
+// observation, never by comparing clocks — belongs to a breaker that crashed.
 const CLAIM_STALE_MS = 10_000;
-const claimSeen = new Map<string, { raw: string; since: number }>();
-
-function claimIsStale(path: string, raw: string): boolean {
-  try {
-    const c = JSON.parse(raw) as { host?: unknown; pid?: unknown };
-    if (c.host === hostId() && typeof c.pid === "number" && c.pid !== process.pid) {
-      if (!isProcessAlive(c.pid)) return true;
-    }
-  } catch {
-    // mid-write or garbage: fall through to observation
-  }
-  const seen = claimSeen.get(path);
-  const now = performance.now();
-  if (seen === undefined || seen.raw !== raw) {
-    claimSeen.set(path, { raw, since: now });
-    return false;
-  }
-  return now - seen.since > CLAIM_STALE_MS;
-}
 
 // Break a lock judged stale. Breakers of the same stale lock are serialized
 // by an O_EXCL succession claim keyed by that lock's exact bytes, so only one
 // of them ever moves it (racing breakers would otherwise move each other's
-// fresh locks). A claim whose breaker crashed is escalated by O_EXCL-claiming
-// the next level, never by deleting it, so recovery cannot itself race.
-// Returns true if this call removed the lock.
-function breakStale(vaultRoot: string, raw: string): boolean {
+// fresh locks). A crashed breaker's claim is escalated by O_EXCL-claiming the
+// next level, never by deleting it, so recovery cannot itself race. Waiting
+// out a claim happens here, not in the acquire retry budget, so a fresh
+// process can always recover a claim abandoned by a crash. Returns true if
+// this call removed the lock.
+async function breakStale(vaultRoot: string, raw: string): Promise<boolean> {
   const key = createHash("sha256").update(raw.trim()).digest("hex").slice(0, 24);
   const body = JSON.stringify({ host: hostId(), pid: process.pid, at: new Date().toISOString() });
   for (let level = 0; level < 8; level++) {
@@ -397,9 +365,35 @@ function breakStale(vaultRoot: string, raw: string): boolean {
     if (!created.ok) return false;
     if (created.value) return removeLockIfUnchanged(vaultRoot, raw);
     const claimant = readOptional(claim);
-    if (claimant === null || !claimIsStale(claim, claimant)) return false; // live breaker: back off
+    if (claimant === null) return false; // finished just now: re-evaluate
+    if (!claimantIsDead(claimant)) {
+      // A breaker is (or was) at work. Watch until it finishes — the lock
+      // changes or the claim goes — or its claim proves abandoned.
+      const since = performance.now();
+      for (;;) {
+        await sleep(50);
+        if ((readOptional(lockPath(vaultRoot)) ?? "") !== raw.trim()) return false;
+        if (readOptional(claim) !== claimant) return false;
+        if (performance.now() - since > CLAIM_STALE_MS) break;
+      }
+    }
+    // Abandoned: escalate to the next level.
   }
   return false;
+}
+
+function claimantIsDead(raw: string): boolean {
+  try {
+    const c = JSON.parse(raw) as { host?: unknown; pid?: unknown };
+    return (
+      c.host === hostId() &&
+      typeof c.pid === "number" &&
+      c.pid !== process.pid &&
+      !isProcessAlive(c.pid)
+    );
+  } catch {
+    return false;
+  }
 }
 
 // Succession claims are only meaningful while the lock they name is current;
@@ -806,7 +800,7 @@ export async function acquireLock(
       if (!again.ok) return again;
       if (again.value !== raw.value) continue;
       process.stderr.write("daftari: removing unreadable lockfile\n");
-      if (!breakStale(vaultRoot, raw.value)) await sleep(50);
+      await breakStale(vaultRoot, raw.value);
       continue;
     }
 
@@ -817,7 +811,7 @@ export async function acquireLock(
       process.stderr.write(`daftari: removing stale lockfile (${verdict.why})\n`);
       // Only if it is still byte-for-byte the lock we judged (a live holder
       // never rewrites process.lock, so any change means a new claimant).
-      if (!breakStale(vaultRoot, raw.value)) await sleep(50);
+      await breakStale(vaultRoot, raw.value);
       continue;
     }
 

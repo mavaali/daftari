@@ -32,6 +32,10 @@ import {
 } from "../../src/lifecycle/lock.js";
 
 const HELPER = resolve("test/helpers/lease-holder.ts");
+
+function claimKey(raw: string): string {
+  return createHash("sha256").update(raw.trim()).digest("hex").slice(0, 24);
+}
 const FOREIGN_HOST = "some-other-machine|boot-0000|pidns-0";
 
 function lockFile(vault: string): string {
@@ -369,23 +373,43 @@ describe("lease lock", () => {
     expect(existsSync(lockFile(vault))).toBe(false);
   });
 
-  it("a live breaker's succession claim is not raced; a crashed breaker's claim is escalated", async () => {
+  it("a live breaker's succession claim is not raced: we wait for it, then re-evaluate", async () => {
     writeLease(vault, { pid: 2 ** 30, heartbeatAt: new Date(Date.now() - 10_000).toISOString() });
     const raw = readFileSync(lockFile(vault), "utf-8");
-    const key = createHash("sha256").update(raw.trim()).digest("hex").slice(0, 24);
-    const claim = join(vault, ".daftari", `process.lock.succ-${key}-0`);
-    // A breaker on another machine is mid-break: we must not move the lock too.
+    const claim = join(vault, ".daftari", `process.lock.succ-${claimKey(raw)}-0`);
+    // A breaker on another machine is mid-break...
     writeFileSync(claim, JSON.stringify({ host: FOREIGN_HOST, pid: 1, at: "x" }));
-    const blocked = await acquireLock(vault, "1.0.0");
-    expect(blocked.ok).toBe(false);
-    expect(rawLock(vault)?.nonce).toBe("n-foreign");
-    // The same claim from a crashed breaker on THIS host (dead pid).
+    // ...and finishes: it removes the stale lock and its own holder claims.
+    setTimeout(() => {
+      writeLease(vault, { pid: 2 ** 30, nonce: "n-winner", leaseMs: 60_000, heartbeatMs: 5_000 });
+      rmSync(claim, { force: true });
+    }, 300);
+    const r = await acquireLock(vault, "1.0.0");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.message).toContain("another machine");
+    expect(rawLock(vault)?.nonce).toBe("n-winner");
+  });
+
+  it("a crashed breaker's claim (dead pid on this host) is escalated at once", async () => {
+    writeLease(vault, { pid: 2 ** 30, heartbeatAt: new Date(Date.now() - 10_000).toISOString() });
+    const raw = readFileSync(lockFile(vault), "utf-8");
+    const claim = join(vault, ".daftari", `process.lock.succ-${claimKey(raw)}-0`);
     writeFileSync(claim, JSON.stringify({ host: hostId(), pid: 2 ** 30, at: "x" }));
     const r = await acquireLock(vault, "1.0.0");
     expect(r.ok).toBe(true);
     expect(rawLock(vault)?.pid).toBe(process.pid);
     expect(readdirSync(join(vault, ".daftari")).filter((f) => f.includes(".succ-"))).toEqual([]);
   });
+
+  it("a crashed breaker's claim from another machine is recovered by a fresh process", async () => {
+    writeLease(vault, { pid: 2 ** 30, heartbeatAt: new Date(Date.now() - 10_000).toISOString() });
+    const raw = readFileSync(lockFile(vault), "utf-8");
+    const claim = join(vault, ".daftari", `process.lock.succ-${claimKey(raw)}-0`);
+    writeFileSync(claim, JSON.stringify({ host: FOREIGN_HOST, pid: 1, at: "x" }));
+    const r = await acquireLock(vault, "1.0.0");
+    expect(r.ok).toBe(true);
+    expect(rawLock(vault)?.pid).toBe(process.pid);
+  }, 30_000);
 
   it("contended takeover: racing contenders for one lapsed lease produce exactly one holder", async () => {
     for (let round = 0; round < 3; round++) {
