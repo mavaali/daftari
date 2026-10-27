@@ -22,6 +22,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   acquireLock,
+  breakStale,
   HEARTBEAT_MS,
   hostId,
   LEASE_MS,
@@ -428,6 +429,24 @@ describe("lease lock", () => {
       clearInterval(t2);
     }
   }, 30_000);
+
+  it("a renewal landing between the stale verdict and the removal aborts the removal", async () => {
+    // The verdict saw heartbeat B0. Before the removal step runs, the holder
+    // renews (B1). Removal must compare against B0, so it sees the renewal.
+    const b0 = new Date(Date.now() - 10_000).toISOString();
+    writeLease(vault, { pid: 2 ** 30, nonce: "n-late", heartbeatAt: b0 });
+    const raw = readFileSync(lockFile(vault), "utf-8");
+    writeFileSync(
+      join(vault, ".daftari", "process.lock.hb-n-late"),
+      JSON.stringify({ nonce: "n-late", heartbeatAt: new Date().toISOString() }),
+    );
+    expect(await breakStale(vault, raw, b0)).toBe(false);
+    expect(rawLock(vault)?.nonce).toBe("n-late");
+    // With no renewal since the verdict, the same call removes it.
+    rmSync(join(vault, ".daftari", "process.lock.hb-n-late"));
+    expect(await breakStale(vault, raw, b0)).toBe(true);
+    expect(existsSync(lockFile(vault))).toBe(false);
+  });
 
   it("release takes the succession claim: it leaves the lock to a breaker already at work", async () => {
     const r = await acquireLock(vault, "1.0.0", { heartbeatMs: 1_000, leaseMs: 10_000 });

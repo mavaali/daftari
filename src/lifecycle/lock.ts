@@ -31,8 +31,17 @@
 // stale lock are serialized by an O_EXCL succession claim keyed by its bytes;
 // the single winner removes it by an atomic rename to a private name and
 // checks what it moved — if that is not the lock judged stale, it is put back
-// with an atomic link that never overwrites. Lock-file transitions depend on
-// no clock; only recovering a crashed breaker's claim uses a local timeout.
+// with an O_EXCL create that never overwrites. Release takes the same claim.
+// Lock-file transitions depend on no clock; only recovering a crashed
+// breaker's claim uses a local timeout.
+//
+// Accepted residual (decision 2026-10-26): with only O_EXCL and rename — no
+// compare-and-swap, no OS lock — a few steps remain check-then-act (e.g. a
+// breaker's re-check of the heartbeat, then its rename). The window is
+// microseconds wide and needs a process to stall or crash exactly inside it.
+// If it is hit, two processes can hold the vault at once, but the one whose
+// lock is gone notices at its next renewal and shuts down: overlap is bounded
+// by one heartbeat (HEARTBEAT_MS) plus its shutdown drain.
 
 import { createHash, randomBytes } from "node:crypto";
 import {
@@ -365,12 +374,18 @@ function claimBody(): string {
   return JSON.stringify({ host: hostId(), pid: process.pid, at: new Date().toISOString() });
 }
 
-async function breakStale(vaultRoot: string, raw: string): Promise<boolean> {
-  // The holder's renewal as of our judgment. Its process.lock bytes never
-  // change, so a renewal shows only in its heartbeat file: if that moves
-  // before we remove the lock, the holder is alive and we must not.
+// `beatAtJudgment` is the holder's heartbeat as read BEFORE the stale verdict
+// (the caller passes it in; re-reading it here would adopt a renewal that
+// landed after the verdict as the baseline and miss it). Its process.lock
+// bytes never change, so a renewal shows only in its heartbeat file: if that
+// moves from the judged value before we remove the lock, the holder is alive
+// and we must not. Exported for tests.
+export async function breakStale(
+  vaultRoot: string,
+  raw: string,
+  beatAtJudgment: string | undefined,
+): Promise<boolean> {
   const judged = parseLock(raw);
-  const beatAtJudgment = judged === null ? undefined : lastHeartbeat(vaultRoot, judged);
   const renewed = (): boolean =>
     judged !== null && lastHeartbeat(vaultRoot, judged) !== beatAtJudgment;
   for (let level = 0; level < 8; level++) {
@@ -819,10 +834,13 @@ export async function acquireLock(
       if (!again.ok) return again;
       if (again.value !== raw.value) continue;
       process.stderr.write("daftari: removing unreadable lockfile\n");
-      await breakStale(vaultRoot, raw.value);
+      await breakStale(vaultRoot, raw.value, undefined);
       continue;
     }
 
+    // Read the holder's heartbeat before judging: every stale verdict means
+    // "no renewal since this value", so the removal step compares against it.
+    const beatBeforeJudgment = lastHeartbeat(vaultRoot, prior);
     const verdict = await judge(vaultRoot, prior, mode, options.takeover === true);
     if (verdict.kind === "refuse") return err(verdict.error);
     if (verdict.kind === "changed") continue;
@@ -830,7 +848,7 @@ export async function acquireLock(
       process.stderr.write(`daftari: removing stale lockfile (${verdict.why})\n`);
       // Only if it is still byte-for-byte the lock we judged (a live holder
       // never rewrites process.lock, so any change means a new claimant).
-      await breakStale(vaultRoot, raw.value);
+      await breakStale(vaultRoot, raw.value, beatBeforeJudgment);
       continue;
     }
 
