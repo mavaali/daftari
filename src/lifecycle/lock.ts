@@ -18,9 +18,11 @@
 //   - A lease that LOOKS lapsed by our wall clock is still watched for one
 //     more renewal window before it is broken: a holder whose clock runs
 //     behind ours, or that just woke from sleep, renews and is seen as live.
-//   - Same-host fast path: if the holder is on this host and its pid is
-//     provably dead (`process.kill(pid, 0)` — cross-platform, never `ps`), the
-//     lock is stale at once, no lease wait.
+//   - Same-host fast path: if the holder is on this host and its pid is dead
+//     (`process.kill(pid, 0)` — cross-platform, never `ps`), the lock is stale
+//     after one renewal window (2 heartbeats + 250ms) with no renewal, instead
+//     of the full lease. Never at once: sandboxes can share a host id, and a
+//     holder that renews in that window is treated as foreign.
 //   - A same-host holder is SIGTERMed (the stdio takeover, or serve
 //     --takeover) only after its heartbeat is SEEN to advance: a live pid alone
 //     may be a recycled one belonging to an unrelated process.
@@ -46,6 +48,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
+  existsSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -56,7 +59,7 @@ import {
   writeFileSync,
   writeSync,
 } from "node:fs";
-import { hostname, networkInterfaces } from "node:os";
+import { hostname, networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { err, ok, type Result } from "../frontmatter/types.js";
@@ -154,7 +157,7 @@ export function hostId(): string {
 }
 
 let cachedMacs: string[] | undefined;
-function hostMacs(): string[] {
+export function hostMacs(): string[] {
   if (cachedMacs !== undefined) return cachedMacs;
   const macs = new Set<string>();
   for (const list of Object.values(networkInterfaces())) {
@@ -166,18 +169,50 @@ function hostMacs(): string[] {
   return cachedMacs;
 }
 
-// Same host = same host id AND, when both sides recorded hardware addresses,
-// at least one in common. Intersection rather than equality: a VPN or a
-// docker bridge coming up between two starts must not turn this machine into
-// "another machine". Two distinct machines that share a hostname (default Mac
-// names collide) differ in hardware addresses, so the dead-pid fast path never
-// fires against a holder on the other one.
+// Same host = same host id AND at least one hardware address in common.
+// Intersection rather than equality: a VPN or a docker bridge coming up
+// between two starts must not turn this machine into "another machine". No
+// addresses on either side (a VM without a non-internal NIC) is unknown, so
+// NOT same host. Even a true answer is only a hint: same-host shortcuts still
+// wait one renewal window (see judge).
 function isSameHost(prior: LockData): boolean {
   if (prior.host !== hostId()) return false;
   const theirs = prior.macs ?? [];
   const ours = hostMacs();
-  if (theirs.length === 0 || ours.length === 0) return true;
-  return theirs.some((m) => ours.includes(m));
+  // No hardware addresses on either side is missing evidence, not a match.
+  if (theirs.length === 0 || ours.length === 0) return false;
+  if (!theirs.some((m) => ours.includes(m))) return false;
+  // And the holder's marker must be in OUR temp dir. Sandboxes that clone a
+  // host id do not share a /tmp, so this ties the pid we would test (or
+  // signal) to a process that really ran here.
+  const marker = prior.nonce === undefined ? null : holderMarkerPath(prior.nonce);
+  return marker !== null && existsSync(marker);
+}
+
+// A per-holder file in the OS temp dir, written at the claim and removed on
+// release. Exported for tests.
+export function holderMarkerPath(nonce: string): string | null {
+  return NONCE_RE.test(nonce) ? join(tmpdir(), `daftari-lock-holder-${nonce}`) : null;
+}
+
+function writeHolderMarker(nonce: string): void {
+  const path = holderMarkerPath(nonce);
+  if (path === null) return;
+  try {
+    writeFileSync(path, String(process.pid), "utf-8");
+  } catch {
+    // without a marker we are simply "another host" to local contenders
+  }
+}
+
+function removeHolderMarker(nonce: string): void {
+  const path = holderMarkerPath(nonce);
+  if (path === null) return;
+  try {
+    unlinkSync(path);
+  } catch {
+    // never written
+  }
 }
 
 function parseLock(raw: string): LockData | null {
@@ -329,6 +364,7 @@ export function removeLockIfUnchanged(vaultRoot: string, expected: LockData | st
   } catch {
     // leftover side file; harmless and gitignored
   }
+  if (moved?.nonce !== undefined) removeHolderMarker(moved.nonce);
   const hb = moved?.nonce === undefined ? null : heartbeatPath(vaultRoot, moved.nonce);
   if (hb !== null) {
     try {
@@ -539,6 +575,7 @@ function startHeartbeat(vaultRoot: string, data: LockData, onLeaseLost?: () => v
     if (current.nonce !== nonce) {
       stopHeartbeat(vaultRoot);
       removeHeartbeat(vaultRoot, nonce);
+      removeHolderMarker(nonce);
       process.stderr.write(
         `daftari: lost the vault lock for ${vaultRoot} — another process took it over ` +
           `(holder now: pid=${current.pid}); stopping so two processes never write one vault\n`,
@@ -561,6 +598,7 @@ function startHeartbeat(vaultRoot: string, data: LockData, onLeaseLost?: () => v
   const timer = setInterval(beat, data.heartbeatMs);
   timer.unref();
   held.set(vaultRoot, { nonce, timer, data });
+  writeHolderMarker(nonce);
 }
 
 // ---- acquire ---------------------------------------------------------------
@@ -580,22 +618,31 @@ export interface AcquireLockOptions {
   onLeaseLost?: () => void;
 }
 
-type Watch =
-  | { kind: "advanced"; latest: LockData }
-  | { kind: "changed" }
-  | { kind: "dead" }
-  | { kind: "timeout" };
+type Watch = { kind: "advanced"; latest: LockData } | { kind: "changed" } | { kind: "timeout" };
 
 // Watch a lease until its heartbeat advances (holder alive), the lock is
 // replaced/removed, a same-host holder's pid dies, or the deadline passes.
+// One renewal window: long enough that any live holder, anywhere, renews at
+// least once while we watch.
+function renewalWindow(prior: LockData): number {
+  return 2 * clampHeartbeat(prior.heartbeatMs) + 250;
+}
+
+// A dead local pid is never by itself proof that the holder is dead: a
+// holder in another sandbox can share our host id, and its pid means nothing
+// here. With `shortenOnDeadPid`, a pid seen dead only cuts the remaining wait
+// down to one renewal window; the verdict still needs that window to pass
+// with no renewal.
 async function watchLease(
   vaultRoot: string,
   prior: LockData,
   deadline: number,
-  sameHost: boolean,
+  shortenOnDeadPid = false,
 ): Promise<Watch> {
   const pollMs = Math.max(10, Math.min(100, clampHeartbeat(prior.heartbeatMs) / 4));
   const priorBeat = lastHeartbeat(vaultRoot, prior);
+  let until = deadline;
+  let shortened = false;
   for (;;) {
     const cur = readLockfile(vaultRoot);
     if (cur.ok) {
@@ -604,8 +651,11 @@ async function watchLease(
         return { kind: "advanced", latest: cur.value };
       }
     }
-    if (sameHost && !isProcessAlive(prior.pid)) return { kind: "dead" };
-    if (Date.now() >= deadline) return { kind: "timeout" };
+    if (shortenOnDeadPid && !shortened && !isProcessAlive(prior.pid)) {
+      shortened = true;
+      until = Math.min(until, Date.now() + renewalWindow(prior));
+    }
+    if (Date.now() >= until) return { kind: "timeout" };
     await sleep(pollMs);
   }
 }
@@ -650,6 +700,15 @@ function modeRefusal(
   return null;
 }
 
+function foreignRefusal(holderLock: LockData, leaseMs: number): Error {
+  return new Error(
+    `this vault is held by a live daftari on another machine (${describeHolder(holderLock, true)}). ` +
+      `A process on another machine cannot be signalled from here: stop it there, ` +
+      `or, if it has crashed, retry once its lease lapses (${Math.round(leaseMs / 1000)}s ` +
+      `after its last heartbeat).`,
+  );
+}
+
 async function judge(
   vaultRoot: string,
   prior: LockData,
@@ -685,27 +744,38 @@ async function judge(
     };
   }
 
-  const sameHost = isSameHost(prior);
-  // Same host and our own pid: we are alive and this is not our lock (a
-  // re-acquire stops our heartbeat first), so it is a previous incarnation's.
-  if (sameHost && prior.pid === process.pid) {
-    return {
-      kind: "stale",
-      why:
-        `names our own pid ${prior.pid} — ` +
-        `a leftover from a previous incarnation that had the same pid`,
-    };
-  }
-  // Same-host fast path: a provably dead holder.
-  if (sameHost && !isProcessAlive(prior.pid)) {
-    return { kind: "stale", why: `pid=${prior.pid} not a live daftari instance` };
-  }
-
+  let sameHost = isSameHost(prior);
   const heartbeatMs = clampHeartbeat(prior.heartbeatMs);
   const leaseMs = clampLease(prior.leaseMs, heartbeatMs);
   const lastBeat = Date.parse(lastHeartbeat(vaultRoot, prior) ?? "");
   let latest = prior;
   let proven = false;
+
+  // Same-host fast paths — a lock naming our own pid (we are alive, so it is
+  // a previous incarnation's) or a pid that is dead here. Neither is lease
+  // evidence: a holder in another sandbox can share our host id, and then its
+  // pid says nothing about it. So both still need one renewal window with no
+  // renewal (~4s at the defaults) before the lock is called stale. A holder
+  // that renews in that window is alive somewhere else: our host identity
+  // collides with its, and it is treated as foreign from here on.
+  const ownPid = sameHost && prior.pid === process.pid;
+  const deadPid = sameHost && !ownPid && !isProcessAlive(prior.pid);
+  if (ownPid || deadPid) {
+    const w = await watchLease(vaultRoot, prior, Date.now() + renewalWindow(prior));
+    if (w.kind === "changed") return { kind: "changed" };
+    if (w.kind === "timeout") {
+      return {
+        kind: "stale",
+        why: ownPid
+          ? `names our own pid ${prior.pid} — ` +
+            `a leftover from a previous incarnation that had the same pid`
+          : `pid=${prior.pid} not a live daftari instance`,
+      };
+    }
+    latest = w.latest;
+    proven = true;
+    sameHost = false;
+  }
 
   const age = Date.now() - lastBeat;
   const lapsedByClock = !(age <= leaseMs); // NaN (unparseable) counts as lapsed
@@ -714,15 +784,12 @@ async function judge(
   // observation alone — a full lease with no renewal — or a crashed holder
   // with a fast clock would block the vault for as long as its offset.
   const futureDated = age < -heartbeatMs;
-  if (lapsedByClock || futureDated) {
+  if (!proven && (lapsedByClock || futureDated)) {
     // Lapsed by our clock: watch one more renewal window before believing it
     // — a holder whose clock lags ours, or that just woke from sleep, renews.
-    const window = futureDated ? leaseMs : 2 * heartbeatMs + 250;
-    const w = await watchLease(vaultRoot, prior, Date.now() + window, sameHost);
+    const window = futureDated ? leaseMs : renewalWindow(prior);
+    const w = await watchLease(vaultRoot, prior, Date.now() + window);
     if (w.kind === "changed") return { kind: "changed" };
-    if (w.kind === "dead") {
-      return { kind: "stale", why: `pid=${prior.pid} not a live daftari instance` };
-    }
     if (w.kind === "timeout") {
       return {
         kind: "stale",
@@ -739,21 +806,12 @@ async function judge(
   const refusal = modeRefusal(mode, latest, holder, takeover);
   if (refusal) return { kind: "refuse", error: refusal };
 
-  if (!sameHost) {
-    return {
-      kind: "refuse",
-      error: new Error(
-        `this vault is held by a live daftari on another machine (${holder}). ` +
-          `A process on another machine cannot be signalled from here: stop it there, ` +
-          `or, if it has crashed, retry once its lease lapses (${Math.round(leaseMs / 1000)}s ` +
-          `after its last heartbeat).`,
-      ),
-    };
-  }
+  if (!sameHost) return { kind: "refuse", error: foreignRefusal(latest, leaseMs) };
 
   if (!proven) {
     // Signal only a holder whose heartbeat we SEE advance; a live pid alone
     // may be recycled. Bounded by the lease: if it never renews, it is stale.
+    // A pid that dies meanwhile only shortens the wait to one renewal window.
     const w = await watchLease(
       vaultRoot,
       latest,
@@ -761,13 +819,14 @@ async function judge(
       true,
     );
     if (w.kind === "changed") return { kind: "changed" };
-    if (w.kind === "dead") {
-      return { kind: "stale", why: `pid=${prior.pid} not a live daftari instance` };
-    }
     if (w.kind === "timeout") {
       return { kind: "stale", why: `pid=${prior.pid} lease lapsed without renewal` };
     }
     latest = w.latest;
+    // Renewing while its pid is dead here: it lives in another sandbox that
+    // shares our host id. It cannot be signalled from here.
+    if (!isProcessAlive(latest.pid))
+      return { kind: "refuse", error: foreignRefusal(latest, leaseMs) };
   }
   return { kind: "signal", latest, holder };
 }
@@ -922,4 +981,5 @@ export function releaseLock(vaultRoot: string): void {
     dropClaims(vaultRoot, ourRaw, 0);
   }
   removeHeartbeat(vaultRoot, mine.nonce);
+  removeHolderMarker(mine.nonce);
 }

@@ -11,7 +11,14 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { acquireLock, hostId, type LockData, readLockfile } from "../../src/lifecycle/lock.js";
+import {
+  acquireLock,
+  holderMarkerPath,
+  hostId,
+  hostMacs,
+  type LockData,
+  readLockfile,
+} from "../../src/lifecycle/lock.js";
 
 function lockDataFor(vault: string, pid: number, mode?: "stdio" | "serve"): LockData {
   return {
@@ -21,6 +28,7 @@ function lockDataFor(vault: string, pid: number, mode?: "stdio" | "serve"): Lock
     startedAt: "2026-07-20T00:00:00Z",
     version: "test",
     host: hostId(),
+    macs: hostMacs(),
     nonce: `n-${pid}`,
     heartbeatAt: new Date().toISOString(),
     heartbeatMs: 1_000,
@@ -75,6 +83,8 @@ describe("mode-aware process lock (#5)", () => {
   }
 
   function writeHolderLock(pid: number, mode?: "stdio" | "serve"): void {
+    // Same host = same host id + MACs + the holder's temp-dir marker.
+    writeFileSync(holderMarkerPath(`n-${pid}`) as string, String(pid));
     writeFileSync(
       join(vault, ".daftari", "process.lock"),
       JSON.stringify(lockDataFor(vault, pid, mode)),

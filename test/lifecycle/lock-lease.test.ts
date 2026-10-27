@@ -24,7 +24,9 @@ import {
   acquireLock,
   breakStale,
   HEARTBEAT_MS,
+  holderMarkerPath,
   hostId,
+  hostMacs,
   LEASE_MS,
   type LockData,
   lastHeartbeat,
@@ -49,6 +51,15 @@ function rawLock(vault: string): LockData | null {
   } catch {
     return null;
   }
+}
+
+// A lease that is genuinely "this host": host id, MACs and temp-dir marker.
+function writeSameHostLease(
+  vault: string,
+  data: Partial<LockData> & { pid: number; nonce: string },
+) {
+  writeFileSync(holderMarkerPath(data.nonce) as string, String(data.pid));
+  writeLease(vault, { host: hostId(), macs: hostMacs(), ...data });
 }
 
 function writeLease(vault: string, data: Partial<LockData> & { pid: number }): void {
@@ -265,13 +276,69 @@ describe("lease lock", () => {
     const pid = bystander.pid as number;
     // A crashed holder's lock, still inside its lease, whose pid now belongs
     // to the bystander. It never heartbeats.
-    writeLease(vault, { pid, host: hostId(), heartbeatMs: 50, leaseMs: 600 });
+    writeSameHostLease(vault, { pid, nonce: "n-crashed", heartbeatMs: 50, leaseMs: 600 });
     const r = await acquireLock(vault, "1.0.0", { mode: "stdio" });
     expect(r.ok).toBe(true);
     expect(rawLock(vault)?.pid).toBe(process.pid);
     expect(bystander.exitCode).toBeNull();
     expect(bystander.signalCode).toBeNull();
   }, 15_000);
+
+  it("same-host fast path: a crashed local holder (dead pid) is freed after one renewal window", async () => {
+    writeSameHostLease(vault, { pid: 2 ** 30, nonce: "n-dead", heartbeatMs: 50, leaseMs: 60_000 });
+    const started = Date.now();
+    const r = await acquireLock(vault, "1.0.0", { mode: "serve" });
+    expect(r.ok).toBe(true);
+    // Not the 60s lease, but not "at once" either: one window (2x50+250ms).
+    expect(Date.now() - started).toBeGreaterThanOrEqual(300);
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("shared host id: a holder that keeps renewing is NOT stale, whatever its pid looks like here", async () => {
+    // Two sandboxes that share hostId(), MACs and even the marker: the holder's
+    // pid is dead (or is our own pid, or belongs to an unrelated process) from
+    // where we stand, but it renews. It must be treated as live.
+    const bystander = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: "ignore",
+    });
+    children.push(bystander);
+    for (const pid of [2 ** 30, process.pid]) {
+      const nonce = `n-shared-${pid}`;
+      writeSameHostLease(vault, { pid, nonce, heartbeatMs: 50, leaseMs: 60_000 });
+      const hb = join(vault, ".daftari", `process.lock.hb-${nonce}`);
+      const timer = setInterval(() => {
+        writeFileSync(hb, JSON.stringify({ nonce, heartbeatAt: new Date().toISOString() }));
+      }, 25);
+      try {
+        for (const mode of ["stdio", "serve"] as const) {
+          const r = await acquireLock(vault, "1.0.0", { mode, takeover: true });
+          expect(r.ok, `pid=${pid} mode=${mode}`).toBe(false);
+          if (!r.ok) expect(r.error.message).toContain("another machine");
+          expect(rawLock(vault)?.nonce).toBe(nonce);
+        }
+      } finally {
+        clearInterval(timer);
+      }
+    }
+    expect(bystander.exitCode).toBeNull();
+    expect(bystander.signalCode).toBeNull();
+  }, 30_000);
+
+  it("isSameHost: a host id match with no hardware addresses is NOT same host", async () => {
+    // A VM without a non-internal NIC: same host id, empty MACs. A dead pid
+    // there proves nothing, so the lock is judged on its lease (fresh) alone.
+    writeFileSync(holderMarkerPath("n-nomac") as string, "1");
+    writeLease(vault, {
+      pid: 2 ** 30,
+      nonce: "n-nomac",
+      host: hostId(),
+      macs: [],
+      leaseMs: 60_000,
+    });
+    const r = await acquireLock(vault, "1.0.0", { mode: "serve", takeover: true });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.message).toContain("another machine");
+  });
 
   it("a lapsed foreign lease is taken over", async () => {
     writeLease(vault, {
