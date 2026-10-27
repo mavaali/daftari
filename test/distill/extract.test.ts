@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { withCallBudget } from "../../src/consolidate/call-budget.js";
 import type { NormalizedMessage } from "../../src/distill/adapters/types.js";
 import { chunkMessages } from "../../src/distill/chunk.js";
-import { extractClaims } from "../../src/distill/extract.js";
+import { extractClaims, resolveMaxClaims } from "../../src/distill/extract.js";
 import type { CompleteJsonResult, LlmClient } from "../../src/eval/llm.js";
 import type { CortexEvalError } from "../../src/eval/types.js";
 import { err, ok, type Result } from "../../src/frontmatter/types.js";
@@ -394,5 +394,78 @@ describe("extractClaims — inCallInputCap", () => {
     const transcript = seenUser.slice(seenUser.indexOf("\n\n") + 2);
     expect(transcript.length).toBeLessThanOrEqual(1000);
     expect(transcript.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Default claim cap scales with source size (2026-10-25 benchmark: the flat
+// 50-claim default truncated a 7-chunk source after 5 chunks)
+// ---------------------------------------------------------------------------
+
+describe("resolveMaxClaims", () => {
+  it("keeps the historical 50-claim floor for small sources", () => {
+    expect(resolveMaxClaims(undefined, 1)).toBe(50);
+    expect(resolveMaxClaims(undefined, 0)).toBe(50);
+  });
+
+  it("scales a per-chunk allowance with chunk count", () => {
+    expect(resolveMaxClaims(undefined, 7)).toBe(105);
+  });
+
+  it("caps the scaled default at a ceiling", () => {
+    expect(resolveMaxClaims(undefined, 10_000)).toBe(500);
+  });
+
+  it("treats an explicit value as authoritative, below or above the scaled default", () => {
+    expect(resolveMaxClaims(20, 7)).toBe(20);
+    expect(resolveMaxClaims(1000, 7)).toBe(1000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// said_at — the source message time a claim was extracted from
+// ---------------------------------------------------------------------------
+
+describe("extractClaims — said_at", () => {
+  // TRANSCRIPT ts: 10:00, 10:01, 10:02, 10:03 on 2026-05-01.
+  const T0 = "2026-05-01T10:00:00";
+  const T2 = "2026-05-01T10:02:00";
+  const T3 = "2026-05-01T10:03:00";
+
+  it("stamps the cited message timestamp, the earliest when several are cited", async () => {
+    const chunks = chunkMessages(TRANSCRIPT, 4);
+    const llm = mockLlm([
+      {
+        claims: [
+          { statement: "Launch moves to June 3rd", source_ts: [T3, T2] },
+          { statement: "Use postgres", source_ts: [`[${T0}]`] },
+        ],
+      },
+    ]);
+    const out = await extractClaims(chunks, llm, OPTS);
+    expect(out.claims.map((c) => c.said_at)).toEqual([T2, T0]);
+  });
+
+  it("ignores timestamps that are not in the chunk and omits said_at when none are", async () => {
+    const chunks = chunkMessages(TRANSCRIPT, 4);
+    const llm = mockLlm([
+      {
+        claims: [
+          { statement: "Hallucinated time only", source_ts: ["2031-01-01T00:00:00"] },
+          { statement: "One real one fake", source_ts: ["2031-01-01T00:00:00", T3] },
+          { statement: "No citation" },
+          { statement: "Wrong type", source_ts: "not-an-array" },
+        ],
+      },
+    ]);
+    const out = await extractClaims(chunks, llm, OPTS);
+    expect(out.claims.map((c) => c.said_at)).toEqual([undefined, T3, undefined, undefined]);
+    expect("said_at" in out.claims[0]).toBe(false);
+  });
+
+  it("asks the model for source timestamps in the extraction schema", async () => {
+    const { EXTRACT_SCHEMA } = await import("../../src/distill/extract.js");
+    expect(EXTRACT_SCHEMA.properties.claims.items.properties).toHaveProperty("source_ts");
+    expect(EXTRACT_SCHEMA.properties.claims.items.required).toEqual(["statement"]);
   });
 });
