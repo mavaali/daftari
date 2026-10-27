@@ -442,6 +442,9 @@ describe("lease lock", () => {
     );
     expect(await breakStale(vault, raw, b0)).toBe(false);
     expect(rawLock(vault)?.nonce).toBe("n-late");
+    // The aborted removal releases its succession claim (no leak that would
+    // stall the next breaker or use up escalation levels).
+    expect(readdirSync(join(vault, ".daftari")).filter((f) => f.includes(".succ-"))).toEqual([]);
     // With no renewal since the verdict, the same call removes it.
     rmSync(join(vault, ".daftari", "process.lock.hb-n-late"));
     expect(await breakStale(vault, raw, b0)).toBe(true);

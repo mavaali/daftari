@@ -370,6 +370,16 @@ function claimPath(vaultRoot: string, raw: string, level: number): string {
   return `${lockPath(vaultRoot)}.succ-${key}-${level}`;
 }
 
+function dropClaims(vaultRoot: string, raw: string, upToLevel: number): void {
+  for (let level = upToLevel; level >= 0; level--) {
+    try {
+      unlinkSync(claimPath(vaultRoot, raw, level));
+    } catch {
+      // already gone
+    }
+  }
+}
+
 function claimBody(): string {
   return JSON.stringify({ host: hostId(), pid: process.pid, at: new Date().toISOString() });
 }
@@ -393,8 +403,16 @@ export async function breakStale(
     const created = tryCreateExclusive(claim, claimBody());
     if (!created.ok) return false;
     if (created.value) {
-      if (renewed()) return false; // live after all: re-evaluate
-      return removeLockIfUnchanged(vaultRoot, raw);
+      try {
+        if (renewed()) return false; // live after all: re-evaluate
+        return removeLockIfUnchanged(vaultRoot, raw);
+      } finally {
+        // Done with these bytes either way. Drop our claim and the abandoned
+        // ones we escalated past, so a later breaker of the same (still
+        // current) lock is not stalled behind a finished claim, and repeated
+        // aborts cannot use up the escalation levels.
+        dropClaims(vaultRoot, raw, level);
+      }
     }
     const claimant = readOptional(claim);
     if (claimant === null) return false; // finished just now: re-evaluate
@@ -899,6 +917,9 @@ export function releaseLock(vaultRoot: string): void {
   // the moment we exit.
   const ourRaw = JSON.stringify(mine.data, null, 2);
   const claimed = tryCreateExclusive(claimPath(vaultRoot, ourRaw, 0), claimBody());
-  if (claimed.ok && claimed.value) removeLockIfUnchanged(vaultRoot, mine.data);
+  if (claimed.ok && claimed.value) {
+    removeLockIfUnchanged(vaultRoot, mine.data);
+    dropClaims(vaultRoot, ourRaw, 0);
+  }
   removeHeartbeat(vaultRoot, mine.nonce);
 }
