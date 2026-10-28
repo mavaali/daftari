@@ -94,6 +94,11 @@ export type LockData = {
 // within ~20s. Same-host crashes do not wait at all (dead-pid fast path).
 export const HEARTBEAT_MS = 2_000;
 export const LEASE_MS = 10 * HEARTBEAT_MS;
+
+// Exit code for a holder that shuts down because its lease was taken over.
+// Non-zero so a supervisor (systemd, launchd, pm2) sees the loss; 75 is
+// EX_TEMPFAIL: the vault was busy, try again later.
+export const EXIT_LEASE_LOST = 75;
 // A lockfile that stays unparseable this long is not one being written.
 const UNREADABLE_GRACE_MS = 1_000;
 

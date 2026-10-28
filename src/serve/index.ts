@@ -48,7 +48,7 @@ import {
   createConfiguredIntegrationRuntime,
   type IntegrationRuntime,
 } from "../integrations/runtime.js";
-import { acquireLock, releaseLock } from "../lifecycle/lock.js";
+import { acquireLock, EXIT_LEASE_LOST, releaseLock } from "../lifecycle/lock.js";
 import { setCoverageEnabled } from "../search/coverage.js";
 import { setGraphExpandConfig } from "../search/graph-expansion.js";
 import { setDefaultWeights, setVecKnnK } from "../search/hybrid.js";
@@ -1585,12 +1585,12 @@ export async function runServe(argv: string[]): Promise<number> {
 
   // A lost lease (taken over while this server was stalled) shuts down
   // rather than leave two writers on one vault.
-  let shutdown: (() => void) | undefined;
+  let shutdown: ((exitCode?: number) => void) | undefined;
   const lock = await acquireLock(vaultRoot, SERVER_VERSION, {
     mode: "serve",
     bind: `${bind}:${port}`,
     takeover: argv.includes("--takeover"),
-    onLeaseLost: () => shutdown?.(),
+    onLeaseLost: () => shutdown?.(EXIT_LEASE_LOST),
   });
   if (!lock.ok) {
     process.stderr.write(`daftari serve: ${lock.error.message}\n`);

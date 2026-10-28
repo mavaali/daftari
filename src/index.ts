@@ -22,7 +22,7 @@ import { materializeEdges } from "./curation/edges.js";
 import { materializeStagedActions } from "./curation/staged-actions.js";
 import { buildMountIndexes } from "./federation/mount-index.js";
 import { getMountRegistry, loadMounts, setMountRegistry } from "./federation/mounts.js";
-import { acquireLock, releaseLock } from "./lifecycle/lock.js";
+import { acquireLock, EXIT_LEASE_LOST, releaseLock } from "./lifecycle/lock.js";
 import { setCoverageEnabled } from "./search/coverage.js";
 import { setGraphExpandConfig } from "./search/graph-expansion.js";
 import { setDefaultWeights, setVecKnnK } from "./search/hybrid.js";
@@ -87,10 +87,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // Decision 4). See docs/superpowers/plans/2026-05-20-process-lockfile.md.
   // A lost lease (another process took the vault over while this one was
   // stalled) shuts down rather than leave two writers on one index.db.
-  let shutdown: (() => void) | undefined;
+  let shutdown: ((exitCode?: number) => void) | undefined;
   const lockResult = await acquireLock(vaultRoot, DAFTARI_VERSION, {
     mode: "stdio",
-    onLeaseLost: () => shutdown?.(),
+    onLeaseLost: () => shutdown?.(EXIT_LEASE_LOST),
   });
   if (!lockResult.ok) {
     process.stderr.write(`daftari: failed to acquire vault lock: ${lockResult.error.message}\n`);
@@ -327,13 +327,14 @@ let shuttingDown = false;
 // not begin writing while the old server is still draining.
 const SHUTDOWN_DRAIN_TIMEOUT_MS = 2_000;
 
-// Returns the shutdown routine so a lost vault lease can trigger it too.
+// Returns the shutdown routine so a lost vault lease can trigger it too, with
+// a non-zero exit code (EXIT_LEASE_LOST). Signals exit 0.
 export function installShutdownHandlers(
   vaultRoot: string,
   extra?: () => void | Promise<void>,
-): () => void {
+): (exitCode?: number) => void {
   let shutdownStarted = false;
-  const onShutdown = () => {
+  const onShutdown = (exitCode = 0) => {
     if (shutdownStarted) return;
     shutdownStarted = true;
     shuttingDown = true;
@@ -377,11 +378,12 @@ export function installShutdownHandlers(
       // resumable reindex writes: a kill mid-reindex cannot corrupt index.db
       // (uncommitted work rolls back; the next startup resumes from the
       // committed batches).
-      process.exit(0);
+      process.exit(exitCode);
     })();
   };
-  process.once("SIGTERM", onShutdown);
-  process.once("SIGINT", onShutdown);
+  // Wrapped: a signal listener receives the signal name as its first argument.
+  process.once("SIGTERM", () => onShutdown());
+  process.once("SIGINT", () => onShutdown());
   process.once("exit", () => releaseLock(vaultRoot));
   return onShutdown;
 }
