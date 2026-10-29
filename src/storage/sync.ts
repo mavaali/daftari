@@ -57,6 +57,11 @@ const SYNC_EXCLUDED = new Set([
 
 function isExcluded(relPath: string): boolean {
   if (SYNC_EXCLUDED.has(relPath)) return true;
+  // The lease lock's machine-local side files (heartbeat process.lock.hb-*,
+  // its .tmp, succession claims .succ-*, removals in flight .gone-*): as
+  // ephemeral as process.lock itself, rewritten every heartbeat, and liable to
+  // vanish mid-walk.
+  if (relPath.startsWith(".daftari/process.lock.")) return true;
   // Git EXECUTES what these declare — filter/fsmonitor command lines in
   // config, hook scripts in hooks/ — and a `git clone` deliberately never
   // transmits them from a remote for exactly that reason. Carrying them
