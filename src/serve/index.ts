@@ -48,7 +48,7 @@ import {
   createConfiguredIntegrationRuntime,
   type IntegrationRuntime,
 } from "../integrations/runtime.js";
-import { acquireLock, releaseLock } from "../lifecycle/lock.js";
+import { acquireLock, EXIT_LEASE_LOST, releaseLock } from "../lifecycle/lock.js";
 import { setCoverageEnabled } from "../search/coverage.js";
 import { setGraphExpandConfig } from "../search/graph-expansion.js";
 import { setDefaultWeights, setVecKnnK } from "../search/hybrid.js";
@@ -1583,10 +1583,14 @@ export async function runServe(argv: string[]): Promise<number> {
     return 2;
   }
 
+  // A lost lease (taken over while this server was stalled) shuts down
+  // rather than leave two writers on one vault.
+  let shutdown: ((exitCode?: number) => void) | undefined;
   const lock = await acquireLock(vaultRoot, SERVER_VERSION, {
     mode: "serve",
     bind: `${bind}:${port}`,
     takeover: argv.includes("--takeover"),
+    onLeaseLost: () => shutdown?.(EXIT_LEASE_LOST),
   });
   if (!lock.ok) {
     process.stderr.write(`daftari serve: ${lock.error.message}\n`);
@@ -1596,7 +1600,7 @@ export async function runServe(argv: string[]): Promise<number> {
   // a failure between here and the listener opening must still release the
   // lock on exit. `handle` is assigned once the listener is up.
   let handle: ServeHandle | null = null;
-  installShutdownHandlers(vaultRoot, async () => {
+  shutdown = installShutdownHandlers(vaultRoot, async () => {
     if (handle) await handle.close();
   });
 

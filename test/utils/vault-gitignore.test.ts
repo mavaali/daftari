@@ -86,4 +86,34 @@ describe("ensureVaultGitignore", () => {
       .split("\n");
     expect(ignored).toEqual(paths);
   });
+
+  it("ignores the process lock and its heartbeat/takeover side files (nbrr)", async () => {
+    await ensureVaultGitignore(dir);
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+    mkdirSync(join(dir, ".daftari"), { recursive: true });
+    const paths = [
+      ".daftari/process.lock",
+      ".daftari/process.lock.hb-0123abcd",
+      ".daftari/process.lock.hb-0123abcd.tmp",
+      ".daftari/process.lock.gone-0123abcd",
+    ];
+    for (const relativePath of paths) writeFileSync(join(dir, relativePath), "{}\n");
+    const ignored = execFileSync("git", ["check-ignore", "--stdin"], {
+      cwd: dir,
+      input: `${paths.join("\n")}\n`,
+      encoding: "utf-8",
+    })
+      .trim()
+      .split("\n");
+    expect(ignored).toEqual(paths);
+  });
+
+  it("upgrades an older Daftari block with the process lock rules", async () => {
+    const path = join(dir, ".gitignore");
+    writeFileSync(path, "# old Daftari block\n.daftari/index.db\n");
+    expect(await ensureVaultGitignore(dir)).toBe("appended");
+    const content = readFileSync(path, "utf-8");
+    expect(content).toContain(".daftari/process.lock\n");
+    expect(content).toContain(".daftari/process.lock.*");
+  });
 });

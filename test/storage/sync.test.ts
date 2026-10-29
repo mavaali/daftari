@@ -135,6 +135,37 @@ describe("storage sync engine (#6)", () => {
     expect(manifest.ok && manifest.value !== null).toBe(true);
   });
 
+  it("lease-lock side files never sync, and a poisoned manifest cannot restore them", async () => {
+    const sideFiles = [
+      "process.lock.hb-n1",
+      "process.lock.hb-n1.tmp",
+      "process.lock.succ-abc",
+      "process.lock.gone-abc",
+    ];
+    for (const f of sideFiles) writeFileSync(join(vault, ".daftari", f), "{}");
+
+    expect((await syncVault(vault, backend)).ok).toBe(true);
+    const keys = await backend.list("tree/.daftari/");
+    expect(keys.ok).toBe(true);
+    if (!keys.ok) return;
+    expect(keys.value.some((k) => k.startsWith("tree/.daftari/process.lock"))).toBe(false);
+
+    await backend.put("tree/.daftari/process.lock.hb-n1", Buffer.from("{}"));
+    const manifestRaw = await backend.get(MANIFEST_KEY);
+    if (!manifestRaw.ok || manifestRaw.value === null) throw new Error("manifest missing");
+    const manifest = JSON.parse(manifestRaw.value.toString());
+    manifest.files[".daftari/process.lock.hb-n1"] = "00";
+    await backend.put(MANIFEST_KEY, Buffer.from(JSON.stringify(manifest)));
+
+    const target = join(mkdtempSync(join(tmpdir(), "daftari-restore-lease-")), "vault");
+    const restored = await restoreVault(target, backend);
+    expect(restored.ok).toBe(true);
+    if (!restored.ok) return;
+    expect(restored.value.skippedExcluded).toBe(1);
+    expect(existsSync(join(target, ".daftari", "process.lock.hb-n1"))).toBe(false);
+    rmSync(target, { recursive: true, force: true });
+  });
+
   it("second push is incremental: only the changed file re-uploads, removals delete", async () => {
     expect((await syncVault(vault, backend)).ok).toBe(true);
 

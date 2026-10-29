@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
+import { EXIT_LEASE_LOST } from "../../src/lifecycle/lock.js";
 
 function events(path: string): string[] {
   if (!existsSync(path)) return [];
@@ -55,7 +56,7 @@ describe("signal shutdown", () => {
     vaults.length = 0;
   });
 
-  function startHolder(mode: "gated" | "never") {
+  function startHolder(mode: "gated" | "never" | "lease") {
     const vaultRoot = mkdtempSync(join(tmpdir(), "daftari-shutdown-"));
     const eventsPath = join(vaultRoot, "shutdown-events");
     const gatePath = join(vaultRoot, "allow-close");
@@ -90,6 +91,7 @@ describe("signal shutdown", () => {
 
     writeFileSync(holder.gatePath, "close", "utf-8");
     expect(await waitForExit(holder.child, 5_000)).toBe(true);
+    expect(holder.child.exitCode).toBe(0);
     expect(events(holder.eventsPath)).toEqual(["ready", "close-start", "close-end"]);
     expect(lockHolderPid(holder.vaultRoot)).toBeNull();
   }, 25_000);
@@ -107,5 +109,24 @@ describe("signal shutdown", () => {
     expect(lockHolderPid(holder.vaultRoot)).toBe(holder.child.pid);
     expect(await waitForExit(holder.child, 5_000)).toBe(true);
     expect(lockHolderPid(holder.vaultRoot)).toBeNull();
+  }, 25_000);
+
+  it("a lost lease shuts down with a non-zero exit and leaves the successor's lock", async () => {
+    const holder = startHolder("lease");
+    expect(await waitUntil(() => events(holder.eventsPath).includes("ready"), 15_000)).toBe(true);
+
+    // A successor takes the vault over: process.lock now names another holder.
+    const lockPath = join(holder.vaultRoot, ".daftari", "process.lock");
+    const successor = {
+      ...(JSON.parse(readFileSync(lockPath, "utf-8")) as Record<string, unknown>),
+      pid: 2 ** 30,
+      nonce: "n-successor",
+    };
+    writeFileSync(lockPath, JSON.stringify(successor));
+
+    expect(await waitForExit(holder.child, 5_000)).toBe(true);
+    expect(holder.child.exitCode).toBe(EXIT_LEASE_LOST);
+    expect(events(holder.eventsPath)).toEqual(["ready", "close-start", "close-end"]);
+    expect(lockHolderPid(holder.vaultRoot)).toBe(2 ** 30);
   }, 25_000);
 });
