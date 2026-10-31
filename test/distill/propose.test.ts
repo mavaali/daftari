@@ -463,6 +463,45 @@ describe("proposeAllClaims (U4)", () => {
     expect((fm.readers as string[])[0]).toContain("@na|");
   });
 
+  it("stamps said_at from the claim, and never derives valid_from from it (#305)", async () => {
+    const runId = "run-said-at";
+    const claim = makeClaim({
+      claim_key: "chunk-sa:said-at-claim-11223344",
+      statement: "A claim with a known source time.",
+      proposed_frontmatter: { title: "Said at claim" },
+      said_at: "2026-05-01T10:02:00",
+    });
+    await proposeAllClaims(vault, [claim], { sourceId: "chat-export-1", runId });
+    const listed = await listStagedActions(vault, "pending");
+    if (!listed.ok) throw listed.error;
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+    const fm = (action.proposedDiff as Record<string, unknown>).frontmatter as Record<
+      string,
+      unknown
+    >;
+    expect(fm.said_at).toBe("2026-05-01T10:02:00");
+    expect("valid_from" in fm).toBe(false);
+    expect("valid_until" in fm).toBe(false);
+  });
+
+  it("omits said_at when the claim carries none", async () => {
+    const runId = "run-no-said-at";
+    await proposeAllClaims(vault, [makeClaim({ claim_key: "chunk-sa:no-said-at-55443322" })], {
+      sourceId: "chat-export-1",
+      runId,
+    });
+    const listed = await listStagedActions(vault, "pending");
+    if (!listed.ok) throw listed.error;
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+    const fm = (action.proposedDiff as Record<string, unknown>).frontmatter as Record<
+      string,
+      unknown
+    >;
+    expect("said_at" in fm).toBe(false);
+  });
+
   it("defaults reader_via_retry to false when viaRetry is undefined", async () => {
     const runId = "run-reader-retry-default";
     const claim = makeClaim({
