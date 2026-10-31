@@ -280,12 +280,12 @@ function seedMultiCollectionVault(): string {
   writeDoc(
     vaultRoot,
     "restricted/secret-doc.md",
-    frontmatter({
+    `${frontmatter({
       title: "Secret",
       collection: "restricted",
       updated: "2020-01-01",
       ttl_days: null,
-    }) + "# Secret\n\nNobody can see me if scoped.\n",
+    })}# Secret\n\nNobody can see me if scoped.\n`,
   );
   return vaultRoot;
 }

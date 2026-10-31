@@ -333,7 +333,7 @@ describe("extractClaims — title word-boundary truncation (Defect 2)", () => {
     // "word1 word2 " repeated so that position 80 falls inside a word.
     // "Hello world " is 12 chars. 6 repetitions = 72 chars, then we add
     // enough to push past 80 with a partial word.
-    const stmt = "Hello world ".repeat(6) + "overflow_extra_word"; // 72 + 19 = 91 chars
+    const stmt = `${"Hello world ".repeat(6)}overflow_extra_word`; // 72 + 19 = 91 chars
     const chunks = chunkMessages([msg(0, "irrelevant")], 1);
     const llm = mockLlm([{ claims: [{ statement: stmt }] }]);
     const out = await extractClaims(chunks, llm, OPTS);

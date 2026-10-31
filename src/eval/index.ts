@@ -5,9 +5,9 @@
 
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
-import { err, ok, type Result } from "../frontmatter/types.js";
+import { ok, type Result } from "../frontmatter/types.js";
 import { generateQuestions } from "./generate.js";
-import { createAnthropicClient, type LlmClient } from "./llm.js";
+import type { LlmClient } from "./llm.js";
 import { resolveTransport } from "./llm-openrouter.js";
 import { PROMPT_VERSION } from "./prompts.js";
 import { type DirPruneResult, type PruneRules, parseOlderThan, prune } from "./prune.js";

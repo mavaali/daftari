@@ -202,7 +202,7 @@ async function getJson(
   token?: string,
 ): Promise<{ status: number; body: unknown }> {
   const headers: Record<string, string> = { accept: "application/json" };
-  if (token) headers["authorization"] = `Bearer ${token}`;
+  if (token) headers.authorization = `Bearer ${token}`;
   const res = await fetch(url(port, path), { headers });
   const text = await res.text();
   let body: unknown;
@@ -220,7 +220,7 @@ async function getHtml(
   token?: string,
 ): Promise<{ status: number; body: string }> {
   const headers: Record<string, string> = { accept: "text/html" };
-  if (token) headers["authorization"] = `Bearer ${token}`;
+  if (token) headers.authorization = `Bearer ${token}`;
   const res = await fetch(url(port, path), { headers });
   const body = await res.text();
   return { status: res.status, body };
@@ -236,7 +236,7 @@ async function postJson(
     "content-type": "application/json",
     accept: "application/json",
   };
-  if (token) headers["authorization"] = `Bearer ${token}`;
+  if (token) headers.authorization = `Bearer ${token}`;
   const res = await fetch(url(port, path), {
     method: "POST",
     headers,

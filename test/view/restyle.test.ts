@@ -86,8 +86,8 @@ describe("viewer R11 — code syntax highlighting styles", () => {
   it("keeps the epistemic accent color reserved for contested — hljs rules never use --accent", () => {
     const html = renderDocPage({ path: "a.md", frontmatter: fm, bodyHtml: "", backlinks: [] });
     const styleMatch = html.match(/<style>([\s\S]*?)<\/style>/);
-    expect(styleMatch).not.toBeNull();
-    const css = styleMatch![1]!;
+    expect(styleMatch?.[1]).toBeDefined();
+    const css = styleMatch?.[1] ?? "";
     const hljsRules = css.match(/\.hljs[\w-]*\s*\{[^}]*\}/g) ?? [];
     expect(hljsRules.length).toBeGreaterThan(0);
     for (const rule of hljsRules) {
