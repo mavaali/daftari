@@ -274,6 +274,9 @@ export function serializeDocument(
     // predates these fields carries undefined, which js-yaml refuses to dump.
     valid_from: fm.valid_from ?? null,
     valid_until: fm.valid_until ?? null,
+    // Emitted only when set (the positions convention) so documents without a
+    // source time stay byte-stable.
+    ...(fm.said_at != null ? { said_at: fm.said_at } : {}),
     tags: fm.tags,
     describes: fm.describes,
     questions_answered: fm.questions_answered,

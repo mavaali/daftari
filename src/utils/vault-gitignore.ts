@@ -50,6 +50,8 @@ export const VAULT_GITIGNORE = `# Daftari rebuilds these from the markdown files
 .daftari/backfill-plan.jsonl
 # Nightly wake-queue snapshot (daftari sleep) — regenerated each cycle.
 .daftari/wake-queue.jsonl
+# Finder metadata — a vault seeded into a folder the user picked often has one.
+.DS_Store
 `;
 
 // A stable line guaranteed to appear in VAULT_GITIGNORE; used as the marker to
