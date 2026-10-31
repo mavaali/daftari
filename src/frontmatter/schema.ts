@@ -248,6 +248,22 @@ export function validateFrontmatter(
     return null;
   };
 
+  // said_at: same non-blocking contract as optionalDate (a malformed string is
+  // preserved, only a type error flags), but it carries a date-time. js-yaml
+  // parses an unquoted timestamp into a UTC Date: keep a bare UTC-midnight
+  // value date-only, otherwise emit the ISO date-time it parsed to.
+  const optionalTimestamp = (field: string): string | null => {
+    const v = data[field];
+    if (v === undefined || v === null) return null;
+    if (v instanceof Date && !Number.isNaN(v.getTime())) {
+      const iso = v.toISOString();
+      return iso.endsWith("T00:00:00.000Z") ? iso.slice(0, 10) : iso.replace(/\.000Z$/, "Z");
+    }
+    if (typeof v === "string") return v;
+    issues.push({ field, message: `expected date-time string or null, got ${typeof v}` });
+    return null;
+  };
+
   const optionalNumber = (field: string): number | null => {
     const v = data[field];
     if (v === undefined || v === null) return null;
@@ -396,6 +412,7 @@ export function validateFrontmatter(
     ttl_days: optionalNumber("ttl_days"),
     valid_from: optionalDate("valid_from"),
     valid_until: optionalDate("valid_until"),
+    said_at: optionalTimestamp("said_at"),
     tags: optionalStringArray("tags"),
     describes: optionalStringArray("describes"),
     questions_answered: optionalStringArray("questions_answered"),

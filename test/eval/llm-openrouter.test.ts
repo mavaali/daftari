@@ -114,6 +114,38 @@ describe("complete", () => {
     expect("temperature" in body).toBe(false);
   });
 
+  it("omits temperature for an anthropic model id that rejects sampling params (bead 4v1q)", async () => {
+    const fetchImpl = vi.fn(async () => fakeRes(200, okBody("x")));
+    const client = createOpenRouterClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    const r = await client.complete({
+      ...OPTS,
+      model: "anthropic/claude-sonnet-5.5",
+      temperature: 0,
+    });
+    const body = JSON.parse(
+      String((fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1].body),
+    );
+    expect("temperature" in body).toBe(false);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.effectiveTemperature).toBeUndefined();
+  });
+
+  it("omits temperature on the tool loop for a model that rejects sampling params", async () => {
+    const fetchImpl = vi.fn(async () => fakeRes(200, okBody("x")));
+    const client = createOpenRouterClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    await client.completeWithTools({
+      ...OPTS,
+      model: "anthropic/claude-opus-4.7",
+      temperature: 0,
+      tools: [],
+      toolHandler: async () => null,
+    });
+    const body = JSON.parse(
+      String((fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1].body),
+    );
+    expect("temperature" in body).toBe(false);
+  });
+
   it("retries a 429 then succeeds", async () => {
     const fetchImpl = vi
       .fn()

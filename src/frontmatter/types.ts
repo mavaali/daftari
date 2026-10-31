@@ -109,6 +109,13 @@ export interface BuiltinFrontmatter {
   // must not be collapsed.
   valid_from: string | null; // YYYY-MM-DD
   valid_until: string | null; // YYYY-MM-DD
+  // When the source message a distilled claim was extracted from was SAID —
+  // an ISO 8601 date-time as the source recorded it (or a date). A fact about
+  // the source, not world-validity: nothing derives valid_from from it (valid
+  // time stays authored, never inferred). Optional so hand-built Frontmatter
+  // literals stay valid; null/absent = unknown. Earliest message when a claim
+  // spans several.
+  said_at?: string | null;
   tags: string[];
   // Doc-to-code bindings: code paths this doc describes, each `repo:path` or
   // `repo:path::symbol` (a bare `path` resolves against the doc's own repo).
@@ -152,6 +159,7 @@ export const BUILTIN_FRONTMATTER_FIELDS = [
   "ttl_days",
   "valid_from",
   "valid_until",
+  "said_at",
   "tags",
   "describes",
   "questions_answered",
