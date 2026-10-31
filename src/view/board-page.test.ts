@@ -39,7 +39,7 @@ function baseFinding(overrides: Partial<Finding> = {}): Finding {
     source: "lint",
     check: "staleFiles",
     target: { kind: "lint", path: "notes/foo.md" },
-    fingerprint: "fp-" + id,
+    fingerprint: `fp-${id}`,
     certainty: "medium",
     evidence: {},
     suggested_action: "Review the file",
