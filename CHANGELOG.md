@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Board session cookies are bound to their deployment** (3p4.8) — the signed session payload now carries a per-vault random audience (`.daftari/session-audience`, gitignored, generated on first `serve`), and `/board` accepts a cookie only if it matches this vault and the configured `server.auth.session.maps_to` user and role. A validly-signed cookie from another deployment sharing the key is rejected. Existing board sessions are invalidated once; log in again. Docs now require a unique signing key per deployment.
 
+### Fixed
+
+- **Tension log fields can no longer forge lines or blocks** — every free-text value written to `.daftari/tensions.md` (title, claims, logged-by, principal, positions, readers, resolution rationale/references) is flattened to one line at the single render boundary. Before, a line break in any of them could inject a `- **Label:**` line (e.g. a fake `Status: resolved`) or a whole `## ` block on re-parse.
+
 ## [3.17.0] - 2026-10-25
 
 ### Added
