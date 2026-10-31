@@ -473,6 +473,9 @@ export async function proposeAllClaims(
       sources: [`distill:${ids.sourceId}#${claim.claim_key}`],
       superseded_by: null,
       ttl_days: null,
+      // When the source message was said. Never copied into valid_from: valid
+      // time is authored, not inferred (#305).
+      ...(claim.said_at !== undefined ? { said_at: claim.said_at } : {}),
     };
 
     // U11/R8: distill-and-discard fence. Refuse before staging any landing that

@@ -56,6 +56,7 @@ Server options:
   --role <rolename>    RBAC role from .daftari/config.yaml (default: the config's
                        default_role — admin in an --init vault — else deny-all guest)
   --reindex            Rebuild the SQLite index from scratch, then exit
+  --init-if-missing    Scaffold an empty vault at --vault on first start
 
 Other:
   --version, -v        Print the daftari version and exit
@@ -180,10 +181,22 @@ canon — the agent flags tensions here but does not resolve them.
   ];
 }
 
-export async function initVault(targetPath: string): Promise<number> {
+// Entries that count against "empty": Finder drops .DS_Store into any folder
+// it has opened, so a folder the user just picked is still empty with one.
+function folderEntries(dir: string): string[] {
+  return readdirSync(dir).filter((name) => name !== ".DS_Store");
+}
+
+// `examples: false` skips the fictional starter documents, and `stdout: false`
+// sends the summary to stderr — both for --init-if-missing, where the vault is
+// someone's real memory and stdout belongs to the JSON-RPC stream.
+export async function initVault(
+  targetPath: string,
+  { examples = true, stdout = true }: { examples?: boolean; stdout?: boolean } = {},
+): Promise<number> {
   const vaultRoot = resolve(targetPath);
 
-  if (existsSync(vaultRoot) && readdirSync(vaultRoot).length > 0) {
+  if (existsSync(vaultRoot) && folderEntries(vaultRoot).length > 0) {
     process.stderr.write(`daftari: refusing to scaffold — ${vaultRoot} exists and is not empty\n`);
     return 1;
   }
@@ -202,7 +215,7 @@ export async function initVault(targetPath: string): Promise<number> {
   writeFileSync(join(vaultRoot, ".gitignore"), VAULT_GITIGNORE);
 
   const today = new Date().toISOString().slice(0, 10);
-  for (const doc of exampleDocs(today)) {
+  for (const doc of examples ? exampleDocs(today) : []) {
     writeFileSync(join(vaultRoot, doc.path), doc.body);
   }
 
@@ -235,11 +248,11 @@ export async function initVault(targetPath: string): Promise<number> {
     );
   }
 
-  process.stdout.write(
+  (stdout ? process.stdout : process.stderr).write(
     `Scaffolded a new Daftari vault at ${vaultRoot}\n\n` +
       `  collections: ${COLLECTIONS.join(", ")}\n` +
       `  config:      .daftari/config.yaml\n` +
-      `  examples:    3 markdown documents\n\n` +
+      `  examples:    ${examples ? "3 markdown documents" : "none"}\n\n` +
       `Next:\n` +
       `  npx daftari --vault ${targetPath} --user me\n`,
   );
@@ -372,7 +385,29 @@ export async function run(argv: string[]): Promise<void> {
     return;
   }
 
-  if (parseFlag(argv, "vault")) {
+  const vault = parseFlag(argv, "vault");
+  if (vault) {
+    // Plugin hosts hand the server a folder the user picked (or a fresh data
+    // directory): seed it when missing or empty, refuse one that already holds
+    // other files, and serve an existing vault as-is.
+    if (argv.includes("--init-if-missing")) {
+      const root = resolve(vault);
+      const entries = existsSync(root) ? folderEntries(root) : [];
+      if (entries.length === 0) {
+        const code = await initVault(vault, { examples: false, stdout: false });
+        if (code !== 0) {
+          process.exitCode = code;
+          return;
+        }
+      } else if (!entries.includes(".daftari")) {
+        process.stderr.write(
+          `daftari: ${root} is not a Daftari vault and is not empty. Pick an empty folder ` +
+            "to start a new vault, or adopt existing notes with `daftari import obsidian`.\n",
+        );
+        process.exitCode = 1;
+        return;
+      }
+    }
     await main(argv);
     return;
   }

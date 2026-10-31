@@ -224,6 +224,13 @@ export interface DistillUpsertInput {
    * filter. Scoped passes over the same file are tracked independently.
    */
   scope?: string;
+  /**
+   * Chunks whose extraction failed this run (ExtractOutcome.chunkErrors.length).
+   * With zero claims, a non-zero count means the run learned nothing about the
+   * source: its hash is NOT recorded, so the next run re-distills instead of
+   * no-op'ing on a hash a failed run wrote (bead b4m3). Absent ⇒ 0.
+   */
+  extractionErrors?: number;
 }
 
 export interface DistillUpsertOutcome {
@@ -273,6 +280,22 @@ export async function distillUpsert(
       created: [],
       propose: null,
       stateWritten: true,
+    });
+  }
+
+  // A run whose extraction errored and yielded nothing must leave no trace:
+  // recording its hash would make the next (working) run over the same source
+  // a silent no-op that discards every claim it extracts.
+  const extractionErrors = input.extractionErrors ?? 0;
+  if (extractionErrors > 0 && input.claims.length === 0) {
+    return ok({
+      noop: false,
+      skipped: [],
+      updated: [],
+      created: [],
+      propose: null,
+      stateWritten: false,
+      stateError: `extraction failed for ${extractionErrors} chunk(s) and produced no claims; source state not recorded`,
     });
   }
 

@@ -298,8 +298,13 @@ export interface DistillConfig {
   model: string;
   /** Hard cap on total LLM calls per distill invocation. */
   maxLlmCalls: number;
-  /** Maximum raw claims the extract stage may produce per run. */
-  maxClaims: number;
+  /**
+   * Maximum raw claims the extract stage may produce per run. Set only when
+   * declared (`max_claims`) or overridden (`--max-claims`), and then
+   * authoritative. Unset ⇒ the run scales the cap with source size
+   * (resolveMaxClaims in src/distill/extract.ts).
+   */
+  maxClaims?: number;
   /** Maximum verbatim-quoted characters across all claims per run. */
   maxVerbatimChars: number;
   /**
@@ -329,7 +334,6 @@ export const DEFAULT_CORROBORATION_THRESHOLD = 0.8;
 
 export const DISTILL_NUMERIC_DEFAULTS: Omit<DistillConfig, "model"> = {
   maxLlmCalls: 100,
-  maxClaims: 50,
   maxVerbatimChars: 8000,
   inCallInputCap: 16000,
   corroborationThreshold: DEFAULT_CORROBORATION_THRESHOLD,

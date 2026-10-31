@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`default_role` config key; `--init` vaults default to `admin`** (kg64) — a stdio server started without `--role` now runs as the config's `default_role` instead of silently becoming the deny-all guest. `daftari --init` scaffolds `default_role: admin`, so a fresh local vault works out of the box. Existing vaults without the key keep the deny-all guest default; `daftari serve` ignores it. An undeclared role name is a malformed-config error.
 
+## [3.17.0] - 2026-10-25
+
+### Added
+
+- **Daftari as a plugin for Claude Code, Cowork, ChatGPT, and Codex** — `plugins/daftari/` carries both an [Agent Plugins](https://agent-plugins.org) manifest (ChatGPT / Codex, via `.agents/plugins/marketplace.json`) and a Claude plugin manifest (Claude Code / Cowork, via `.claude-plugin/marketplace.json`), sharing one `daftari-memory` skill that tells the agent when to search, write drafts with truthful provenance, supersede, and leave contradictions visible. Claude installs prompt for a **vault folder**. See `docs/agent-plugin.md`.
+- **`--init-if-missing`** — the stdio server seeds an empty vault (no example documents; summary to stderr so stdout stays JSON-RPC) when `--vault` is missing or an empty folder (Finder's `.DS_Store` ignored), serves an existing vault as-is, and refuses a non-empty folder that is not a vault rather than serving arbitrary files as one.
+
 ## [3.16.0] - 2026-10-03
 
 ### Added

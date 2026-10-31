@@ -316,3 +316,106 @@ describe("--tools tier flag (#103/#104)", () => {
     }
   }, 60_000);
 });
+
+describe("daftari --vault <path> --init-if-missing", () => {
+  const boot = (vault: string) =>
+    new Promise<{ stdout: string; stderr: string }>((resolveBoot) => {
+      const tsx = resolve("node_modules/.bin/tsx");
+      const proc = spawn(tsx, [
+        "src/cli.ts",
+        "--vault",
+        vault,
+        "--init-if-missing",
+        "--user",
+        "me",
+        "--role",
+        "admin",
+      ]);
+      let stdout = "";
+      let stderr = "";
+      const timer = setTimeout(() => proc.kill(), 50_000);
+      proc.stdout.on("data", (c) => {
+        stdout += c.toString();
+        if (stdout.includes("\n")) proc.kill();
+      });
+      proc.stderr.on("data", (c) => {
+        stderr += c.toString();
+      });
+      proc.on("exit", () => {
+        clearTimeout(timer);
+        resolveBoot({ stdout, stderr });
+      });
+      proc.stdin.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2025-06-18",
+            capabilities: {},
+            clientInfo: { name: "t", version: "1" },
+          },
+        })}\n`,
+      );
+    });
+
+  it("scaffolds an empty vault on first start and keeps stdout pure JSON-RPC", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "daftari-plugin-"));
+    const vault = join(parent, "data", "vault");
+    try {
+      const { stdout } = await boot(vault);
+      expect(JSON.parse(stdout.split("\n")[0] ?? "").result.serverInfo.name).toBe("daftari");
+      expect(existsSync(join(vault, ".daftari", "config.yaml"))).toBe(true);
+      expect(existsSync(join(vault, ".git"))).toBe(true);
+      // A real memory store must not start with fictional example documents.
+      expect(existsSync(join(vault, "pricing", "helios-consumption-pricing.md"))).toBe(false);
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("scaffolds into an existing empty folder the user picked", async () => {
+    const vault = mkdtempSync(join(tmpdir(), "daftari-picked-"));
+    const { writeFileSync } = await import("node:fs");
+    // Finder drops one of these into any folder it has opened.
+    writeFileSync(join(vault, ".DS_Store"), "");
+    try {
+      const { stdout } = await boot(vault);
+      expect(JSON.parse(stdout.split("\n")[0] ?? "").result.serverInfo.name).toBe("daftari");
+      expect(existsSync(join(vault, ".daftari", "config.yaml"))).toBe(true);
+      const { execFileSync } = await import("node:child_process");
+      const tracked = execFileSync("git", ["ls-files"], { cwd: vault, encoding: "utf8" });
+      expect(tracked).not.toContain(".DS_Store");
+    } finally {
+      rmSync(vault, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("refuses a non-empty folder that is not a vault", async () => {
+    const vault = mkdtempSync(join(tmpdir(), "daftari-notes-"));
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(join(vault, "notes.md"), "# mine\n");
+    try {
+      const { stdout, stderr } = await boot(vault);
+      expect(stdout).toBe("");
+      expect(stderr).toContain("not a Daftari vault");
+      expect(existsSync(join(vault, ".daftari"))).toBe(false);
+    } finally {
+      rmSync(vault, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("leaves an existing vault untouched", async () => {
+    const vault = makeTempVault();
+    const { writeFileSync } = await import("node:fs");
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    writeFileSync(join(vault, ".daftari", "config.yaml"), "roles:\n  admin:\n    read: ['*']\n");
+    try {
+      const { stdout } = await boot(vault);
+      expect(JSON.parse(stdout.split("\n")[0] ?? "").result).toBeDefined();
+      expect(readFileSync(join(vault, ".daftari", "config.yaml"), "utf8")).toContain("read: ['*']");
+    } finally {
+      cleanupVault(vault);
+    }
+  }, 60_000);
+});

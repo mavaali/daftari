@@ -22,7 +22,7 @@ import {
 import type { SourceAdapter } from "./adapters/types.js";
 import { chunkMessages } from "./chunk.js";
 import { buildReceipt, planDistill } from "./cost.js";
-import { extractClaims } from "./extract.js";
+import { extractClaims, resolveMaxClaims } from "./extract.js";
 import { ADAPTER_REGISTRY, DISTILL_NOT_CONFIGURED_MSG, resolveDistillClient } from "./index.js";
 import { makeOverlapHinter } from "./propose.js";
 import { appendDistillReceipt } from "./receipt-store.js";
@@ -72,7 +72,9 @@ Options:
                        Corroboration bar in [0,1] for --auto-safe (default:
                        config distill.corroboration_threshold, else 0.8).
   --max-llm-calls <n>  Override config.maxLlmCalls for this run.
-  --max-claims <n>     Override config.maxClaims for this run.
+  --max-claims <n>     Override config.maxClaims for this run. When neither is
+                       set, the cap scales with source size (15 per chunk,
+                       min 50, max 500).
   --model <id>         Override config.model for this run.
   --transport <t>      LLM transport: anthropic (default) | openrouter | ollama (loopback-only).
   --zdr                Assert zero-data-retention for the receipt (default: false).
@@ -83,6 +85,8 @@ Exit codes:
   2   Usage error (no source, stdin without --source-id, unknown flag).
   3   Config/key refuse (missing distill: block, missing API key on --propose).
   4   Partial failure (some claims failed to stage, or some proposals failed to ratify).
+  5   Extraction failed: every chunk errored, so nothing was staged and the
+      source's distill state was left unchanged (re-run once the cause is fixed).
 `;
 
 /**
@@ -199,7 +203,7 @@ function resolveDistillConfig(vaultRoot: string): Result<DistillConfig, Error> {
  *   --propose:        full LLM-driven extraction + staged proposals.
  *   --review:         batch-ratify a prior run's staged proposals.
  *
- * Returns an exit code (0/2/3/4); the caller sets process.exitCode.
+ * Returns an exit code (0/2/3/4/5); the caller sets process.exitCode.
  * Diagnostics go to stderr; clean output goes to stdout.
  */
 export async function runDistill(argv: string[]): Promise<number> {
@@ -505,12 +509,17 @@ export async function runDistill(argv: string[]): Promise<number> {
   }
   const chunks = chunkMessages(messages);
 
+  // Resolve the claim cap against this source's size: an explicit max_claims /
+  // --max-claims wins, else it scales with chunk count. Every consumer below
+  // (plan, extraction, receipt truncation) reads this one value.
+  const runConfig = { ...config, maxClaims: resolveMaxClaims(config.maxClaims, chunks.length) };
+
   // ---------------------------------------------------------------------------
   // --plan: zero-spend estimate
   // ---------------------------------------------------------------------------
 
   if (mode === "plan") {
-    const plan = planDistill(chunks, config);
+    const plan = planDistill(chunks, runConfig);
 
     const costLine =
       plan.estimatedCostUSD === 0
@@ -560,7 +569,7 @@ export async function runDistill(argv: string[]): Promise<number> {
 
   const outcome = await extractClaims(chunks, budgetedClient, {
     model: config.model,
-    maxClaims: config.maxClaims,
+    maxClaims: runConfig.maxClaims,
     inCallInputCap: config.inCallInputCap,
   });
 
@@ -569,6 +578,33 @@ export async function runDistill(argv: string[]): Promise<number> {
     for (const ce of outcome.chunkErrors) {
       process.stderr.write(`  [${ce.anchor}] ${ce.error}\n`);
     }
+  }
+
+  // Every attempted chunk errored (e.g. the model rejects a request parameter):
+  // there is nothing to stage, and calling distillUpsert would record this
+  // source as distilled. Persist the receipt (the calls were still spent) and
+  // fail loudly instead of printing a "complete" summary with claims: 0.
+  const attemptedChunks = outcome.llmCalls - (outcome.budget_exhausted ? 1 : 0);
+  if (attemptedChunks > 0 && outcome.chunkErrors.length === attemptedChunks) {
+    const failedReceipt = buildReceipt({
+      outcome,
+      config: runConfig,
+      provider: transport,
+      zdr,
+      sourceId,
+      runId,
+    });
+    const persistedFailed = await appendDistillReceipt(vaultRoot, failedReceipt);
+    if (!persistedFailed.ok) {
+      process.stderr.write(
+        `warning: could not persist distill receipt: ${persistedFailed.error.message}\n`,
+      );
+    }
+    process.stderr.write(
+      `daftari distill: extraction failed — all ${attemptedChunks} chunk(s) failed; ` +
+        `nothing staged, source state unchanged (run-id ${runId})\n`,
+    );
+    return 5;
   }
 
   // U8: build the overlap-hinter from the vault's local search index.
@@ -584,6 +620,7 @@ export async function runDistill(argv: string[]): Promise<number> {
     claims: outcome.claims,
     runId,
     overlapSearch: hinter,
+    extractionErrors: outcome.chunkErrors.length,
     ...(senderFlag !== undefined ? { scope: `sender:${senderFlag}` } : {}),
   });
 
@@ -596,7 +633,7 @@ export async function runDistill(argv: string[]): Promise<number> {
 
   const receipt = buildReceipt({
     outcome,
-    config,
+    config: runConfig,
     provider: transport,
     zdr,
     sourceId,
@@ -630,11 +667,24 @@ export async function runDistill(argv: string[]): Promise<number> {
     ].join("\n"),
   );
 
-  // I4: warn on stateWritten:false — proposals staged, but next run will
-  // re-distill because the content-hash was not persisted.
+  // I4: warn on stateWritten:false — the content-hash was not persisted, so the
+  // next run re-distills this source (a failed write, or a run whose extraction
+  // errored without producing claims).
   if (!upsert.stateWritten) {
     process.stderr.write(
-      `daftari distill: warning: state write failed — next run will re-distill this source\n`,
+      `daftari distill: warning: source state not recorded` +
+        `${upsert.stateError ? ` (${upsert.stateError})` : ""} — next run will re-distill this source\n`,
+    );
+  }
+
+  // A no-op after a non-empty extraction discards those claims. Never silent:
+  // name the cause and the way out (e.g. a hash recorded by an older build's
+  // failed run, which this build no longer writes).
+  if (upsert.noop && outcome.claims.length > 0) {
+    process.stderr.write(
+      `daftari distill: source ${sourceId} is unchanged since its last recorded distill — ` +
+        `${outcome.claims.length} extracted claim(s) were not staged. To re-stage, remove ` +
+        `sources["${sourceId}"] from .daftari/distill-state.json and re-run.\n`,
     );
   }
 

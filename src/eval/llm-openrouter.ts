@@ -21,6 +21,7 @@ import {
   completeJsonWithRetry,
   type LlmClient,
   retry,
+  sendableTemperature,
 } from "./llm.js";
 import type { CortexEvalError } from "./types.js";
 
@@ -191,11 +192,12 @@ export function createOpenRouterClient(opts?: {
   };
 
   const complete = async (o: CompleteOpts): Promise<Result<CompleteResult, CortexEvalError>> => {
+    const temperature = sendableTemperature(o.model, o.temperature);
     return retry(async () => {
       const json = await postChat({
         model: o.model,
         max_tokens: o.maxTokens ?? 4096,
-        ...(o.temperature !== undefined ? { temperature: o.temperature } : {}),
+        ...(temperature !== undefined ? { temperature } : {}),
         messages: [
           { role: "system", content: o.system },
           { role: "user", content: o.user },
@@ -220,7 +222,7 @@ export function createOpenRouterClient(opts?: {
         // Served model echoed by the provider (distinct from o.model) and the
         // temperature we actually sent (undefined ⇒ none). Metadata only (6mf.6).
         servedModel: json.value.model,
-        effectiveTemperature: o.temperature,
+        effectiveTemperature: temperature,
       });
     });
   };
@@ -253,13 +255,14 @@ export function createOpenRouterClient(opts?: {
     }));
     let totalIn = 0;
     let totalOut = 0;
+    const temperature = sendableTemperature(o.model, o.temperature);
 
     for (let round = 0; round < maxRounds; round++) {
       const res = await retry(async () =>
         postChat({
           model: o.model,
           max_tokens: o.maxTokens ?? 4096,
-          ...(o.temperature !== undefined ? { temperature: o.temperature } : {}),
+          ...(temperature !== undefined ? { temperature } : {}),
           tools,
           messages,
         }),
