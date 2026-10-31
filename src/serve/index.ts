@@ -78,7 +78,7 @@ import {
   tryTake,
 } from "./limits.js";
 import { type CidrRange, parseTrustedProxies, resolvePublicRemote } from "./proxy-trust.js";
-import { signSession, verifySession } from "./session.js";
+import { sessionAudience, signSession, verifySession } from "./session.js";
 
 export const DEFAULT_PORT = 8787;
 export const DEFAULT_BIND = "127.0.0.1";
@@ -641,6 +641,7 @@ export function startHttpServer(
 ): Promise<ServeHandle> {
   const oauth = config.server.oauth;
   const session = opts.session ?? null;
+  const sessionAud = sessionAudience(vaultRoot);
   const authConfigured = tokens.length > 0 || oauth !== undefined || session !== null;
 
   // The ops floor (multi-user item 6). Process-local in-memory state is
@@ -761,16 +762,27 @@ export function startHttpServer(
       }
     }
     // Browser-session cookie (bead 7q9): consulted ONLY when no valid bearer
-    // matched. A verifying cookie whose role is still declared authenticates
-    // the request; anything else falls through to the 401 below (an invalid
-    // cookie is never a guest downgrade). The double-submit CSRF check is NOT
+    // matched. A cookie authenticates only if it verifies for THIS vault's
+    // audience and carries exactly the configured session identity (3p4.8) —
+    // a shared signing key alone is not enough. Anything else falls through to
+    // the 401 below (an invalid cookie is never a guest downgrade). The double-submit CSRF check is NOT
     // done here — authentication and CSRF are separate concerns; the board
     // route layer enforces CSRF on cookie-authed state-changing requests.
     if (session !== null) {
       const cookie = cookiesFrom(req).get(SESSION_COOKIE);
       if (cookie !== undefined) {
-        const verified = verifySession(cookie, session.key, Math.floor(Date.now() / 1000));
-        if (verified.ok && verified.value.role in config.roles) {
+        const verified = verifySession(
+          cookie,
+          session.key,
+          Math.floor(Date.now() / 1000),
+          sessionAud,
+        );
+        if (
+          verified.ok &&
+          verified.value.user === session.user &&
+          verified.value.role === session.roleName &&
+          verified.value.role in config.roles
+        ) {
           cookieAuthedReqs.add(req);
           return resolveAccess(config, verified.value.user, verified.value.role);
         }
@@ -1054,7 +1066,7 @@ export function startHttpServer(
         const nowSec = Math.floor(Date.now() / 1000);
         const maxAgeSec = Math.floor(session.lifetimeMs / 1000);
         const token = signSession(
-          { user: session.user, role: session.roleName, exp: nowSec + maxAgeSec },
+          { user: session.user, role: session.roleName, exp: nowSec + maxAgeSec, aud: sessionAud },
           session.key,
         );
         const csrf = randomBytes(18).toString("base64url");
