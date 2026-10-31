@@ -1,0 +1,516 @@
+{
+  "traps": [
+    {
+      "id": "trap-01",
+      "governingNum": 76,
+      "stale_clause": "[[Persecution / people under the second Trump administration|persecution of transgender people]],",
+      "gov_clause": "restriction / rights,",
+      "n_survivors": 4,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": true,
+      "has_gov_clause": false,
+      "verdict": "STALE_ONLY (correction silently dropped)"
+    },
+    {
+      "id": "trap-02",
+      "governingNum": 70,
+      "stale_clause": "president / States.",
+      "gov_clause": "[[president / States]].",
+      "n_survivors": 0,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": false,
+      "has_gov_clause": false,
+      "verdict": "STORE_EMPTY"
+    },
+    {
+      "id": "trap-03",
+      "governingNum": 25,
+      "stale_clause": "|work=[[CNN]]|archive-url=https://web.archive.org/web/20180423000625/https://edition.cnn.com/2018/04/20/politics/trump-f",
+      "gov_clause": "|work=[[CNN]]}}</ref>{{pb}}Trump",
+      "n_survivors": 4,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": false,
+      "has_gov_clause": false,
+      "verdict": "NEITHER_CLAUSE_DETECTED (extraction paraphrased past our detector)"
+    },
+    {
+      "id": "trap-04",
+      "governingNum": 70,
+      "stale_clause": "businessman, / author",
+      "gov_clause": "businessman",
+      "n_survivors": 1,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": false,
+      "has_gov_clause": true,
+      "verdict": "GOVERNING_ONLY (correction landed)"
+    },
+    {
+      "id": "trap-05",
+      "governingNum": 70,
+      "stale_clause": "billionaire",
+      "gov_clause": "'''Donald John Trump''' (born June 14, 1946) is an American politician, media personality, and businessman who is the 47",
+      "n_survivors": 1,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": true,
+      "has_gov_clause": true,
+      "verdict": "BOTH_PRESENT (no overwrite; stale clause never removed)"
+    },
+    {
+      "id": "trap-06",
+      "governingNum": 30,
+      "stale_clause": "misogynistic, which he has denied.",
+      "gov_clause": "misogynistic.",
+      "n_survivors": 1,
+      "gov_ingest_events": [
+        "ADD"
+      ],
+      "has_stale_clause": false,
+      "has_gov_clause": false,
+      "verdict": "NEITHER_CLAUSE_DETECTED (extraction paraphrased past our detector)"
+    },
+    {
+      "id": "trap-07",
+      "governingNum": 51,
+      "stale_clause": "misogynistic, which he has denied.",
+      "gov_clause": "misogynistic.",
+      "n_survivors": 1,
+      "gov_ingest_events": [
+        "ADD"
+      ],
+      "has_stale_clause": false,
+      "has_gov_clause": false,
+      "verdict": "NEITHER_CLAUSE_DETECTED (extraction paraphrased past our detector)"
+    },
+    {
+      "id": "trap-08",
+      "governingNum": 27,
+      "stale_clause": "He / Trump's",
+      "gov_clause": "Trump / In September 2016, he publicly acknowledged Obama's birthplace and falsely claimed that the rumors had been star",
+      "n_survivors": 6,
+      "gov_ingest_events": [
+        "ADD"
+      ],
+      "has_stale_clause": false,
+      "has_gov_clause": true,
+      "verdict": "GOVERNING_ONLY (correction landed)"
+    },
+    {
+      "id": "trap-09",
+      "governingNum": 54,
+      "stale_clause": "[[Historical rankings of presidents of the United States#Scholar survey summary|scholars / him]]",
+      "gov_clause": "scholars / him",
+      "n_survivors": 0,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": false,
+      "has_gov_clause": false,
+      "verdict": "STORE_EMPTY"
+    },
+    {
+      "id": "trap-10",
+      "governingNum": 37,
+      "stale_clause": "28, / announced that the United States had / alongside Israel, declaring that / objective was to destroy [[Iran's ballis",
+      "gov_clause": "28th, / with Israel with / stated goal / [[regime change]].<ref>{{Cite / 2025}}</ref>",
+      "n_survivors": 3,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": true,
+      "has_gov_clause": false,
+      "verdict": "STALE_ONLY (correction silently dropped)"
+    },
+    {
+      "id": "trap-11",
+      "governingNum": 67,
+      "stale_clause": "other recreational",
+      "gov_clause": "Trump says he has never drunk alcohol, smoked cigarettes, or used drugs,<ref>{{cite news |url=https://www.nytimes.com/20",
+      "n_survivors": 4,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": true,
+      "has_gov_clause": true,
+      "verdict": "BOTH_PRESENT (no overwrite; stale clause never removed)"
+    },
+    {
+      "id": "trap-12",
+      "governingNum": 72,
+      "stale_clause": "[[Pardon of January 6 United States Capitol attack defendants|pardoning around 1,500 January&nbsp;6 rioters]] and / the ",
+      "gov_clause": "its targeting / society, persecution / people, mass deportation / 550",
+      "n_survivors": 3,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": true,
+      "has_gov_clause": true,
+      "verdict": "BOTH_PRESENT (no overwrite; stale clause never removed)"
+    },
+    {
+      "id": "trap-13",
+      "governingNum": 67,
+      "stale_clause": "[[Teetotalism|never / alcohol]],",
+      "gov_clause": "never / alcohol,",
+      "n_survivors": 4,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": false,
+      "has_gov_clause": false,
+      "verdict": "NEITHER_CLAUSE_DETECTED (extraction paraphrased past our detector)"
+    },
+    {
+      "id": "trap-14",
+      "governingNum": 40,
+      "stale_clause": "Trump / energy / in the [[battery theory]], a [[Fringe theory|fringe belief]] that human beings are born / energy that /",
+      "gov_clause": "He / energy, / the body is \"like a battery, / energy\" which / exercise.<ref>{{cite",
+      "n_survivors": 3,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": true,
+      "has_gov_clause": false,
+      "verdict": "STALE_ONLY (correction silently dropped)"
+    },
+    {
+      "id": "trap-15",
+      "governingNum": 71,
+      "stale_clause": "China]], and engaged in a [[2018\u201319 Korean peace process|failed peace process in Korea]].",
+      "gov_clause": "and / China]].",
+      "n_survivors": 5,
+      "gov_ingest_events": [
+        "ADD"
+      ],
+      "has_stale_clause": false,
+      "has_gov_clause": false,
+      "verdict": "NEITHER_CLAUSE_DETECTED (extraction paraphrased past our detector)"
+    },
+    {
+      "id": "trap-16",
+      "governingNum": 53,
+      "stale_clause": "has / Trump|promoted numerous",
+      "gov_clause": "Trump|promotes",
+      "n_survivors": 1,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": false,
+      "has_gov_clause": false,
+      "verdict": "NEITHER_CLAUSE_DETECTED (extraction paraphrased past our detector)"
+    },
+    {
+      "id": "trap-17",
+      "governingNum": 37,
+      "stale_clause": "Files released during that time alleged that Trump had sexually abused several young girls trafficked by Epstein in the ",
+      "gov_clause": "Trump had a 15-year friendship with [[Jeffrey Epstein]]. Persons who knew them at the time said they frequently hit on a",
+      "n_survivors": 4,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": true,
+      "has_gov_clause": true,
+      "verdict": "BOTH_PRESENT (no overwrite; stale clause never removed)"
+    },
+    {
+      "id": "trap-18",
+      "governingNum": 49,
+      "stale_clause": "false, / or]] [[List of conspiracy theories promoted by Donald Trump|conspiracy theory-promoting]] statements",
+      "gov_clause": "false or / statements]] / He [[List of conspiracy theories promoted by Donald Trump|promotes conspiracy theories]].",
+      "n_survivors": 1,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": false,
+      "has_gov_clause": false,
+      "verdict": "NEITHER_CLAUSE_DETECTED (extraction paraphrased past our detector)"
+    },
+    {
+      "id": "trap-19",
+      "governingNum": 25,
+      "stale_clause": "2017.<ref>{{cite / |last1=Fahrenthold |first1=David |author-link1=David Fahrenthold |last2=Rucker |first2=Philip |last3=",
+      "gov_clause": "2017. The day after his inauguration, an estimated 2.6&nbsp;million people worldwide, including 500,000 in Washington, D",
+      "n_survivors": 2,
+      "gov_ingest_events": [
+        "ADD"
+      ],
+      "has_stale_clause": false,
+      "has_gov_clause": true,
+      "verdict": "GOVERNING_ONLY (correction landed)"
+    },
+    {
+      "id": "trap-20",
+      "governingNum": 37,
+      "stale_clause": "Those policies can significantly hurt American economy as countries responsible for more than two thirds of the US goods",
+      "gov_clause": "He promoted [[climate change denial]] and misinformation,<ref>{{cite news |last1=Joselow |first1=Maxine |last2=Plumer |f",
+      "n_survivors": 4,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": true,
+      "has_gov_clause": true,
+      "verdict": "BOTH_PRESENT (no overwrite; stale clause never removed)"
+    },
+    {
+      "id": "trap-21",
+      "governingNum": 70,
+      "stale_clause": "currently serving as",
+      "gov_clause": "who is",
+      "n_survivors": 1,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": true,
+      "has_gov_clause": false,
+      "verdict": "STALE_ONLY (correction silently dropped)"
+    },
+    {
+      "id": "trap-22",
+      "governingNum": 43,
+      "stale_clause": "politics. Trump's actions, especially in his second term, have been described as authoritarian and contributing to [[Dem",
+      "gov_clause": "politics.After",
+      "n_survivors": 1,
+      "gov_ingest_events": [
+        "ADD"
+      ],
+      "has_stale_clause": false,
+      "has_gov_clause": false,
+      "verdict": "NEITHER_CLAUSE_DETECTED (extraction paraphrased past our detector)"
+    },
+    {
+      "id": "trap-23",
+      "governingNum": 43,
+      "stale_clause": "[[Georgia election racketeering prosecution|A racketeering case]] related to the 2020 election in Georgia is pending.",
+      "gov_clause": "In 2023, Trump was found liable in civil cases [[E. Jean Carroll v. Donald J. Trump|for sexual abuse and defamation]] an",
+      "n_survivors": 3,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": true,
+      "has_gov_clause": true,
+      "verdict": "BOTH_PRESENT (no overwrite; stale clause never removed)"
+    },
+    {
+      "id": "trap-24",
+      "governingNum": 70,
+      "stale_clause": "previously",
+      "gov_clause": "'''Donald John Trump''' (born June 14, 1946) is an American politician, media personality, and businessman who is the 47",
+      "n_survivors": 1,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": true,
+      "has_gov_clause": true,
+      "verdict": "BOTH_PRESENT (no overwrite; stale clause never removed)"
+    },
+    {
+      "id": "trap-25",
+      "governingNum": 37,
+      "stale_clause": "On October 20\u201323, 2025, he had wrecking crews [[East Wing#Demolition|demolish the White House's East Wing ]] without pri",
+      "gov_clause": "Trump began his second term upon [[Second inauguration of Donald Trump|his inauguration]] on January&nbsp;20, 2025.<ref>",
+      "n_survivors": 3,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": true,
+      "has_gov_clause": true,
+      "verdict": "BOTH_PRESENT (no overwrite; stale clause never removed)"
+    },
+    {
+      "id": "trap-26",
+      "governingNum": 63,
+      "stale_clause": "[[Fordham University]] (attended)<br>[[University",
+      "gov_clause": "[[University",
+      "n_survivors": 1,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": false,
+      "has_gov_clause": false,
+      "verdict": "NEITHER_CLAUSE_DETECTED (extraction paraphrased past our detector)"
+    },
+    {
+      "id": "trap-27",
+      "governingNum": 60,
+      "stale_clause": "[[Islam_by_country#Countries|Muslim-majority countries]],",
+      "gov_clause": "Muslim-majority countries,",
+      "n_survivors": 1,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": false,
+      "has_gov_clause": true,
+      "verdict": "GOVERNING_ONLY (correction landed)"
+    },
+    {
+      "id": "trap-28",
+      "governingNum": 37,
+      "stale_clause": "On September 8, 2025, a photograph of the subject of the disputed birthday greeting issue was submitted by the Epstein e",
+      "gov_clause": "Following his reelection, Trump launched lawsuits and created blacklists against certain media outlets, and took over th",
+      "n_survivors": 6,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": true,
+      "has_gov_clause": true,
+      "verdict": "BOTH_PRESENT (no overwrite; stale clause never removed)"
+    },
+    {
+      "id": "trap-29",
+      "governingNum": 43,
+      "stale_clause": "workers]].",
+      "gov_clause": "workers]] and aggressively [[Persecution of transgender people under the second Donald Trump administration|moving again",
+      "n_survivors": 3,
+      "gov_ingest_events": [
+        "ADD"
+      ],
+      "has_stale_clause": false,
+      "has_gov_clause": true,
+      "verdict": "GOVERNING_ONLY (correction landed)"
+    },
+    {
+      "id": "trap-30",
+      "governingNum": 49,
+      "stale_clause": "for a U.S. president.",
+      "gov_clause": "in American politics.",
+      "n_survivors": 0,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": false,
+      "has_gov_clause": false,
+      "verdict": "STORE_EMPTY"
+    },
+    {
+      "id": "trap-31",
+      "governingNum": 70,
+      "stale_clause": "also",
+      "gov_clause": "'''Donald John Trump''' (born June 14, 1946) is an American politician, media personality, and businessman who is the 47",
+      "n_survivors": 1,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": false,
+      "has_gov_clause": true,
+      "verdict": "GOVERNING_ONLY (correction landed)"
+    },
+    {
+      "id": "trap-32",
+      "governingNum": 37,
+      "stale_clause": "In July 2025, Paramount parent company to ''60 Minutes'' agreed to pay Trump $16 million USD for its [[Kamala Harris]] s",
+      "gov_clause": "The first Trump presidency reduced formal press briefings from about one&nbsp;hundred in 2017 to about half that in 2018",
+      "n_survivors": 4,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": true,
+      "has_gov_clause": true,
+      "verdict": "BOTH_PRESENT (no overwrite; stale clause never removed)"
+    },
+    {
+      "id": "trap-33",
+      "governingNum": 70,
+      "stale_clause": "currently",
+      "gov_clause": "'''Donald John Trump''' (born June 14, 1946) is an American politician, media personality, and businessman who is the 47",
+      "n_survivors": 1,
+      "gov_ingest_events": [
+        "NONE (nothing extracted as new)"
+      ],
+      "has_stale_clause": true,
+      "has_gov_clause": true,
+      "verdict": "BOTH_PRESENT (no overwrite; stale clause never removed)"
+    }
+  ],
+  "tensions": [
+    {
+      "id": "tension-01",
+      "article": "Donald Trump",
+      "num": 15,
+      "topic": "2016 election result phrasing in the lead",
+      "n_survivors": 0,
+      "has_positionA": false,
+      "has_positionB": false,
+      "verdict": "STORE_EMPTY",
+      "survivor_texts": []
+    },
+    {
+      "id": "tension-02",
+      "article": "Donald Trump",
+      "num": 48,
+      "topic": "COVID-19 response wording in the lead",
+      "n_survivors": 2,
+      "has_positionA": true,
+      "has_positionB": true,
+      "verdict": "BOTH_KEPT (preserved, not masqueraded)",
+      "survivor_texts": [
+        "User stated that Trump reacted slowly to the COVID-19 pandemic by minimizing the threat, ignoring or contradicting recommendations from health officials, and promoting false information about unproven treatments.",
+        "Under Trump's administration, the United States recorded more confirmed COVID-19 cases than any other country, and the crisis prompted the largest economic stimulus in U.S. history."
+      ]
+    },
+    {
+      "id": "tension-03",
+      "article": "Donald Trump",
+      "num": 56,
+      "topic": "Russian bounties wording",
+      "n_survivors": 2,
+      "has_positionA": true,
+      "has_positionB": true,
+      "verdict": "BOTH_KEPT (preserved, not masqueraded)",
+      "survivor_texts": [
+        "User mentioned that Trump did not confront Putin over Russia's alleged bounties on American soldiers in Afghanistan, which were later reported by the Biden administration to be held with only low-to-moderate confidence.",
+        "User mentioned that Trump never confronted Putin over Russia's alleged bounties for killing American soldiers in Afghanistan."
+      ]
+    },
+    {
+      "id": "tension-04",
+      "article": "Donald Trump",
+      "num": 65,
+      "topic": "Abraham Accords framing",
+      "n_survivors": 2,
+      "has_positionA": true,
+      "has_positionB": true,
+      "verdict": "BOTH_KEPT (preserved, not masqueraded)",
+      "survivor_texts": [
+        "The Abraham Accords were a significant diplomatic achievement of the Trump administration, under which Israel normalized relations with the UAE, Bahrain, Morocco, and Sudan.",
+        "User believes the Abraham Accords were largely ceremonial agreements between states already at de facto peace, with limited personal involvement from Trump, and suggests they are better covered in dedicated foreign-policy articles."
+      ]
+    },
+    {
+      "id": "tension-05",
+      "article": "Joe Biden",
+      "num": 2,
+      "topic": "gaffes subsection inclusion",
+      "n_survivors": 2,
+      "has_positionA": true,
+      "has_positionB": true,
+      "verdict": "BOTH_KEPT (preserved, not masqueraded)",
+      "survivor_texts": [
+        "User believes that a dedicated subsection on Joe Biden's gaffes in his biography would give undue weight to the topic.",
+        "User believes Joe Biden's biography should include a subsection on his gaffes, as his speech mistakes are extensively covered across the political spectrum and he has referred to himself as a 'gaffe machine'."
+      ]
+    },
+    {
+      "id": "tension-06",
+      "article": "COVID-19 pandemic",
+      "num": 7,
+      "topic": "lead infobox map prominence",
+      "n_survivors": 2,
+      "has_positionA": true,
+      "has_positionB": true,
+      "verdict": "BOTH_KEPT (preserved, not masqueraded)",
+      "survivor_texts": [
+        "User prefers the confirmed-cases-per-capita map to be featured most prominently in the lead infobox, with the deaths-per-capita map as secondary.",
+        "User prefers the deaths-per-capita map to be featured most prominently in the lead infobox, as they consider deaths the most significant measure of the pandemic's impact."
+      ]
+    }
+  ]
+}
