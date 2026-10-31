@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Release metadata drift; MCP registry publishing** (slrf) — `server.json` (1.32.0) and `manifest.json` (3.13.1, no tools) had drifted from npm. New `npm run sync:release` syncs both to `package.json` and lists every registered tool in the MCPB manifest; `test/release-metadata.test.ts` fails CI on drift. A tag push now also publishes `server.json` to the official MCP registry via GitHub OIDC (pinned, checksummed `mcp-publisher`).
+- **Tension log fields can no longer forge lines or blocks** — every free-text value written to `.daftari/tensions.md` (title, claims, logged-by, principal, positions, readers, resolution rationale/references) is flattened to one line at the single render boundary. Before, a line break in any of them could inject a `- **Label:**` line (e.g. a fake `Status: resolved`) or a whole `## ` block on re-parse.
+
+### Changed
+
+- **`default_role` config key; `--init` vaults default to `admin`** (kg64) — a stdio server started without `--role` now runs as the config's `default_role` instead of silently becoming the deny-all guest. `daftari --init` scaffolds `default_role: admin`, so a fresh local vault works out of the box. Existing vaults without the key keep the deny-all guest default; `daftari serve` ignores it. An undeclared role name is a malformed-config error.
+
+### Security
+
+- **Board session cookies are bound to their deployment** (3p4.8) — the signed session payload now carries a per-vault random audience (`.daftari/session-audience`, gitignored, generated on first `serve`), and `/board` accepts a cookie only if it matches this vault and the configured `server.auth.session.maps_to` user and role. A validly-signed cookie from another deployment sharing the key is rejected. Existing board sessions are invalidated once; log in again. Docs now require a unique signing key per deployment.
+
 ## [3.17.0] - 2026-10-25
 
 ### Added

@@ -176,6 +176,7 @@ const scopedHumanAccess: AccessContext = {
 function makeConfig(roles: Record<string, RoleConfig>, principals: string[] = []): DaftariConfig {
   return {
     roles,
+    defaultRole: null,
     schemaExtensions: [],
     indexedFields: [],
     hooks: { preWrite: [], preWriteTransform: [] },

@@ -18,6 +18,14 @@
 # but never got a Releases page — the page was a forgotten manual step).
 # Attaching artifacts (the .mcpb) to the page remains a maintainer step:
 #   gh release upload vX.Y.Z daftari-X.Y.Z.mcpb
+#
+# After npm, the same tag publishes server.json to the official MCP registry
+# (registry.modelcontextprotocol.io) via GitHub OIDC — the io.github.mavaali/*
+# namespace is proven by this repo's identity, no secret. Before tagging, run
+# `npm run build && npm run sync:release` in the release PR so server.json and
+# manifest.json carry the new version; test/release-metadata.test.ts (run by
+# CI and by the publish job's `npm test`) fails on drift, and the publish job
+# checks all three version fields against the tag before `npm publish`.
 
 name: Release
 
@@ -56,14 +64,16 @@ jobs:
       - name: Update npm for OIDC support
         run: npm install -g npm@latest
 
-      - name: Verify tag matches package.json version
+      - name: Verify tag matches package.json, server.json and manifest.json
         run: |
           TAG="${GITHUB_REF_NAME#v}"
-          PKG="$(node -p "require('./package.json').version")"
-          if [ "$TAG" != "$PKG" ]; then
-            echo "tag v$TAG does not match package.json version $PKG" >&2
-            exit 1
-          fi
+          for f in package.json server.json manifest.json; do
+            V="$(node -p "require('./$f').version")"
+            if [ "$TAG" != "$V" ]; then
+              echo "tag v$TAG does not match $f version $V — run npm run sync:release" >&2
+              exit 1
+            fi
+          done
 
       - run: npm publish
 
@@ -103,3 +113,35 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
             --notes-file "$RUNNER_TEMP/notes.md"
+
+  # Publish server.json to the official MCP registry (slrf). Separate job,
+  # after npm: the registry verifies the npm package's `mcpName`, so the
+  # version must exist on npm first. mcp-publisher is pinned + checksummed —
+  # it runs with this job's OIDC token.
+  mcp-registry:
+    runs-on: ubuntu-latest
+    needs: publish
+    permissions:
+      id-token: write # OIDC login for the io.github.mavaali namespace
+      contents: read
+    env:
+      MCP_PUBLISHER_VERSION: v1.8.1
+      MCP_PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify server.json version matches the tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          SRV="$(node -p "require('./server.json').version")"
+          if [ "$TAG" != "$SRV" ]; then
+            echo "server.json version $SRV does not match tag v$TAG — run npm run sync:release" >&2
+            exit 1
+          fi
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSL -o mcp-publisher.tar.gz \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          echo "${MCP_PUBLISHER_SHA256}  mcp-publisher.tar.gz" | sha256sum -c -
+          tar xzf mcp-publisher.tar.gz mcp-publisher
+      - run: ./mcp-publisher login github-oidc
+      - run: ./mcp-publisher publish
