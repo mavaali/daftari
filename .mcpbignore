@@ -16,3 +16,7 @@ docs/
 .claude/
 .vscode/
 .idea/
+
+# Agent Plugins package (distributed via .agents/plugins/marketplace.json).
+plugins/
+.agents/

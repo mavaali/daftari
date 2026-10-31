@@ -65,6 +65,7 @@ always valid even though you never typed those two fields.
 | `ttl_days` | number or `null` | `null` | Review horizon. After `ttl_days` past `updated`, the document is flagged stale by `vault_lint`. `null` means it never goes stale. |
 | `valid_from` | date or `null` | `null` | First date the document's claim was true **in the world**. Valid time, not transaction time — see [below](#valid_from--valid_until--valid-time). |
 | `valid_until` | date or `null` | `null` | First date the claim was **no longer** true — the window is half-open, so this day is excluded. `null` with a `valid_from` means open-ended, not unknown. |
+| `said_at` | date-time or date, or absent | absent | When the source message a distilled claim came from was said. A fact about the source, not valid time — see [below](#said_at--when-the-source-said-it). Written only when known. |
 | `tags` | list of strings | `[]` | Free-form tags. `vault_index` can filter by them conjunctively. |
 | `describes` | list of strings | `[]` | Code paths this document documents — doc-to-code bindings. See [below](#describes--doc-to-code-bindings). |
 | `questions_answered` | list of strings | `[]` | Questions this document settles. The tool-queryable form of the `## Questions Answered` body section — see [below](#the-questions-answered--questions-raised-pattern). |
@@ -226,6 +227,34 @@ the declaration: existing values in your documents are read as-is by the
 built-in field, which means a closed, day-granular valid-time interval. If your
 field meant something else, rename the extension (for example
 `effective_from`) and the vault will load.
+
+### `said_at` — when the source said it
+
+`daftari distill` stamps `said_at` on each proposed belief: the timestamp of the
+source message the claim was extracted from, or the earliest one when a claim
+draws on several. The extraction model cites message timestamps from the
+transcript window; only a timestamp that matches a real message in that window
+is accepted, and the field is omitted when none does.
+
+```yaml
+said_at: '2026-05-01T10:02:00'
+```
+
+The value is an ISO 8601 date-time as the source recorded it, with no timezone
+normalization: chat exports carry the exporting device's local time, Claude
+session logs carry UTC. A hand-written date (`2026-05-01`) is also accepted.
+
+**It is not valid time.** `said_at` records when something was said, which is
+a fact about the source. It says nothing about when the claim held in the
+world, so nothing copies it into `valid_from`, the same rule as above: valid
+time is authored, never inferred. A decision recorded on 1 May can describe a
+policy that started in March.
+
+Like `valid_from`, it never blocks a write. A malformed string is kept
+verbatim with no issue; only a non-string value (a number, a list) is flagged.
+The field is written only when set, so documents without it are unchanged. A
+`said_at` schema extension now collides with the built-in field and fails
+config load; rename it.
 
 ## Markdown body conventions
 

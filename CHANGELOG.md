@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Release metadata drift; MCP registry publishing** (slrf) — `server.json` (1.32.0) and `manifest.json` (3.13.1, no tools) had drifted from npm. New `npm run sync:release` syncs both to `package.json` and lists every registered tool in the MCPB manifest; `test/release-metadata.test.ts` fails CI on drift. A tag push now also publishes `server.json` to the official MCP registry via GitHub OIDC (pinned, checksummed `mcp-publisher`).
 
+## [3.17.0] - 2026-10-25
+
+### Added
+
+- **Daftari as a plugin for Claude Code, Cowork, ChatGPT, and Codex** — `plugins/daftari/` carries both an [Agent Plugins](https://agent-plugins.org) manifest (ChatGPT / Codex, via `.agents/plugins/marketplace.json`) and a Claude plugin manifest (Claude Code / Cowork, via `.claude-plugin/marketplace.json`), sharing one `daftari-memory` skill that tells the agent when to search, write drafts with truthful provenance, supersede, and leave contradictions visible. Claude installs prompt for a **vault folder**. See `docs/agent-plugin.md`.
+- **`--init-if-missing`** — the stdio server seeds an empty vault (no example documents; summary to stderr so stdout stays JSON-RPC) when `--vault` is missing or an empty folder (Finder's `.DS_Store` ignored), serves an existing vault as-is, and refuses a non-empty folder that is not a vault rather than serving arbitrary files as one.
+
 ## [3.16.0] - 2026-10-03
 
 ### Added

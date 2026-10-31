@@ -76,6 +76,28 @@ export interface LlmClient {
   ): Promise<Result<CompleteWithToolsResult, CortexEvalError>>;
 }
 
+// Models that reject non-default sampling params (temperature/top_p/top_k) with
+// an HTTP 400 ("`temperature` is deprecated for this model"): every Opus,
+// Sonnet and Fable generation from 5 on, plus Opus 4.7/4.8. Haiku 4.5, Sonnet
+// 4.6, Opus 4.6 and older accept them. Matches bare ids (claude-sonnet-5-5,
+// optional date or [1m] suffix) and provider-prefixed ones
+// (anthropic/claude-sonnet-5.5). The one place this capability is decided —
+// both transports and completeJsonWithRetry's retry nudge consult it.
+const REJECTS_SAMPLING_PARAMS =
+  /(?:^|[/.])claude-(?:(?:opus|sonnet|fable)-(?:[5-9]|\d{2,})(?:[-.]\d+)*|opus-4[-.][78])(?=$|[^\d])/i;
+
+export function modelRejectsSamplingParams(model: string): boolean {
+  return REJECTS_SAMPLING_PARAMS.test(model);
+}
+
+// The temperature to actually send for `model`: the requested one, or
+// undefined when the model rejects sampling params. Callers report this value
+// as effectiveTemperature, so provenance never claims a temperature that was
+// not sent.
+export function sendableTemperature(model: string, temperature?: number): number | undefined {
+  return modelRejectsSamplingParams(model) ? undefined : temperature;
+}
+
 // `injected` lets tests substitute a stand-in SDK client so the create call is
 // observable; production passes nothing and a real Anthropic instance is built.
 export function createAnthropicClient(injected?: Pick<Anthropic, "messages">): LlmClient {
@@ -84,13 +106,14 @@ export function createAnthropicClient(injected?: Pick<Anthropic, "messages">): L
   const client = injected ?? new Anthropic({ apiKey });
 
   const complete = async (opts: CompleteOpts): Promise<Result<CompleteResult, CortexEvalError>> => {
+    const temperature = sendableTemperature(opts.model, opts.temperature);
     return retry(async () => {
       const res = await client.messages.create({
         model: opts.model,
         max_tokens: opts.maxTokens ?? 4096,
         system: opts.system,
         messages: [{ role: "user", content: opts.user }],
-        ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
+        ...(temperature !== undefined ? { temperature } : {}),
       });
       const text = res.content
         .filter((b): b is { type: "text"; text: string; citations: null } => b.type === "text")
@@ -104,7 +127,7 @@ export function createAnthropicClient(injected?: Pick<Anthropic, "messages">): L
         // The served model the API returned (distinct from opts.model) and the
         // temperature we actually sent (undefined ⇒ none sent). Metadata only.
         servedModel: res.model,
-        effectiveTemperature: opts.temperature,
+        effectiveTemperature: temperature,
       });
     });
   };
@@ -127,6 +150,7 @@ export function createAnthropicClient(injected?: Pick<Anthropic, "messages">): L
     let totalIn = 0;
     let totalOut = 0;
     let lastStop = "unknown";
+    const temperature = sendableTemperature(opts.model, opts.temperature);
 
     for (let round = 0; round < maxRounds; round++) {
       const res = await retry(async () =>
@@ -139,7 +163,7 @@ export function createAnthropicClient(injected?: Pick<Anthropic, "messages">): L
             tools: opts.tools as any,
             // biome-ignore lint/suspicious/noExplicitAny: SDK types
             messages: messages as any,
-            ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
+            ...(temperature !== undefined ? { temperature } : {}),
           }),
         ),
       );
@@ -305,7 +329,12 @@ export async function completeJsonWithRetry(
   }
 
   const retrySys = `${sysWithSchema}\n\nYour previous reply was NOT valid JSON. Return ONLY the raw JSON value — no prose, no explanation, no markdown code fences.`;
-  const retryTemp = (opts.temperature ?? 0) === 0 ? 0.2 : opts.temperature;
+  // No nudge for a model that rejects sampling params: it would 400 the retry.
+  const retryTemp = modelRejectsSamplingParams(opts.model)
+    ? undefined
+    : (opts.temperature ?? 0) === 0
+      ? 0.2
+      : opts.temperature;
   const second = await complete({ ...opts, system: retrySys, temperature: retryTemp });
   if (!second.ok) return second;
   try {
