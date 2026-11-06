@@ -42,6 +42,7 @@ const LEDGER_CLAUSE: Record<LintCheckName, string> = {
   malformedPins: "carries a code-anchor pin the ledger cannot read",
   verbatimQuoteOverrun: "quotes its source verbatim past the compiler's budget",
   unverifiableSourceRefs: "cites evidence the ledger cannot presently verify",
+  danglingAmends: "claims to amend what cannot be found",
 };
 
 // "1 matter" / "3 matters" — a small deterministic pluralizer for the copy.

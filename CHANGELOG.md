@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`amends` frontmatter: link a later entry to an earlier one it amends or fulfils, without replacing it** (#643) — for a claim that stays true as written, so `vault_supersede` would be wrong. Declared on the later document through `vault_write`, so the earlier file is never written and its review clock does not reset. Search hits and `vault_read` on the earlier document show `amendedBy` (path, title, status, preview), and the search summary line reads `amended by: <path>`. Unreadable amenders are omitted, with no marker or count. Unresolvable targets return `amends_warnings` and appear under the new `danglingAmends` lint check. `amends` is now a reserved built-in: a vault declaring a schema extension of that name must rename it. The index schema bumps to 13, so the first start after upgrade rebuilds the index.
+
 ### Fixed
 
 - **Release metadata drift; MCP registry publishing** (slrf) — `server.json` (1.32.0) and `manifest.json` (3.13.1, no tools) had drifted from npm. New `npm run sync:release` syncs both to `package.json` and lists every registered tool in the MCPB manifest; `test/release-metadata.test.ts` fails CI on drift. A tag push now also publishes `server.json` to the official MCP registry via GitHub OIDC (pinned, checksummed `mcp-publisher`).

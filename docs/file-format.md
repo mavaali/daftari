@@ -68,6 +68,7 @@ always valid even though you never typed those two fields.
 | `said_at` | date-time or date, or absent | absent | When the source message a distilled claim came from was said. A fact about the source, not valid time — see [below](#said_at--when-the-source-said-it). Written only when known. |
 | `tags` | list of strings | `[]` | Free-form tags. `vault_index` can filter by them conjunctively. |
 | `describes` | list of strings | `[]` | Code paths this document documents — doc-to-code bindings. See [below](#describes--doc-to-code-bindings). |
+| `amends` | list of strings | absent | Vault-relative paths of earlier documents this one amends or fulfils without replacing them. See [below](#amends--amending-without-replacing). Written only when non-empty. |
 | `questions_answered` | list of strings | `[]` | Questions this document settles. The tool-queryable form of the `## Questions Answered` body section — see [below](#the-questions-answered--questions-raised-pattern). |
 | `questions_raised` | list of strings | `[]` | Open questions this document leaves. `vault_index` filters on it via `has_unanswered`; `vault_lint` flags any entry no document answers. |
 
@@ -255,6 +256,41 @@ verbatim with no issue; only a non-string value (a number, a list) is flagged.
 The field is written only when set, so documents without it are unchanged. A
 `said_at` schema extension now collides with the built-in field and fails
 config load; rename it.
+
+### `amends` — amending without replacing
+
+Some later entries change what a reader should conclude from an earlier one
+without making it false. "This setting stays off until re-enabled" is still true
+as written after the setting is re-enabled, so `vault_supersede` would be wrong,
+but a reader of that entry alone gets the wrong current state.
+
+`amends` records this on the **later** document:
+
+```yaml
+amends:
+  - decisions/setting-off.md
+```
+
+Set it through `vault_write`'s `frontmatter`; `amends: null` clears it. Nothing
+writes to the earlier file: its bytes, `updated` date, and review clock stay
+exactly as they were. The relation is inverted at index time, so search hits and
+`vault_read` on the earlier document show the later one under `amendedBy`, with
+its title, status, and a preview. The search summary line reads
+`amended by: <path>`.
+
+- **Fulfilled counts too.** There is one relation, because a reader does the same
+  thing either way: go read the later document. What changed belongs in its body.
+- **Not supersession.** An amended document keeps its status and is never demoted
+  in search. A document can be both superseded and amended; each shows separately.
+- **One hop.** Only direct amenders are listed, each with its own status. An
+  amender's supersession chain is not followed.
+- **Access.** An amender the caller cannot read is omitted, with no marker and no
+  count, so a narrow role sees the earlier document as if nothing amended it.
+- **Enriched surfaces only.** The raw file, its git history, `daftari asof`, and
+  `vault_read` on a federated mount show nothing on the earlier document.
+- **Bad paths.** A target that resolves to no readable document, or that names the
+  document itself, returns `amends_warnings` on the write and appears under
+  `vault_lint`'s `danglingAmends`. The write still lands.
 
 ## Markdown body conventions
 

@@ -270,7 +270,7 @@ describe("index-db", () => {
     expect(documentCount(db)).toBe(0);
     expect(embeddingCount(db)).toBe(1);
     expect(db.prepare("SELECT COUNT(*) AS n FROM document_fields").get()).toEqual({ n: 0 });
-    expect(getMeta(db, "schema_version")).toBe("12");
+    expect(getMeta(db, "schema_version")).toBe("13");
     expect(getMeta(db, "vault_manifest")).toBeNull();
   });
 
@@ -293,7 +293,7 @@ describe("index-db", () => {
     db = reopened.value;
 
     expect(documentCount(db)).toBe(0);
-    expect(getMeta(db, "schema_version")).toBe("12");
+    expect(getMeta(db, "schema_version")).toBe("13");
     // The fresh index includes the document-fields projection in addition to
     // the document/chunk/cache/meta tables and both virtual search tables.
     const tables = db
@@ -306,6 +306,7 @@ describe("index-db", () => {
     expect(names.has("chunks")).toBe(true);
     expect(names.has("embeddings")).toBe(true);
     expect(names.has("document_fields")).toBe(true);
+    expect(names.has("doc_amends")).toBe(true);
     expect(names.has("documents_fts")).toBe(true);
     expect(names.has("embeddings_vec")).toBe(true);
     // The new embeddings table now has a `dim` column — confirm via a write

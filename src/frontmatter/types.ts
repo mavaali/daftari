@@ -121,6 +121,13 @@ export interface BuiltinFrontmatter {
   // `repo:path::symbol` (a bare `path` resolves against the doc's own repo).
   // A first-class relationship like `sources` / `superseded_by`. Default [].
   describes: string[];
+  // Earlier documents this one amends or fulfils without replacing them: the
+  // earlier claim stays true as written, but its readers should also read
+  // this. Declared here on the LATER document and inverted by the index, so
+  // the earlier file is never written (unlike superseded_by, a lifecycle
+  // change to the predecessor). Optional so hand-built Frontmatter literals
+  // stay valid; absent means none.
+  amends?: string[];
   // Optional epistemic-surface fields. They mirror the body's `## Questions
   // Answered` / `## Questions Raised` convention as structured, tool-queryable
   // metadata. Default to [] when absent.
@@ -162,6 +169,7 @@ export const BUILTIN_FRONTMATTER_FIELDS = [
   "said_at",
   "tags",
   "describes",
+  "amends",
   "questions_answered",
   "questions_raised",
   "subjects",
