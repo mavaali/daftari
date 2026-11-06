@@ -22,8 +22,9 @@ type EdgeDoc = Pick<LoadedDoc, "path"> & {
 // Resolved path → successor path. A pointer that does not resolve is no edge:
 // brokenSourceRefs owns dangling references.
 function supersedeEdges(docs: EdgeDoc[], edits: readonly SupersedeEdit[] = []) {
-  const paths = [...docs, ...edits.map(([path]) => ({ path }))];
-  const { byPath, byBasename } = buildPathIndexes(paths);
+  // Deduped: buildPathIndexes reads a repeated path as an ambiguous basename.
+  const paths = new Set([...docs.map((d) => d.path), ...edits.map(([path]) => path)]);
+  const { byPath, byBasename } = buildPathIndexes([...paths].map((path) => ({ path })));
   const edges = new Map<string, string>();
   const put = (path: string, supersededBy: string | null) => {
     const target = supersededBy ? resolveLink(supersededBy, path, byPath, byBasename) : null;

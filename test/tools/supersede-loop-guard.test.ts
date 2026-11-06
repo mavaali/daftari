@@ -126,6 +126,21 @@ describe("supersede loop guard", () => {
       expect(result.ok).toBe(false);
     }, 60_000);
 
+    it("sees the loop through a bare-name pointer across collections", async () => {
+      // resolveLink's basename fallback, not its same-directory one.
+      await seed(vault, "pricing/a.md", { status: "superseded", superseded_by: "unique-b" });
+      await seed(vault, "competitive-intel/unique-b.md");
+
+      const result = await vaultSupersede(vault, {
+        old_path: "competitive-intel/unique-b.md",
+        new_path: "pricing/a.md",
+        agent: AGENT,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(await statusOf(vault, "competitive-intel/unique-b.md")).toEqual(["canonical", null]);
+    }, 60_000);
+
     describe("a chain through a document the caller cannot read", () => {
       async function seedHiddenHop() {
         await seed(vault, "pricing/a.md");
