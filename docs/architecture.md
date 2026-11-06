@@ -1168,6 +1168,14 @@ quietly settled. That is the entire product, in one fact's lifetime.
      leaking neither path nor title. daftari authors the relation; the
      successor snippet is read verbatim from indexed content, never
      synthesized.
+   - **Amendment foregrounding.** A document that stays true as written
+     but has a later document declaring `amends` on it gains `amendedBy`:
+     direct amenders only, each with its status. The relation is declared
+     on the later document and inverted by the `doc_amends` index table, so
+     the earlier file is never written. Unreadable amenders are omitted
+     with no marker: unlike a superseded document, an amended one carries
+     no mark of its own for a marker to restate. It is never an input to
+     ranking or to the suppression pass.
 
 A **write** (`vault_write`, `vault_append`, `vault_promote`,
 `vault_deprecate`, `vault_supersede`, `vault_merge`, `vault_set_confidence`):

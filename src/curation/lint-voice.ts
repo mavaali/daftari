@@ -43,6 +43,7 @@ const LEDGER_CLAUSE: Record<LintCheckName, string> = {
   verbatimQuoteOverrun: "quotes its source verbatim past the compiler's budget",
   unverifiableSourceRefs: "cites evidence the ledger cannot presently verify",
   supersedeChains: "follows a line of succession that never reaches a current entry",
+  danglingAmends: "claims to amend what cannot be found",
 };
 
 // "1 matter" / "3 matters" — a small deterministic pluralizer for the copy.

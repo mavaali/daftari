@@ -25,7 +25,7 @@ import { recordShadowAction } from "../curation/shadow.js";
 import { resolveVaultSourceRef } from "../curation/source-refs.js";
 import { stageActionWithConflictCheck } from "../curation/staged-actions.js";
 import { closesSupersedeLoop, type SupersedeEdit } from "../curation/supersede-chains.js";
-import { sourceReadable } from "../curation/tension-access.js";
+import { sourceReadable, sourceVerifiable } from "../curation/tension-access.js";
 import {
   type BlastDownstreamEntry,
   bucketHiddenDownstream,
@@ -87,6 +87,7 @@ import {
 import { normalizeIsoDate } from "../utils/dates.js";
 import { commit } from "../utils/git.js";
 import { sha256Hex } from "../utils/hash.js";
+import { canonicalRel } from "../utils/paths.js";
 import { readRunId } from "../utils/run-id.js";
 import type { MintedEntry, UnresolvedEntry } from "./pin-mint.js";
 import { mintDescribesPins } from "./pin-mint.js";
@@ -295,6 +296,9 @@ export function serializeDocument(
     ...(fm.said_at != null ? { said_at: fm.said_at } : {}),
     tags: fm.tags,
     describes: fm.describes,
+    // Emitted only when non-empty (the said_at convention), so documents that
+    // amend nothing stay byte-stable.
+    ...(fm.amends != null && fm.amends.length > 0 ? { amends: fm.amends } : {}),
     questions_answered: fm.questions_answered,
     questions_raised: fm.questions_raised,
     subjects: fm.subjects,
@@ -382,6 +386,11 @@ export interface WriteResult {
   // landed; nothing blocks, nothing is auto-fixed. The typed-channel half
   // (`sources`) is also a tier-0 lint finding (domainLeaks).
   domain_warnings?: string[];
+  // #643: `amends` targets that will surface on nothing. The relation lands on
+  // this document, so the writer cannot see a typo from the earlier one. A
+  // hidden target reads exactly like an absent one (no existence oracle). The
+  // write has landed; nothing blocks.
+  amends_warnings?: string[];
   // Set when a propose-only role's vault_write was coerced into a staged
   // `write` proposal (#235): the staged action's id/expiry, plus any pending
   // proposals already contesting the same target and the inter-proposal
@@ -984,6 +993,32 @@ export function performFrontmatterWrite(opts: {
     hasAccessContext: opts.access !== undefined,
     ...(opts.runId !== undefined ? { runId: opts.runId } : {}),
   });
+}
+
+// #643: advisory for `amends` targets that resolve to no document the caller
+// can read. Best-effort like generativeDomainRefs: index unavailability
+// degrades to silence.
+function unresolvedAmends(
+  vaultRoot: string,
+  amends: string[],
+  relPath: string,
+  access?: AccessContext,
+): string[] | null {
+  if (amends.length === 0) return null;
+  const db = openIndexForAccessOrNull(vaultRoot);
+  if (!db) return null;
+  try {
+    const warnings = amends.flatMap((target) => {
+      if (canonicalRel(target) === relPath) {
+        return [`amends '${target}' is this document; it will not surface anywhere`];
+      }
+      if (sourceVerifiable(db, access, target)) return [];
+      return [`amends '${target}' does not resolve to a document you can read`];
+    });
+    return warnings.length > 0 ? warnings : null;
+  } finally {
+    db.close();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1611,11 +1646,20 @@ export async function vaultWrite(
     },
     access,
   );
-  if (!isUpdate && warnings === null && pinMintOutcome === undefined) return written;
+  const amendsWarnings = unresolvedAmends(
+    vaultRoot,
+    stamped.amends ?? [],
+    resolved.value.relPath,
+    access,
+  );
+  if (!isUpdate && warnings === null && amendsWarnings === null && pinMintOutcome === undefined) {
+    return written;
+  }
   return ok({
     ...written.value,
     ...(isUpdate ? { supersede_hint: SUPERSEDE_HINT } : {}),
     ...(warnings ? { domain_warnings: warnings } : {}),
+    ...(amendsWarnings ? { amends_warnings: amendsWarnings } : {}),
     ...(pinMintOutcome !== undefined ? { pin_mint: pinMintOutcome } : {}),
   });
 }
@@ -3123,6 +3167,16 @@ const frontmatterProperty = {
         "Open questions this document raises (mirrors ## Questions Raised). " +
         "Surfaced by vault_lint's `unanswered-questions` check.",
     },
+    amends: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "Vault-relative paths of earlier documents this one amends or fulfils " +
+        "without replacing them: use this instead of vault_supersede when the " +
+        "earlier claim stays true as written. The earlier files are not touched; " +
+        "search hits and vault_read on them show this document as `amendedBy`. " +
+        "Set to null to clear.",
+    },
     describes: {
       type: "array",
       items: { type: "string" },
@@ -3187,6 +3241,15 @@ const domainWarningsProperty = {
     "#4 advisory epistemic-boundary warnings: this accumulation-domain write " +
     "references generative-domain documents the caller can read. Absent when " +
     "there is nothing to warn about. The write has already landed.",
+};
+
+const amendsWarningsProperty = {
+  type: "array",
+  items: { type: "string" },
+  description:
+    "Advisory: `amends` entries that resolve to no document the caller can " +
+    "read, or that name this document, so they will surface on nothing. Absent " +
+    "when every target resolves. The write has already landed.",
 };
 
 const pinMintProperty = {
@@ -3353,6 +3416,7 @@ export const writeTools: ToolDefinition[] = [
             "and its lineage instead. The write has already landed.",
         },
         domain_warnings: domainWarningsProperty,
+        amends_warnings: amendsWarningsProperty,
         pin_mint: pinMintProperty,
         staged_id: {
           type: "string",
