@@ -140,7 +140,11 @@ export const chainsTools: ToolDefinition[] = [
       const { count, chains } = value as VaultChainsResult;
       const replaced = chains.reduce((sum, c) => sum + c.replaced.length, 0);
       const flagged = chains.filter((c) => c.flags.length > 0).length;
-      return `${count} chains replacing ${replaced} documents, ${flagged} flagged`;
+      // A lone dangling or unforwarded document is a chain with nothing behind
+      // it. Named here so `count` reconciles against a tally of replacements.
+      const empty = chains.filter((c) => c.replaced.length === 0).length;
+      const emptyClause = empty > 0 ? `, ${empty} with nothing replaced` : "";
+      return `${count} chains replacing ${replaced} documents, ${flagged} flagged${emptyClause}`;
     },
     handler: (vaultRoot, args, access) => vaultChains(vaultRoot, args, access),
   },

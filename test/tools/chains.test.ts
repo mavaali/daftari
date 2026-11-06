@@ -163,7 +163,25 @@ describe("vault_chains", () => {
       },
       vault,
     );
-    expect(line).toBe("2 chains replacing 2 documents, 1 flagged");
+    expect(line).toBe("2 chains replacing 2 documents, 1 flagged, 1 with nothing replaced");
+  });
+
+  it("omits the nothing-replaced clause when every chain replaced something", () => {
+    const line = tool.summarize?.(
+      {
+        count: 1,
+        chains: [
+          {
+            head: { path: "a.md", status: "canonical", updated: "2026-10-02" },
+            replaced: [{ path: "b.md", status: "superseded", updated: "2026-10-02", depth: 1 }],
+            hidden_replaced: "none",
+            flags: [],
+          },
+        ],
+      },
+      vault,
+    );
+    expect(line).toBe("1 chains replacing 1 documents, 0 flagged");
   });
 
   it("links every path the result names", () => {
