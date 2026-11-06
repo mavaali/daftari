@@ -34,6 +34,7 @@ import {
   pendingLintItems,
   type StagedActionLintItem,
 } from "./staged-actions.js";
+import { supersedeChainFindings } from "./supersede-chains.js";
 
 export type { StagedActionLintItem } from "./staged-actions.js";
 
@@ -79,6 +80,7 @@ export const LINT_CHECKS = [
   "malformedPins",
   "verbatimQuoteOverrun",
   "unverifiableSourceRefs",
+  "supersedeChains",
   "danglingAmends",
 ] as const;
 export type LintCheckName = (typeof LINT_CHECKS)[number];
@@ -100,8 +102,8 @@ export const TIER0_LINT_CHECKS: readonly LintCheckName[] = [
 ];
 
 // Content-channel budget (Decision 3): the compact `content` summary shows counts
-// plus a capped handful of findings, one line each; the full report still rides
-// the structured channel. Both the plain and ledger-keeper renderers honor these.
+// plus a capped handful of findings, one line each. Both the plain and
+// ledger-keeper renderers honor these; lint-page.ts bounds the structured channel.
 export const LINT_SUMMARY_TOP_FINDINGS = 6;
 export const LINT_SUMMARY_DETAIL_CHARS = 110;
 
@@ -331,6 +333,7 @@ export async function runLint(
     malformedPins: [],
     verbatimQuoteOverrun: [],
     unverifiableSourceRefs: [],
+    supersedeChains: [],
     danglingAmends: [],
   };
 
@@ -357,6 +360,9 @@ export async function runLint(
   checks.lifecycleConflicts = t0.lifecycleConflicts;
   checks.schemaInvalid = t0.schemaInvalid;
   checks.domainLeaks = t0.domainLeaks;
+  // 15. superseded_by chains that loop, or end on a non-canonical document
+  // (#639). Over the caller-visible doc set, like the rest of lint.
+  checks.supersedeChains = supersedeChainFindings(docs);
   // Over the caller-visible set too, so a hidden target reads as absent.
   // Deliberately not a tier-0 check: amends is advisory, and tier-0 findings
   // gate ratification.

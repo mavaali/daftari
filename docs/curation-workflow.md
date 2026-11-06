@@ -56,8 +56,13 @@ The loop begins with two read-only calls:
 
 `vault_lint` returns findings grouped under six checks. `vault_status` adds the
 staleness distribution and the unresolved-tension count. Together they are the
-loop's worklist. Pass `{ "filter": "<check>" }` to `vault_lint` to work one
-check at a time.
+loop's worklist. The default `vault_lint` result is a summary sized to fit a
+client's result limit: `counts` per check, plus clipped previews of the first
+few findings (a tight budget can leave a check's preview empty; its count
+survives). Pass `{ "filter": "<check>" }` to work one check at a time, 50
+findings per call with details in full, and `limit` and `offset` to page:
+`nextOffset` gives each check's resume point. `{ "filter": "<check>", "limit": 0 }`
+returns the staged and shadow lists whole, which the summary only previews.
 
 A note on the agent's **role**: the loop needs `write` permission on every
 collection it curates, and `promote: true` if it will promote drafts (step 2d).

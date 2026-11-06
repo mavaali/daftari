@@ -31,6 +31,15 @@ import {
   type TensionHealth,
   TIER0_LINT_CHECKS,
 } from "../curation/lint.js";
+import {
+  LINT_PAGE_DEFAULT_LIMIT,
+  type LintPaging,
+  pageChecks,
+  parseLintPaging,
+  previewChecks,
+  previewShadowActions,
+  previewStagedActions,
+} from "../curation/lint-page.js";
 import { renderLedgerKeeper } from "../curation/lint-voice.js";
 import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
 import type { ReviewThroughputSummary } from "../curation/review-throughput.js";
@@ -399,10 +408,17 @@ export async function vaultTensionTriage(
 export interface VaultLintResult {
   generatedAt: string;
   filter: LintCheckName | null;
+  // "summary": the default call. `checks`, `stagedActions` and the shadow lists
+  // are previews with details clipped. "page": `checks` is the requested slice,
+  // verbatim, and the staged and shadow lists are whole.
+  mode: "summary" | "page";
   checks: Partial<Record<LintCheckName, LintFinding[]>>;
+  counts: Partial<Record<LintCheckName, number>>;
+  nextOffset: Partial<Record<LintCheckName, number>>;
   totalFindings: number;
   tensionHealth: TensionHealth;
   stagedActions: StagedActionLintItem[];
+  stagedActionsTotal: number;
   shadowActions: ShadowLintSummary;
   coverageEquity: CoverageEquitySummary;
   compiledEdgeCoverage: CompiledEdgeCoverageSummary;
@@ -430,6 +446,11 @@ export async function vaultLint(
     }
     filter = args.filter as LintCheckName;
   }
+
+  const parsedPaging = parseLintPaging(args);
+  if (!parsedPaging.ok) return parsedPaging;
+  const paging: LintPaging | null =
+    parsedPaging.value ?? (filter ? { limit: LINT_PAGE_DEFAULT_LIMIT, offset: 0 } : null);
 
   // Periodic cleanup (spec §11.2): expire any staged action past its TTL before
   // reporting, so the "Staged actions" section reflects post-sweep state. The
@@ -459,33 +480,26 @@ export async function vaultLint(
   }
   if (!report.ok) return report;
 
-  if (filter) {
-    const findings = report.value.checks[filter];
-    return ok({
-      generatedAt: report.value.generatedAt,
-      filter,
-      checks: { [filter]: findings },
-      totalFindings: findings.length,
-      tensionHealth: report.value.tensionHealth,
-      stagedActions: report.value.stagedActions,
-      shadowActions: report.value.shadowActions,
-      coverageEquity: report.value.coverageEquity,
-      compiledEdgeCoverage: report.value.compiledEdgeCoverage,
-      reviewThroughput: report.value.reviewThroughput,
-    });
-  }
+  const lint = report.value;
+  const view = paging
+    ? pageChecks(filter ? { [filter]: lint.checks[filter] } : lint.checks, paging)
+    : previewChecks(lint.checks);
 
   return ok({
-    generatedAt: report.value.generatedAt,
-    filter: null,
-    checks: report.value.checks,
-    totalFindings: report.value.totalFindings,
-    tensionHealth: report.value.tensionHealth,
-    stagedActions: report.value.stagedActions,
-    shadowActions: report.value.shadowActions,
-    coverageEquity: report.value.coverageEquity,
-    compiledEdgeCoverage: report.value.compiledEdgeCoverage,
-    reviewThroughput: report.value.reviewThroughput,
+    generatedAt: lint.generatedAt,
+    filter,
+    mode: paging ? "page" : "summary",
+    checks: view.checks,
+    counts: view.counts,
+    nextOffset: view.nextOffset,
+    totalFindings: filter ? lint.checks[filter].length : lint.totalFindings,
+    tensionHealth: lint.tensionHealth,
+    stagedActions: paging ? lint.stagedActions : previewStagedActions(lint.stagedActions),
+    stagedActionsTotal: lint.stagedActions.length,
+    shadowActions: paging ? lint.shadowActions : previewShadowActions(lint.shadowActions),
+    coverageEquity: lint.coverageEquity,
+    compiledEdgeCoverage: lint.compiledEdgeCoverage,
+    reviewThroughput: lint.reviewThroughput,
   });
 }
 
@@ -799,6 +813,11 @@ const lintChecksProperties: Record<string, unknown> = {};
 for (const check of LINT_CHECKS) {
   lintChecksProperties[check] = { type: "array", items: lintFindingSchema };
 }
+const lintCheckIntegers: Record<string, unknown> = {
+  type: "object",
+  properties: Object.fromEntries(LINT_CHECKS.map((check) => [check, { type: "integer" }])),
+  additionalProperties: false,
+};
 
 const strengthGroupStatsSchema: Record<string, unknown> = {
   type: "object",
@@ -849,10 +868,22 @@ const lintOutputSchema: Record<string, unknown> = {
       enum: [...LINT_CHECKS, null],
       description: "The single check the report was restricted to, or null for all checks",
     },
+    mode: {
+      type: "string",
+      enum: ["summary", "page"],
+      description:
+        "summary: the default call; checks, stagedActions and the shadow lists are " +
+        "clipped previews. page: checks is the requested slice, the rest whole.",
+    },
     checks: {
       type: "object",
       properties: lintChecksProperties,
       additionalProperties: false,
+    },
+    counts: { ...lintCheckIntegers, description: "Findings per check, before any slicing" },
+    nextOffset: {
+      ...lintCheckIntegers,
+      description: "The offset that resumes each check; a finished check has no entry",
     },
     totalFindings: { type: "integer" },
     // Vault-global by design (#217 decision C): counts only, no paths.
@@ -922,6 +953,7 @@ const lintOutputSchema: Record<string, unknown> = {
         additionalProperties: false,
       },
     },
+    stagedActionsTotal: { type: "integer" },
     shadowActions: {
       type: "object",
       properties: {
@@ -1060,10 +1092,14 @@ const lintOutputSchema: Record<string, unknown> = {
   required: [
     "generatedAt",
     "filter",
+    "mode",
     "checks",
+    "counts",
+    "nextOffset",
     "totalFindings",
     "tensionHealth",
     "stagedActions",
+    "stagedActionsTotal",
     "shadowActions",
     "coverageEquity",
     "compiledEdgeCoverage",
@@ -1111,7 +1147,8 @@ const provenanceOutputSchema: Record<string, unknown> = {
 //
 // Decision 3 names vault-wide lint output as a worst token offender: the full
 // report is a wall. The `content` channel gets counts plus a handful of
-// findings, one line each; the full report still rides the structured channel.
+// findings, one line each. The structured channel is bounded too (#644), so
+// counts come from `counts`: `checks` may hold only a preview.
 
 export function summarizeLint(value: unknown): string {
   const report = value as VaultLintResult;
@@ -1121,12 +1158,12 @@ export function summarizeLint(value: unknown): string {
   let advisory = 0;
   const flat: Array<{ check: LintCheckName; finding: LintFinding }> = [];
   for (const check of LINT_CHECKS) {
-    const findings = report.checks[check] ?? [];
-    if (findings.length === 0) continue;
-    perCheck.push(`${check} ${findings.length}`);
-    if (TIER0_LINT_CHECKS.includes(check)) certain += findings.length;
-    else advisory += findings.length;
-    for (const finding of findings) flat.push({ check, finding });
+    const total = report.counts[check] ?? 0;
+    if (total === 0) continue;
+    perCheck.push(`${check} ${total}`);
+    if (TIER0_LINT_CHECKS.includes(check)) certain += total;
+    else advisory += total;
+    for (const finding of report.checks[check] ?? []) flat.push({ check, finding });
   }
   // Certain (tier-0) findings first; sort is stable, so within each severity
   // the LINT_CHECKS order is preserved.
@@ -1145,7 +1182,7 @@ export function summarizeLint(value: unknown): string {
       `${health.aging.stale} fresh/aging/stale; ${health.clusters.count} cluster(s) ` +
       `(${health.clusters.large} large, ${health.clusters.aged} aged); ` +
       `stale blast ${health.blastRadiusOfStaleTensions}`,
-    `staged: ${report.stagedActions.length} pending, ` +
+    `staged: ${report.stagedActionsTotal} pending, ` +
       `${report.reviewThroughput.lifetime.expired} expired lifetime; ` +
       `shadow: ${report.shadowActions.total} logged, ${report.shadowActions.gated} would-gate; ` +
       `coverage: ${report.coverageEquity.backstopOverdue.count} backstop-overdue edge(s); ` +
@@ -1154,12 +1191,15 @@ export function summarizeLint(value: unknown): string {
 
   const top = flat.slice(0, LINT_SUMMARY_TOP_FINDINGS);
   if (top.length > 0) {
-    lines.push(`top ${top.length} of ${flat.length} finding(s):`);
+    lines.push(`top ${top.length} of ${report.totalFindings} finding(s):`);
     for (const { check, finding } of top) {
       lines.push(
         `  [${check}] ${finding.path} — ${clip(finding.detail, LINT_SUMMARY_DETAIL_CHARS)}`,
       );
     }
+  }
+  if (Object.keys(report.nextOffset).length > 0) {
+    lines.push("more: re-run with filter, limit and offset; nextOffset has each check's resume");
   }
   return lines.join("\n");
 }
@@ -1389,14 +1429,28 @@ export const curationTools: ToolDefinition[] = [
       "when the vault has run shadow_mode — summarizes shadow-logged writes " +
       "with the ones the trust budget would have gated. " +
       "Never auto-fixes vault content; it does, as housekeeping, expire " +
-      "staged actions past their TTL. Optionally filter to a single check.",
+      "staged actions past their TTL. The default result is a summary: the " +
+      "count per check plus clipped previews of its first few findings, sized " +
+      "to fit a client's result limit. For the rest, pass filter, limit and " +
+      "offset; `nextOffset` gives each check's resume point. Paging changes " +
+      "how much arrives per call, never what the caller may see.",
     inputSchema: {
       type: "object",
       properties: {
         filter: {
           type: "string",
           enum: [...LINT_CHECKS],
-          description: "Restrict the report to a single check",
+          description: `Restrict the report to a single check, ${LINT_PAGE_DEFAULT_LIMIT} findings at a time unless limit says otherwise`,
+        },
+        limit: {
+          type: "integer",
+          minimum: 0,
+          description: `Findings to return per check, details in full (default ${LINT_PAGE_DEFAULT_LIMIT}; 0 for counts only). Applies to every check when no filter is given`,
+        },
+        offset: {
+          type: "integer",
+          minimum: 0,
+          description: "Findings to skip per check; pass a value from nextOffset to continue",
         },
       },
       additionalProperties: false,
