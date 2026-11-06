@@ -107,11 +107,14 @@ const TOOL_DEFS: ToolDef[] = [
       "Run the advisory curation checks across the vault: stale files, " +
       "orphans, old drafts, stagnant low-confidence files, deprecated files " +
       "still linked, unanswered questions, and tension health. Reports " +
-      "problems; never auto-fixes. Optionally filter to a single check.",
+      "problems; never auto-fixes. Returns a summary by default: counts per " +
+      "check plus the first few findings. Use filter, limit and offset for the rest.",
     input_schema: {
       type: "object",
       properties: {
         filter: { type: "string", description: "Restrict the report to a single check" },
+        limit: { type: "integer", description: "Findings to return per check" },
+        offset: { type: "integer", description: "Findings to skip per check (see nextOffset)" },
       },
       additionalProperties: false,
     },

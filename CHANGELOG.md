@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`vault_lint` returns a summary by default** (#644) — a full report ran to 88K+ characters on a 295-document vault, past what MCP clients accept. The default result is now `counts` per check plus clipped previews of the first few findings, with the staged and shadow lists previewed too; a 300-document vault delivers under 10,000 characters. `limit` and `offset` page each check, `nextOffset` gives its resume point, and `filter` keeps narrowing to one check, now 50 findings per call by default. Scripts that read the whole of `checks` should pass an explicit `limit`. Pages are cut after the visibility filter, so RBAC scoping is unchanged, and vault-global aggregates still read the same for every role.
 - **`default_role` config key; `--init` vaults default to `admin`** (kg64) — a stdio server started without `--role` now runs as the config's `default_role` instead of silently becoming the deny-all guest. `daftari --init` scaffolds `default_role: admin`, so a fresh local vault works out of the box. Existing vaults without the key keep the deny-all guest default; `daftari serve` ignores it. An undeclared role name is a malformed-config error.
 
 ### Security
