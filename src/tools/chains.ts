@@ -9,7 +9,7 @@
 import { type AccessContext, canRead, hasAnyRead } from "../access/rbac.js";
 import { CHAIN_FLAGS, type Chain, computeChains } from "../curation/chains.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
-import { getAllDocuments } from "../storage/index-db.js";
+import { getSupersessionGraph } from "../storage/index-db.js";
 import type { ToolDefinition } from "./read.js";
 import { ensureIndexReady, openIndexForActiveProvider } from "./search.js";
 
@@ -38,7 +38,7 @@ export async function vaultChains(
   const db = opened.value;
   try {
     const all = computeChains(
-      getAllDocuments(db),
+      getSupersessionGraph(db),
       (doc) => !access || canRead(access.role, doc.collection),
     );
     const chains = args.flagged_only === true ? all.filter((c) => c.flags.length > 0) : all;

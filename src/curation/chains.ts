@@ -14,13 +14,10 @@
 // already separates restricted from dangling, so neither is a new oracle.
 // Hidden predecessors are reported coarsened (B′), never counted.
 
-import type { IndexedDocument } from "../storage/index-db.js";
+import type { SupersessionNode } from "../storage/index-db.js";
 import { bucketHiddenDownstream, type HiddenDownstream } from "./tension-blast.js";
 
-export type ChainDoc = Pick<
-  IndexedDocument,
-  "path" | "collection" | "status" | "updated" | "supersededBy"
->;
+export type ChainDoc = SupersessionNode;
 
 export const CHAIN_FLAGS = [
   "draft", // the current entry is not certified yet

@@ -967,6 +967,21 @@ export function getAllDocuments(db: IndexDb): IndexedDocument[] {
   return rows.map(rowToDocument);
 }
 
+export type SupersessionNode = Pick<
+  IndexedDocument,
+  "path" | "collection" | "status" | "updated" | "supersededBy"
+>;
+
+// The whole supersede graph, without loading or parsing any document's content.
+export function getSupersessionGraph(db: IndexDb): SupersessionNode[] {
+  return db
+    .prepare(
+      `SELECT path, collection, status, updated, superseded_by AS supersededBy
+         FROM documents ORDER BY path`,
+    )
+    .all() as SupersessionNode[];
+}
+
 // Documents whose `created` date falls within [start, end] inclusive, ordered
 // most-recent first (ties by path for determinism). Undateable docs (empty
 // `created`) are excluded. ISO dates sort lexically so string comparison is a
