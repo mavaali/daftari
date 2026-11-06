@@ -236,6 +236,22 @@ roles:
       expect(result.value.questions[0]?.candidates).toEqual([]);
     });
 
+    it("never shares memoized embeddings across read scopes", async () => {
+      writeDoc(vault, "pricing/raiser.md", { raised: ["Seat rule?"] });
+      writeDoc(vault, "pricing/other.md", { title: "Seat ruling" });
+      const config = loadConfig(vault);
+      if (!config.ok) throw config.error;
+      const admin = resolveAccess(config.value, "human:m", "admin");
+
+      await vaultQuestionCandidates(vault, {}, admin);
+      await vaultQuestionCandidates(vault, {}, analyst);
+      await vaultQuestionCandidates(vault, {}, analyst);
+
+      // A hit is faster than a miss, so a memo shared with admin would let the
+      // analyst confirm text it cannot read. Once per scope, never across them.
+      expect(calls.flat().filter((t) => t === "Seat ruling")).toHaveLength(2);
+    });
+
     it("never surfaces a question raised only in an unreadable document", async () => {
       writeDoc(vault, "secret/raiser.md", { raised: ["Hidden seat question?"] });
       const all = await vaultQuestionCandidates(vault, {}, analyst);

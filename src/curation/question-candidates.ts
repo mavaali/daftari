@@ -140,12 +140,11 @@ function eligible(doc: LoadedDoc, key: string, since: string | null): boolean {
 }
 
 function bestEntry(
-  question: OpenQuestion,
+  tokens: Set<string>,
+  queryVec: Float32Array | undefined,
   entries: Entry[],
   vectors: Map<string, Float32Array> | null,
 ): Omit<ScoredDoc, "doc"> | null {
-  const tokens = questionTokens(question.text);
-  const queryVec = vectors?.get(question.text);
   let best: Omit<ScoredDoc, "doc"> | null = null;
   for (const entry of entries) {
     const lexical = overlap(tokens, entry.tokens);
@@ -196,10 +195,12 @@ export async function rankQuestionCandidates(
     vectorUsed: vectors !== null,
     questions: questions.map((question) => {
       const since = earliestRaising(question, byPath);
+      const tokens = questionTokens(question.text);
+      const queryVec = vectors?.get(question.text);
       const scored: ScoredDoc[] = [];
       for (const { doc, entries } of corpus) {
         if (!eligible(doc, question.key, since)) continue;
-        const best = bestEntry(question, entries, vectors);
+        const best = bestEntry(tokens, queryVec, entries, vectors);
         if (best) scored.push({ doc, ...best });
       }
       return {

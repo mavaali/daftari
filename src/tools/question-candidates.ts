@@ -28,7 +28,10 @@ const MAX_TOP = 5;
 
 // Paging through open questions embeds the same corpus on every call, and a
 // paid provider bills each one. Titles and questions are short and few, so a
-// flat memo is enough; the cap only bounds a long-lived server.
+// flat memo is enough; the cap only bounds a long-lived server. Entries are
+// partitioned by read scope because a hit is measurably faster than a miss:
+// shared across roles, that latency would confirm text in documents the caller
+// cannot read (2026-07-14 spec: no existence leak).
 const EMBED_MEMO_MAX = 20_000;
 const embedMemo = new Map<string, Float32Array>();
 
@@ -36,18 +39,27 @@ export function __resetQuestionEmbeddingMemo(): void {
   embedMemo.clear();
 }
 
-const memoizedEmbed: EmbedFn = async (texts) => {
-  const provider = getProvider().id;
-  const memoKey = (text: string): string => `${provider}\0${text}`;
-  const misses = texts.filter((t) => !embedMemo.has(memoKey(t)));
-  const embedded = await embed(misses);
-  if (!embedded.ok || embedded.value.length !== misses.length) return embedded;
-  const fresh = new Map(misses.map((t, i) => [t, embedded.value[i] as Float32Array]));
-  const out = texts.map((t) => fresh.get(t) ?? (embedMemo.get(memoKey(t)) as Float32Array));
-  if (embedMemo.size + misses.length > EMBED_MEMO_MAX) embedMemo.clear();
-  for (const [t, vec] of fresh) embedMemo.set(memoKey(t), vec);
-  return ok(out);
-};
+// Visibility is decided by the role's read list alone, so that list is the
+// scope. No access context means RBAC is unconfigured: everything is readable.
+function readScope(access: AccessContext | undefined): string {
+  if (!access) return "*";
+  return JSON.stringify([...(access.role?.read ?? [])].sort());
+}
+
+const memoizedEmbed =
+  (scope: string): EmbedFn =>
+  async (texts) => {
+    const provider = getProvider().id;
+    const memoKey = (text: string): string => `${scope}\0${provider}\0${text}`;
+    const misses = texts.filter((t) => !embedMemo.has(memoKey(t)));
+    const embedded = await embed(misses);
+    if (!embedded.ok || embedded.value.length !== misses.length) return embedded;
+    const fresh = new Map(misses.map((t, i) => [t, embedded.value[i] as Float32Array]));
+    const out = texts.map((t) => fresh.get(t) ?? (embedMemo.get(memoKey(t)) as Float32Array));
+    if (embedMemo.size + misses.length > EMBED_MEMO_MAX) embedMemo.clear();
+    for (const [t, vec] of fresh) embedMemo.set(memoKey(t), vec);
+    return ok(out);
+  };
 
 interface ParsedArgs {
   question: string | undefined;
@@ -137,7 +149,7 @@ export async function vaultQuestionCandidates(
 
   const ranked = await rankQuestionCandidates(open.slice(offset, offset + limit), docs, {
     top,
-    embed: memoizedEmbed,
+    embed: memoizedEmbed(readScope(access)),
   });
   return ok({ total: open.length, ...ranked });
 }
