@@ -56,7 +56,7 @@ import { canRead } from "../../access/rbac.js";
 import { type UpstreamStaleness, upstreamStaleness } from "../../curation/edge-staleness.js";
 import { listEdges } from "../../curation/edges.js";
 import { readProvenanceLog } from "../../curation/provenance.js";
-import { computeStaleness } from "../../curation/staleness.js";
+import { computeStaleness, olderSeriesMembers } from "../../curation/staleness.js";
 import { sourceReadable, sourceVerifiable } from "../../curation/tension-access.js";
 import { readTier2Verdicts } from "../../curation/tier2.js";
 import { loadDocuments } from "../../curation/vault-docs.js";
@@ -86,17 +86,22 @@ export const ttlStalenessAdapter: FindingSourceAdapter = {
     try {
       const findings: Finding[] = [];
 
-      for (const doc of loaded.value) {
+      // RBAC: resolve collection and check read permission. Omit unreadable
+      // docs entirely (R17/R18), before series are judged: a hidden newer
+      // member must not silence a readable one.
+      const readable = loaded.value.filter((doc) =>
+        canRead(access.role, collectionForPath(db, doc.path)),
+      );
+      const olderMembers = olderSeriesMembers(readable);
+
+      for (const doc of readable) {
         const { path, frontmatter: fm } = doc;
 
-        // RBAC: resolve collection and check read permission.
-        const collection = collectionForPath(db, path);
-        if (!canRead(access.role, collection)) {
-          continue; // omit entirely (R17/R18)
-        }
-
         // TTL staleness: emit only for expired docs.
-        const staleness = computeStaleness({ updated: fm.updated, ttl_days: fm.ttl_days }, nowDate);
+        const staleness = computeStaleness(
+          { updated: fm.updated, ttl_days: olderMembers.has(path) ? null : fm.ttl_days },
+          nowDate,
+        );
         if (!staleness.expired) continue;
 
         const target: StalenessTarget = { kind: "staleness", path };

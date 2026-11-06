@@ -38,7 +38,7 @@ import {
 export type { StagedActionLintItem } from "./staged-actions.js";
 
 import { parseDescribesEntry } from "../audit/describes.js";
-import { ageInDays, computeStaleness } from "./staleness.js";
+import { ageInDays, computeStaleness, olderSeriesMembers } from "./staleness.js";
 import {
   agingTier,
   listTensions,
@@ -391,11 +391,17 @@ export async function runLint(
     positionalByDoc.set(t.sourceA, refs);
   }
 
+  const olderMembers = olderSeriesMembers(docs);
+
   for (const doc of docs) {
     const fm = doc.frontmatter;
 
-    // 1. Stale: a document at or past its TTL.
-    const staleness = computeStaleness({ updated: fm.updated, ttl_days: fm.ttl_days }, now);
+    // 1. Stale: a document at or past its TTL. An older series member's TTL
+    // has passed to the newest member (#645).
+    const staleness = computeStaleness(
+      { updated: fm.updated, ttl_days: olderMembers.has(doc.path) ? null : fm.ttl_days },
+      now,
+    );
     if (staleness.expired) {
       checks.staleFiles.push({
         path: doc.path,

@@ -271,6 +271,9 @@ export function serializeDocument(
     sources: fm.sources,
     superseded_by: fm.superseded_by,
     ttl_days: fm.ttl_days,
+    // Emitted only when set (the positions convention) so documents outside a
+    // series stay byte-stable.
+    ...(fm.series != null ? { series: fm.series } : {}),
     // `?? null` for the same reason as tier: a hand-built Frontmatter that
     // predates these fields carries undefined, which js-yaml refuses to dump.
     valid_from: fm.valid_from ?? null,
@@ -2987,6 +2990,13 @@ const frontmatterProperty = {
       description:
         "Number of days after which this document is considered stale and " +
         "should be reviewed. null = no TTL.",
+    },
+    series: {
+      type: ["string", "null"],
+      description:
+        "Name of the run of dated snapshots this document belongs to (e.g. " +
+        "weekly reviews). Staleness is judged on the newest member by `created`: " +
+        "the TTL fires when no new snapshot has been written, not on each old one.",
     },
     valid_from: {
       type: ["string", "null"],

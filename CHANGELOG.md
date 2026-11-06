@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`amends` frontmatter: link a later entry to an earlier one it amends or fulfils, without replacing it** (#643) — for a claim that stays true as written, so `vault_supersede` would be wrong. Declared on the later document through `vault_write`, so the earlier file is never written and its review clock does not reset. Search hits and `vault_read` on the earlier document show `amendedBy` (path, title, status, preview), and the search summary line reads `amended by: <path>`. Unreadable amenders are omitted, with no marker or count. Unresolvable targets return `amends_warnings` and appear under the new `danglingAmends` lint check. `amends` is now a reserved built-in: a vault declaring a schema extension of that name must rename it. The index schema bumps to 13, so the first start after upgrade rebuilds the index.
+- **`series` frontmatter field: dated snapshots stop going stale forever** (#645) — mark a run of write-once documents (weekly reviews, say) with a shared `series: <name>`. Staleness is judged on the newest member by `created`, so the TTL fires when no new snapshot has been written, not on each old one. Applies to `vault_lint`, `vault_status`, the board, `daftari sleep` and `daftari interview`; the per-document decay banner on `vault_read` and search does not read it yet. A vault that declared `series` as a schema extension must remove or rename it.
 
 ### Fixed
 

@@ -63,6 +63,7 @@ always valid even though you never typed those two fields.
 | `sources` | list of strings | `[]` | Source identifiers the document was built from. |
 | `superseded_by` | string or `null` | `null` | Vault-relative path of the document that replaces this one. Set by `vault_deprecate`. |
 | `ttl_days` | number or `null` | `null` | Review horizon. After `ttl_days` past `updated`, the document is flagged stale by `vault_lint`. `null` means it never goes stale. |
+| `series` | string, or absent | absent | Names a run of dated snapshots. Staleness is judged on the newest member only — see [below](#series--dated-snapshots). Written only when set. |
 | `valid_from` | date or `null` | `null` | First date the document's claim was true **in the world**. Valid time, not transaction time — see [below](#valid_from--valid_until--valid-time). |
 | `valid_until` | date or `null` | `null` | First date the claim was **no longer** true — the window is half-open, so this day is excluded. `null` with a `valid_from` means open-ended, not unknown. |
 | `said_at` | date-time or date, or absent | absent | When the source message a distilled claim came from was said. A fact about the source, not valid time — see [below](#said_at--when-the-source-said-it). Written only when known. |
@@ -291,6 +292,36 @@ its title, status, and a preview. The search summary line reads
 - **Bad paths.** A target that resolves to no readable document, or that names the
   document itself, returns `amends_warnings` on the write and appears under
   `vault_lint`'s `danglingAmends`. The write still lands.
+
+### `series` — dated snapshots
+
+A weekly review is written once and never edited. Its `ttl_days: 14` is not a
+promise to re-check that one document; it is a promise that another review will
+exist in two weeks. Give every snapshot the same `series` and the TTL moves to
+the run as a whole:
+
+```yaml
+series: weekly-review
+ttl_days: 14
+```
+
+Staleness is then judged on the newest member only. With four weekly reviews and
+the newest nine days old, `vault_lint` lists none of them. With the newest twenty
+days old, it lists that one, because no new review has been written.
+
+- **Newest means latest `created`**, not `updated`. A typo fix on an old snapshot
+  is not a new snapshot. Ties go to the later path, so dated filenames order
+  correctly.
+- **The newest member's own `ttl_days` and `updated` apply.** With a null
+  `ttl_days` on the newest member, the series makes no freshness promise.
+- **A `deprecated`, `superseded` or `archived` member cannot be newest.** A
+  withdrawn snapshot does not keep the series fresh.
+- **Only the documents you can read count.** A newer member in a collection you
+  cannot read does not silence an older one you can.
+
+`vault_lint`, `vault_status`, the board, `daftari sleep` and `daftari interview`
+all judge a series this way. The per-document decay banner on `vault_read` and
+`vault_search` does not read `series` yet, so an old snapshot can still show one.
 
 ## Markdown body conventions
 

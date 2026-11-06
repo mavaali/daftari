@@ -26,7 +26,7 @@ import {
   type SourceVerifiabilityAnnotation,
   sourceVerifiabilityAnnotations,
 } from "../curation/source-refs.js";
-import { computeStaleness } from "../curation/staleness.js";
+import { computeStaleness, olderSeriesMembers } from "../curation/staleness.js";
 import { type StructuralDecay, structuralDecay } from "../curation/structural.js";
 import { DEFAULT_TENSION_STATUS, listTensions, TENSION_KINDS } from "../curation/tension.js";
 import { sourceReadable, sourceVerifiable, visibleTensions } from "../curation/tension-access.js";
@@ -1006,6 +1006,11 @@ export async function vaultStatus(
   // monitor must never widen the denominator past what the caller can read,
   // or the count leaks vault size.
   const validityCoverage: ValidityCoverage = { authored: 0, unknown: 0, total: 0 };
+  const olderMembers = olderSeriesMembers(
+    scan.value
+      .filter((doc) => visiblePaths.has(doc.relPath))
+      .map((doc) => ({ path: doc.relPath, frontmatter: doc.frontmatter })),
+  );
   for (const doc of scan.value) {
     if (!visiblePaths.has(doc.relPath)) continue;
     stalenessDistribution.total += 1;
@@ -1018,7 +1023,7 @@ export async function vaultStatus(
     const score = computeStaleness(
       {
         updated: doc.frontmatter.updated,
-        ttl_days: doc.frontmatter.ttl_days,
+        ttl_days: olderMembers.has(doc.relPath) ? null : doc.frontmatter.ttl_days,
       },
       scanNow,
     ).score;

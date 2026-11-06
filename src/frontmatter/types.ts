@@ -91,6 +91,12 @@ export interface BuiltinFrontmatter {
   sources: string[];
   superseded_by: string | null;
   ttl_days: number | null;
+  // Names the run of dated snapshots this document belongs to (#645). A
+  // snapshot is written once and never edited, so its TTL is a promise about
+  // the series: only the newest member is judged (curation/staleness.ts).
+  // Optional so hand-built Frontmatter literals stay valid; null/absent = not
+  // in a series.
+  series?: string | null;
   // Valid time — when the fact is true IN THE WORLD, as distinct from the
   // transaction time carried by created/updated and git history.
   //
@@ -164,6 +170,7 @@ export const BUILTIN_FRONTMATTER_FIELDS = [
   "sources",
   "superseded_by",
   "ttl_days",
+  "series",
   "valid_from",
   "valid_until",
   "said_at",

@@ -1020,6 +1020,17 @@ function validateExtension(field: string, raw: unknown): Result<SchemaExtension,
       ),
     );
   }
+  if (field === "series") {
+    return err(
+      new Error(
+        `${where}: 'series' is now a built-in frontmatter field. Remove it from ` +
+          "schema_extensions in .daftari/config.yaml — existing string values in your " +
+          "documents are read as-is by the built-in field, which judges staleness on the " +
+          "newest member of each series. If your 'series' means something else, rename " +
+          "your extension (e.g. 'series_name') and the vault will load.",
+      ),
+    );
+  }
   if ((BUILTIN_FRONTMATTER_FIELDS as readonly string[]).includes(field)) {
     return err(new Error(`${where} shadows a built-in frontmatter field`));
   }
