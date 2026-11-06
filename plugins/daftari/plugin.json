@@ -1,0 +1,35 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "daftari",
+  "version": "1.0.0",
+  "description": "Memory you own: a markdown + Git vault on your disk that your agent searches before answering and writes back to, with replaced beliefs and open contradictions kept visible.",
+  "author": {
+    "name": "Mihir Wagle",
+    "url": "https://github.com/mavaali"
+  },
+  "homepage": "https://github.com/mavaali/daftari",
+  "repository": "https://github.com/mavaali/daftari",
+  "license": "MIT",
+  "keywords": ["memory", "knowledge", "markdown", "mcp"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Daftari",
+        "shortDescription": "Memory you own, as markdown files on your disk",
+        "longDescription": "Rent the brain. Own the memory. Daftari keeps what your agent learns as plain markdown in a local Git repo. Recency never decides what's true: replaced beliefs keep their history and open contradictions stay flagged. Runs locally; nothing leaves your machine.",
+        "developerName": "Mihir Wagle",
+        "category": "Productivity",
+        "capabilities": ["Read", "Write"],
+        "websiteURL": "https://github.com/mavaali/daftari",
+        "privacyPolicyURL": "https://github.com/mavaali/daftari/blob/main/PRIVACY.md",
+        "defaultPrompt": [
+          "Remember that we chose Postgres over DynamoDB, and why.",
+          "What have we already decided about pricing?",
+          "Is anything in my memory stale or contradicting itself?"
+        ],
+        "composerIcon": "./assets/icon.png",
+        "logo": "./assets/icon.png"
+      }
+    }
+  }
+}

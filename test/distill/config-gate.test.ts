@@ -129,7 +129,9 @@ describe("resolveDistillClient — distill block present", () => {
     if (!result.ok) return;
     // defaults must be positive — structural check, not pinning exact values
     expect(result.value.config.maxLlmCalls).toBeGreaterThan(0);
-    expect(result.value.config.maxClaims).toBeGreaterThan(0);
+    // max_claims omitted ⇒ unset: the run scales the cap with source size
+    // (resolveMaxClaims) rather than applying a flat default.
+    expect(result.value.config.maxClaims).toBeUndefined();
     expect(result.value.config.maxVerbatimChars).toBeGreaterThan(0);
     expect(result.value.config.inCallInputCap).toBeGreaterThan(0);
   });

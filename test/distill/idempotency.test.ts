@@ -136,6 +136,75 @@ describe("distillUpsert (U5 idempotency)", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Scenario 1a (bead b4m3): a failed extraction must not poison the state
+  // -------------------------------------------------------------------------
+
+  it("does not record the source when extraction errored and produced no claims", async () => {
+    const failed = await distillUpsert(vault, {
+      sourceId: SOURCE_ID,
+      sourceContent: CONTENT_V1,
+      claims: [],
+      runId: "run-failed",
+      extractionErrors: 3,
+    });
+    expect(failed.ok).toBe(true);
+    if (!failed.ok) return;
+    expect(failed.value.noop).toBe(false);
+    expect(failed.value.stateWritten).toBe(false);
+    expect(failed.value.stateError).toMatch(/extraction failed/);
+    expect(readDistillState(vault).sources[SOURCE_ID]).toBeUndefined();
+
+    // The next run over the same content with a working model stages its claims.
+    const retry = await run(vault, CONTENT_V1, [CLAIM_A, CLAIM_B], "run-retry");
+    expect(retry.noop).toBe(false);
+    expect(retry.created).toHaveLength(2);
+    expect(await pendingActions(vault)).toHaveLength(2);
+  });
+
+  it("still records a clean zero-claim run (no extraction errors) as distilled", async () => {
+    const empty = await run(vault, CONTENT_V1, [], "run-empty");
+    expect(empty.stateWritten).toBe(true);
+    expect(readDistillState(vault).sources[SOURCE_ID]?.content_hash).toBe(
+      sourceContentHash(CONTENT_V1),
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Scenario 1b (83b1): per-sender passes over the SAME file are independent
+  // -------------------------------------------------------------------------
+
+  it("does not no-op a second sender pass over the same content (per-scope hash)", async () => {
+    const scoped = async (scope: string, claims: ExtractedClaim[], runId: string) => {
+      const res = await distillUpsert(vault, {
+        sourceId: SOURCE_ID,
+        sourceContent: CONTENT_V1,
+        claims,
+        runId,
+        scope,
+      });
+      if (!res.ok) throw res.error;
+      return res.value;
+    };
+    const user = await scoped("user", [CLAIM_A], "run-u1");
+    expect(user.noop).toBe(false);
+    // Regression: the assistant pass used to match the user pass's whole-file
+    // hash and return noop:true, silently dropping every assistant claim.
+    const assistant = await scoped("assistant", [CLAIM_C], "run-a1");
+    expect(assistant.noop).toBe(false);
+    expect(assistant.created).toEqual([CLAIM_C.claim_key]);
+    expect(await pendingActions(vault)).toHaveLength(2);
+
+    // Each scope keeps its own idempotency: re-running either is a no-op,
+    // and they don't evict each other.
+    expect((await scoped("user", [CLAIM_A], "run-u2")).noop).toBe(true);
+    expect((await scoped("assistant", [CLAIM_C], "run-a2")).noop).toBe(true);
+    expect(await pendingActions(vault)).toHaveLength(2);
+
+    // One source entry, shared landed map — ratify keys on the bare source-id.
+    expect(Object.keys(readDistillState(vault).sources)).toEqual([SOURCE_ID]);
+  });
+
+  // -------------------------------------------------------------------------
   // Scenario 2: one claim edited → exactly one update-in-place proposal
   // -------------------------------------------------------------------------
 
@@ -453,5 +522,52 @@ describe("distillUpsert (U5 idempotency)", () => {
     // The overlap hint path must appear in the rationale.
     expect(action.rationale).toContain(knownPath);
     expect(action.rationale).toMatch(/Possible overlaps:/);
+  });
+});
+
+describe("distillUpsert — target collection override (#506)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-distill-collection-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("lands the new claim under the overridden collection", async () => {
+    const outcome = await distillUpsert(vault, {
+      sourceId: SOURCE_ID,
+      sourceContent: CONTENT_V1,
+      claims: [CLAIM_A],
+      runId: "run-1",
+      collection: "sensitive-reports",
+    });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.value.created).toEqual([CLAIM_A.claim_key]);
+
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const staged = listed.value.find((a) => a.runId === "run-1");
+    expect(staged?.targetPath).toMatch(/^sensitive-reports\//);
+  });
+
+  it("lands under the default DISTILL_COLLECTION when no override is given", async () => {
+    const outcome = await distillUpsert(vault, {
+      sourceId: SOURCE_ID,
+      sourceContent: CONTENT_V1,
+      claims: [CLAIM_A],
+      runId: "run-2",
+    });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    const listed = await listStagedActions(vault, "pending");
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const staged = listed.value.find((a) => a.runId === "run-2");
+    expect(staged?.targetPath).toMatch(/^distill\//);
   });
 });

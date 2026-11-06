@@ -1,0 +1,24 @@
+{
+  "name": "daftari",
+  "displayName": "Daftari",
+  "version": "1.0.0",
+  "description": "Memory you own: a markdown + Git vault on your disk that Claude searches before answering and writes back to, with replaced beliefs and open contradictions kept visible.",
+  "author": {
+    "name": "Mihir Wagle",
+    "url": "https://github.com/mavaali"
+  },
+  "homepage": "https://github.com/mavaali/daftari",
+  "repository": "https://github.com/mavaali/daftari",
+  "license": "MIT",
+  "keywords": ["memory", "knowledge", "markdown", "mcp"],
+  "icon": "./assets/icon.png",
+  "privacyPolicyUrl": "https://github.com/mavaali/daftari/blob/main/PRIVACY.md",
+  "userConfig": {
+    "vault": {
+      "type": "directory",
+      "title": "Vault folder",
+      "description": "An existing Daftari vault, or an empty folder where a new vault will be created on first start.",
+      "required": true
+    }
+  }
+}

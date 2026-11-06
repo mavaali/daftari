@@ -15,6 +15,11 @@ import * as indexDb from "../../src/storage/index-db.js";
 import { type IndexDb, openIndexDb } from "../../src/storage/index-db.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
+// Fixture dates relative to today, so the healthy docs never cross half their TTL.
+function daysAgo(n: number): string {
+  return new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
+}
+
 const CREDIT_DOC = "pricing/helios-consumption-pricing.md";
 const NORTHWIND_DOC = "competitive-intel/northwind-data-governance.md";
 const INSIGHT_DOC = "competitive-intel/vega-insight-positioning.md";
@@ -268,8 +273,8 @@ domain: product
 collection: general
 status: canonical
 confidence: high
-created: 2026-01-01
-updated: 2026-05-01
+created: ${daysAgo(60)}
+updated: ${daysAgo(30)}
 updated_by: human:test
 provenance: direct
 sources:
@@ -294,8 +299,8 @@ domain: product
 collection: general
 status: canonical
 confidence: high
-created: 2026-02-01
-updated: 2026-04-15
+created: ${daysAgo(60)}
+updated: ${daysAgo(30)}
 updated_by: human:test
 provenance: direct
 sources:

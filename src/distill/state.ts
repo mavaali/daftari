@@ -55,6 +55,13 @@ export interface DistillSourceState {
   emitted_claim_keys?: string[];
   /** Exact failed remainder from an incomplete emit; authoritative on retry. */
   pending_claims?: ExtractedClaim[];
+  /**
+   * Per-scope emit hashes (83b1). A scoped pass (e.g. `--sender assistant`)
+   * distills a different slice of the same file, so it keeps its own hash here
+   * instead of sharing content_hash — otherwise the second sender's pass
+   * matches the first's hash and no-ops. The landed `claims` map stays shared.
+   */
+  scope_hashes?: Record<string, string>;
 }
 
 export interface DistillState {
@@ -204,8 +211,26 @@ export interface DistillUpsertInput {
    * callers remain valid — this field is optional.
    */
   overlapSearch?: OverlapSearchFn;
+  /**
+   * Optional target collection override (#506). Defaults to
+   * propose.ts's DISTILL_COLLECTION when absent — every existing caller is
+   * unaffected. Set by a selected-source connector's enrolled collection.
+   */
+  collection?: string;
   /** Injectable proposal writer used to verify atomic retry behavior. */
   proposeClaims?: typeof proposeAllClaims;
+  /**
+   * Optional idempotency scope within the source (83b1) — the `--sender`
+   * filter. Scoped passes over the same file are tracked independently.
+   */
+  scope?: string;
+  /**
+   * Chunks whose extraction failed this run (ExtractOutcome.chunkErrors.length).
+   * With zero claims, a non-zero count means the run learned nothing about the
+   * source: its hash is NOT recorded, so the next run re-distills instead of
+   * no-op'ing on a hash a failed run wrote (bead b4m3). Absent ⇒ 0.
+   */
+  extractionErrors?: number;
 }
 
 export interface DistillUpsertOutcome {
@@ -241,9 +266,13 @@ export async function distillUpsert(
 
   const state = readDistillState(vaultRoot);
   const prior = state.sources[input.sourceId];
-  const contentHash = sourceContentHash(input.sourceContent);
+  const scope = input.scope;
+  const contentHash = sourceContentHash(
+    scope ? `${scope}\u0000${input.sourceContent}` : input.sourceContent,
+  );
+  const priorHash = scope ? prior?.scope_hashes?.[scope] : prior?.content_hash;
 
-  if (prior !== undefined && prior.content_hash === contentHash) {
+  if (prior !== undefined && priorHash === contentHash) {
     return ok({
       noop: true,
       skipped: [],
@@ -251,6 +280,22 @@ export async function distillUpsert(
       created: [],
       propose: null,
       stateWritten: true,
+    });
+  }
+
+  // A run whose extraction errored and yielded nothing must leave no trace:
+  // recording its hash would make the next (working) run over the same source
+  // a silent no-op that discards every claim it extracts.
+  const extractionErrors = input.extractionErrors ?? 0;
+  if (extractionErrors > 0 && input.claims.length === 0) {
+    return ok({
+      noop: false,
+      skipped: [],
+      updated: [],
+      created: [],
+      propose: null,
+      stateWritten: false,
+      stateError: `extraction failed for ${extractionErrors} chunk(s) and produced no claims; source state not recorded`,
     });
   }
 
@@ -288,7 +333,7 @@ export async function distillUpsert(
   const attempted = await (input.proposeClaims ?? proposeAllClaims)(
     vaultRoot,
     toPropose,
-    { sourceId: input.sourceId, runId: input.runId },
+    { sourceId: input.sourceId, runId: input.runId, collection: input.collection },
     pathOverrides,
     input.overlapSearch,
   );
@@ -321,6 +366,7 @@ export async function distillUpsert(
       pending_content_hash: contentHash,
       emitted_claim_keys: [...emittedClaimKeys].sort(),
       pending_claims: toPropose.filter((claim) => failedClaimKeys.has(claim.claim_key)),
+      ...(prior?.scope_hashes ? { scope_hashes: prior.scope_hashes } : {}),
     };
     const wrote = writeDistillState(vaultRoot, state);
     return ok({
@@ -337,10 +383,17 @@ export async function distillUpsert(
   }
 
   // Advance the emit clock; the landed map only moves via recordLandedClaim.
-  state.sources[input.sourceId] = {
-    content_hash: contentHash,
-    claims: prior?.claims ?? {},
-  };
+  state.sources[input.sourceId] = scope
+    ? {
+        content_hash: prior?.content_hash ?? "",
+        claims: prior?.claims ?? {},
+        scope_hashes: { ...prior?.scope_hashes, [scope]: contentHash },
+      }
+    : {
+        content_hash: contentHash,
+        claims: prior?.claims ?? {},
+        ...(prior?.scope_hashes ? { scope_hashes: prior.scope_hashes } : {}),
+      };
   const wrote = writeDistillState(vaultRoot, state);
 
   return ok({

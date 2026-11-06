@@ -23,7 +23,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../access/rbac.js";
 import { boardDispositionsPath } from "../board/ledger.js";
-import type { Finding, LedgerEvent } from "../board/types.js";
+import type { LedgerEvent } from "../board/types.js";
 import { requireDefined } from "../test-utils/require-defined.js";
 import type { DaftariConfig, RoleConfig } from "../utils/config.js";
 import { vaultBoardDispose, vaultBoardList, vaultBoardResolve } from "./board.js";
@@ -120,11 +120,6 @@ function readLedgerEvents(vaultRoot: string): LedgerEvent[] {
     .map((l) => JSON.parse(l) as LedgerEvent);
 }
 
-/** Find all ledger events with a given event type. */
-function eventsOfType(vaultRoot: string, eventType: string): LedgerEvent[] {
-  return readLedgerEvents(vaultRoot).filter((e) => e.event === eventType);
-}
-
 // ---------------------------------------------------------------------------
 // Role + AccessContext fixtures
 // ---------------------------------------------------------------------------
@@ -181,7 +176,9 @@ const scopedHumanAccess: AccessContext = {
 function makeConfig(roles: Record<string, RoleConfig>, principals: string[] = []): DaftariConfig {
   return {
     roles,
+    defaultRole: null,
     schemaExtensions: [],
+    indexedFields: [],
     hooks: { preWrite: [], preWriteTransform: [] },
     autoCommit: false,
     watch: false,
@@ -198,6 +195,8 @@ function makeConfig(roles: Record<string, RoleConfig>, principals: string[] = []
     holderAliases: {},
     shadowMode: false,
     shadowModeSet: false,
+    visibility: "shared",
+    leakGate: { mode: "refuse" },
     gitDir: undefined,
     lintVoice: "plain",
     tensionScan: {
@@ -214,8 +213,10 @@ function makeConfig(roles: Record<string, RoleConfig>, principals: string[] = []
         authFailureBurst: 10,
         authFailuresPerMinute: 6,
         maxInFlight: 32,
+        maxBodyBytes: 4_194_304,
       },
       audit: false,
+      trustedProxies: [],
     },
     storage: undefined,
     codeRepos: {},
@@ -232,7 +233,6 @@ function makeConfig(roles: Record<string, RoleConfig>, principals: string[] = []
 // ---------------------------------------------------------------------------
 
 const FIXED_NOW = new Date("2026-01-01T00:00:00Z");
-const STALE_DATE = new Date(FIXED_NOW.getTime() - 200 * 86_400_000).toISOString().slice(0, 10);
 
 // ---------------------------------------------------------------------------
 // Vault seeders
@@ -280,12 +280,12 @@ function seedMultiCollectionVault(): string {
   writeDoc(
     vaultRoot,
     "restricted/secret-doc.md",
-    frontmatter({
+    `${frontmatter({
       title: "Secret",
       collection: "restricted",
       updated: "2020-01-01",
       ttl_days: null,
-    }) + "# Secret\n\nNobody can see me if scoped.\n",
+    })}# Secret\n\nNobody can see me if scoped.\n`,
   );
   return vaultRoot;
 }
@@ -923,7 +923,7 @@ describe("R15 — no tool path can emit or accept 'reopened'", () => {
     });
 
     // Resolve while condition still exists
-    const result = await vaultBoardResolve(vaultRoot, humanAccess, config, {
+    await vaultBoardResolve(vaultRoot, humanAccess, config, {
       finding_id: finding.identity_key,
     });
 

@@ -42,11 +42,16 @@ export const VAULT_GITIGNORE = `# Daftari rebuilds these from the markdown files
 .daftari/integration-queue.json
 .daftari/integration-queue.json.tmp-*
 .daftari/integration-review.jsonl
+# Board session-cookie audience (3p4.8) — unique per deployment; a copy
+# committed and cloned elsewhere would let the two accept each other's cookies.
+.daftari/session-audience
 # Transient backfill staging surface (daftari backfill --plan). The apply
 # commit is the durable audit trail — the plan itself is never committed.
 .daftari/backfill-plan.jsonl
 # Nightly wake-queue snapshot (daftari sleep) — regenerated each cycle.
 .daftari/wake-queue.jsonl
+# Finder metadata — a vault seeded into a folder the user picked often has one.
+.DS_Store
 `;
 
 // A stable line guaranteed to appear in VAULT_GITIGNORE; used as the marker to

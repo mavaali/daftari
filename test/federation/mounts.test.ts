@@ -64,6 +64,25 @@ afterEach(() => {
 });
 
 describe("loadMounts", () => {
+  it("loads the referenced vault's resolved indexed declarations", async () => {
+    makeVault(
+      "ref",
+      `${REF_CONFIG}\nschema_extensions:\n  priority:\n    type: number\nindexed_fields: [priority]\n`,
+    );
+    const result = await loadMounts(
+      canonical,
+      mountsOf({ research: "../ref" }),
+      "human:mihir",
+      () => {},
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.mounts.get("research")?.indexedFields).toEqual([
+        { field: "priority", type: "number" },
+      ]);
+    }
+  });
+
   it("loads a mount and resolves the granted principal to the referenced vault's role", async () => {
     makeVault("ref", REF_CONFIG);
     const notices: string[] = [];
@@ -253,6 +272,7 @@ describe("parseFederatedPath", () => {
           role: null,
           roleName: "guest",
           schemaExtensions: [],
+          indexedFields: [],
           indexMode: "full",
         },
       ],

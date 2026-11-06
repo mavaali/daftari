@@ -11,6 +11,7 @@
 //   6. buildReceipt — approx cost via estimateCostUSD (reuse, not duplicate)
 
 import { describe, expect, it } from "vitest";
+import { estimateCostUSD, isModelPriced } from "../../src/consolidate/constants.js";
 import type { NormalizedMessage } from "../../src/distill/adapters/types.js";
 import { chunkMessages } from "../../src/distill/chunk.js";
 import {
@@ -494,5 +495,30 @@ describe("DistillReceipt type shape", () => {
     expect(typeof r.truncated).toBe("boolean");
     expect(typeof r.approxCostUSD).toBe("number");
     expect(typeof r.completedAt).toBe("string");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Price table covers current models (bead 4v1q: claude-sonnet-5-5 fell back to
+// Haiku pricing in --plan)
+// ---------------------------------------------------------------------------
+
+describe("price table — current models", () => {
+  it.each([
+    ["claude-opus-5-5", 4, 20],
+    ["claude-sonnet-5-5", 2, 10],
+    ["claude-haiku-4-5", 1, 5],
+    ["claude-fable-5-1", 10, 50],
+    ["claude-opus-4-8", 5, 25],
+    ["claude-sonnet-4-6", 3, 15],
+  ])("%s is priced at $%d/$%d per MTok", (model, input, output) => {
+    expect(isModelPriced(model)).toBe(true);
+    expect(estimateCostUSD(model, 1_000_000, 0)).toBeCloseTo(input);
+    expect(estimateCostUSD(model, 0, 1_000_000)).toBeCloseTo(output);
+  });
+
+  it("planDistill reports the sonnet-5-5 estimate as priced, not Haiku fallback", () => {
+    const chunks = chunkMessages([msg(0, "hello")]);
+    expect(planDistill(chunks, { ...CONFIG, model: "claude-sonnet-5-5" }).priced).toBe(true);
   });
 });

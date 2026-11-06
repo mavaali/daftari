@@ -123,6 +123,17 @@ h2 { line-height:1.25; }
 .body pre code { background:none; padding:0; }
 .body blockquote { border-left:3px solid var(--border-2); margin:0; padding-left:14px; color:var(--muted); }
 
+/* syntax highlighting — monochrome by design: epistemic colors (good/warn/bad/
+   accent) are reserved for document STANDING, so code tokens are weight and
+   tone only, never hue. */
+.hljs-comment, .hljs-quote { color:var(--faint); font-style:italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-tag { color:var(--hi); font-weight:700; }
+.hljs-string, .hljs-attr, .hljs-template-tag, .hljs-template-variable { color:var(--text); }
+.hljs-number, .hljs-type, .hljs-symbol { color:var(--muted); }
+.hljs-title, .hljs-name, .hljs-section, .hljs-built_in { color:var(--hi); }
+.hljs-deletion { text-decoration:line-through; color:var(--faint); }
+.hljs-emphasis { font-style:italic; } .hljs-strong { font-weight:700; }
+
 /* backlinks */
 .backlinks { margin-top:22px; }
 .backlinks h2 { font-size:12px; color:var(--muted); font-family:var(--mono);

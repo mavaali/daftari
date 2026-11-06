@@ -82,6 +82,37 @@ describe("storage sync engine (#6)", () => {
     rmSync(target, { recursive: true, force: true });
   });
 
+  it("hook modules never sync, and a poisoned manifest cannot restore them (F2)", async () => {
+    // Executable hook modules must not travel through the unauthenticated
+    // backing — same reason git config/hooks never do. Hook paths are
+    // arbitrary vault-relative paths, so a module anywhere in the tree counts.
+    mkdirSync(join(vault, ".daftari", "hooks"), { recursive: true });
+    writeFileSync(join(vault, ".daftari", "hooks", "poison.mjs"), "export default () => [];\n");
+    writeFileSync(join(vault, "evil.mjs"), "export default () => [];\n");
+
+    expect((await syncVault(vault, backend)).ok).toBe(true);
+    const keys = await backend.list("tree/");
+    expect(keys.ok).toBe(true);
+    if (!keys.ok) return;
+    expect(keys.value.some((k) => k.endsWith(".mjs"))).toBe(false);
+
+    // An attacker-authored backing lists an executable hook — restore refuses.
+    await backend.put("tree/.daftari/hooks/poison.mjs", Buffer.from("export default () => [];\n"));
+    const manifestRaw = await backend.get(MANIFEST_KEY);
+    if (!manifestRaw.ok || manifestRaw.value === null) throw new Error("manifest missing");
+    const manifest = JSON.parse(manifestRaw.value.toString());
+    manifest.files[".daftari/hooks/poison.mjs"] = "00";
+    await backend.put(MANIFEST_KEY, Buffer.from(JSON.stringify(manifest)));
+
+    const target = join(mkdtempSync(join(tmpdir(), "daftari-restore-hook-poison-")), "vault");
+    const restored = await restoreVault(target, backend);
+    expect(restored.ok).toBe(true);
+    if (!restored.ok) return;
+    expect(restored.value.skippedExcluded).toBe(1);
+    expect(existsSync(join(target, ".daftari", "hooks", "poison.mjs"))).toBe(false);
+    rmSync(target, { recursive: true, force: true });
+  });
+
   it("first push uploads the tree + .git + durable state, never the rebuildables", async () => {
     const result = await syncVault(vault, backend);
     expect(result.ok).toBe(true);

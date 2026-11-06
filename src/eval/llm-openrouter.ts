@@ -14,7 +14,6 @@
 import { err, ok, type Result } from "../frontmatter/types.js";
 import {
   type CompleteJsonOpts,
-  type CompleteJsonResult,
   type CompleteOpts,
   type CompleteResult,
   type CompleteWithToolsOpts,
@@ -22,6 +21,7 @@ import {
   completeJsonWithRetry,
   type LlmClient,
   retry,
+  sendableTemperature,
 } from "./llm.js";
 import type { CortexEvalError } from "./types.js";
 
@@ -35,7 +35,21 @@ export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 // DAFTARI_OPENROUTER_TIMEOUT_MS overrides it (the deadline is operator policy).
 const REQUEST_TIMEOUT_MS = Number(process.env.DAFTARI_OPENROUTER_TIMEOUT_MS) || 120_000;
 
-export type LlmTransport = "anthropic" | "openrouter";
+export type LlmTransport = "anthropic" | "openrouter" | "ollama";
+
+// Local transport: an OpenAI-compatible server (Ollama) on THIS machine. Its
+// whole point is that source text never leaves the box, so the base URL is
+// loopback-only by construction — an env override pointing off-host is refused,
+// never honored.
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+export function ollamaBaseUrl(): string {
+  const raw = process.env.DAFTARI_OLLAMA_BASE_URL || "http://127.0.0.1:11434/v1";
+  const host = new URL(raw).hostname;
+  if (!LOOPBACK_HOSTS.has(host)) {
+    throw new Error(`ollama transport is loopback-only; refusing host '${host}'`);
+  }
+  return raw.replace(/\/$/, "");
+}
 
 // Transport selection: explicit value (CLI flag) wins, then the
 // DAFTARI_LLM_TRANSPORT env var, then "anthropic" (the historical default —
@@ -48,8 +62,10 @@ export function resolveTransport(explicit: string | undefined): Result<LlmTransp
   const raw = (explicit || process.env.DAFTARI_LLM_TRANSPORT)?.trim();
   if (raw === undefined || raw === "") return ok("anthropic");
   const norm = raw.toLowerCase();
-  if (norm === "anthropic" || norm === "openrouter") return ok(norm);
-  return err(new Error(`unknown LLM transport '${raw}' — valid values: anthropic, openrouter`));
+  if (norm === "anthropic" || norm === "openrouter" || norm === "ollama") return ok(norm);
+  return err(
+    new Error(`unknown LLM transport '${raw}' — valid values: anthropic, openrouter, ollama`),
+  );
 }
 
 // OpenAI-style tool call as relayed by OpenRouter: `function.arguments` is a
@@ -102,8 +118,13 @@ function flattenContent(content: unknown): string | undefined {
   return undefined;
 }
 
-export function createOpenRouterClient(opts?: { fetchImpl?: typeof fetch }): LlmClient {
-  const apiKey = process.env.OPENROUTER_API_KEY;
+export function createOpenRouterClient(opts?: {
+  fetchImpl?: typeof fetch;
+  baseUrl?: string;
+  apiKey?: string;
+}): LlmClient {
+  const apiKey = opts?.apiKey ?? process.env.OPENROUTER_API_KEY;
+  const baseUrl = opts?.baseUrl ?? OPENROUTER_BASE_URL;
   if (!apiKey) {
     throw new Error("OPENROUTER_API_KEY env var is required for the openrouter transport");
   }
@@ -118,13 +139,15 @@ export function createOpenRouterClient(opts?: { fetchImpl?: typeof fetch }): Llm
   ): Promise<Result<OpenRouterChatResponse, CortexEvalError>> => {
     let res: Awaited<ReturnType<typeof fetch>>;
     try {
-      res = await fetchImpl(`${OPENROUTER_BASE_URL}/chat/completions`, {
+      res = await fetchImpl(`${baseUrl}/chat/completions`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(payload),
+        // Zero data retention on every call (complete + tool loop share this path):
+        // OpenRouter routes only to ZDR endpoints and errors rather than falling back.
+        body: JSON.stringify({ ...payload, provider: { zdr: true } }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (e) {
@@ -169,11 +192,12 @@ export function createOpenRouterClient(opts?: { fetchImpl?: typeof fetch }): Llm
   };
 
   const complete = async (o: CompleteOpts): Promise<Result<CompleteResult, CortexEvalError>> => {
+    const temperature = sendableTemperature(o.model, o.temperature);
     return retry(async () => {
       const json = await postChat({
         model: o.model,
         max_tokens: o.maxTokens ?? 4096,
-        ...(o.temperature !== undefined ? { temperature: o.temperature } : {}),
+        ...(temperature !== undefined ? { temperature } : {}),
         messages: [
           { role: "system", content: o.system },
           { role: "user", content: o.user },
@@ -198,7 +222,7 @@ export function createOpenRouterClient(opts?: { fetchImpl?: typeof fetch }): Llm
         // Served model echoed by the provider (distinct from o.model) and the
         // temperature we actually sent (undefined ⇒ none). Metadata only (6mf.6).
         servedModel: json.value.model,
-        effectiveTemperature: o.temperature,
+        effectiveTemperature: temperature,
       });
     });
   };
@@ -231,13 +255,14 @@ export function createOpenRouterClient(opts?: { fetchImpl?: typeof fetch }): Llm
     }));
     let totalIn = 0;
     let totalOut = 0;
+    const temperature = sendableTemperature(o.model, o.temperature);
 
     for (let round = 0; round < maxRounds; round++) {
       const res = await retry(async () =>
         postChat({
           model: o.model,
           max_tokens: o.maxTokens ?? 4096,
-          ...(o.temperature !== undefined ? { temperature: o.temperature } : {}),
+          ...(temperature !== undefined ? { temperature } : {}),
           tools,
           messages,
         }),

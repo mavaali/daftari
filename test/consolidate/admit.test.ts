@@ -14,6 +14,10 @@ import { addTension } from "../../src/curation/tension.js";
 import { type LoadedDoc, loadDocuments } from "../../src/curation/vault-docs.js";
 import { err } from "../../src/frontmatter/types.js";
 
+function daysAgo(n: number): string {
+  return new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
 let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "daftari-admit-"));
@@ -35,7 +39,7 @@ async function loadDocs(vaultRoot: string): Promise<LoadedDoc[]> {
 // silent (no TTL expiry). All required built-in fields present + valid enums so
 // validateFrontmatter passes (provenanceKnown=true).
 function cleanDoc(title: string, opts: { sources?: string[]; updated?: string } = {}): string {
-  const updated = opts.updated ?? "2026-06-17";
+  const updated = opts.updated ?? daysAgo(1);
   const sources =
     opts.sources && opts.sources.length > 0
       ? `[${opts.sources.map((s) => `"${s}"`).join(", ")}]`

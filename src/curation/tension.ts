@@ -159,17 +159,25 @@ export function tensionsPath(vaultRoot: string): string {
   return join(vaultRoot, ".daftari", "tensions.md");
 }
 
+// Every value interpolated into a block is free text (titles, claims,
+// principals, rationales). The format is line-oriented — a value carrying a
+// line break could forge a `- **Label:**` line or a `## ` block boundary on
+// re-parse — so every field is flattened to one line at this one boundary.
+function oneLine(v: string): string {
+  return v.replace(/\r\n|[\r\n\u2028\u2029]/g, " ");
+}
+
 function renderResolution(resolution: TensionResolution): string {
   const lines = [
-    `- **Resolved at:** ${resolution.resolved_at}`,
-    `- **Resolved by:** ${resolution.resolved_by}`,
-    `- **Resolution kind:** ${resolution.kind}`,
+    `- **Resolved at:** ${oneLine(resolution.resolved_at)}`,
+    `- **Resolved by:** ${oneLine(resolution.resolved_by)}`,
+    `- **Resolution kind:** ${oneLine(resolution.kind)}`,
   ];
   if (resolution.rationale !== undefined && resolution.rationale.length > 0) {
-    lines.push(`- **Rationale:** ${resolution.rationale}`);
+    lines.push(`- **Rationale:** ${oneLine(resolution.rationale)}`);
   }
   if (resolution.references !== undefined && resolution.references.length > 0) {
-    lines.push(`- **References:** ${resolution.references.join(", ")}`);
+    lines.push(`- **References:** ${oneLine(resolution.references.join(", "))}`);
   }
   return lines.join("\n");
 }
@@ -179,19 +187,19 @@ function renderResolution(resolution: TensionResolution): string {
 // are written only when set, to preserve legacy entries untouched on read /
 // re-render.
 function renderEntry(entry: TensionEntry): string {
-  const lines = [`## ${entry.date} — ${entry.title}`];
-  if (entry.id !== undefined) lines.push(`- **Id:** ${entry.id}`);
-  if (entry.kind !== "unspecified") lines.push(`- **Kind:** ${entry.kind}`);
-  lines.push(`- **Source A:** ${entry.sourceA} says ${entry.claimA}`);
-  lines.push(`- **Source B:** ${entry.sourceB} says ${entry.claimB}`);
-  lines.push(`- **Status:** ${entry.status}`);
-  lines.push(`- **Logged by:** ${entry.loggedBy}`);
-  if (entry.positionA !== undefined) lines.push(`- **Position A:** ${entry.positionA}`);
-  if (entry.positionB !== undefined) lines.push(`- **Position B:** ${entry.positionB}`);
-  if (entry.readerA !== undefined) lines.push(`- **Reader A:** ${entry.readerA}`);
-  if (entry.readerB !== undefined) lines.push(`- **Reader B:** ${entry.readerB}`);
+  const lines = [`## ${oneLine(entry.date)} — ${oneLine(entry.title)}`];
+  if (entry.id !== undefined) lines.push(`- **Id:** ${oneLine(entry.id)}`);
+  if (entry.kind !== "unspecified") lines.push(`- **Kind:** ${oneLine(entry.kind)}`);
+  lines.push(`- **Source A:** ${oneLine(entry.sourceA)} says ${oneLine(entry.claimA)}`);
+  lines.push(`- **Source B:** ${oneLine(entry.sourceB)} says ${oneLine(entry.claimB)}`);
+  lines.push(`- **Status:** ${oneLine(entry.status)}`);
+  lines.push(`- **Logged by:** ${oneLine(entry.loggedBy)}`);
+  if (entry.positionA !== undefined) lines.push(`- **Position A:** ${oneLine(entry.positionA)}`);
+  if (entry.positionB !== undefined) lines.push(`- **Position B:** ${oneLine(entry.positionB)}`);
+  if (entry.readerA !== undefined) lines.push(`- **Reader A:** ${oneLine(entry.readerA)}`);
+  if (entry.readerB !== undefined) lines.push(`- **Reader B:** ${oneLine(entry.readerB)}`);
   if (entry.decidedByPrincipal)
-    lines.push(`- **Decided by principal:** ${entry.decidedByPrincipal}`);
+    lines.push(`- **Decided by principal:** ${oneLine(entry.decidedByPrincipal)}`);
   if (entry.resolution !== undefined) {
     lines.push(renderResolution(entry.resolution));
   }

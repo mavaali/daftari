@@ -1,5 +1,13 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -24,9 +32,10 @@ describe("daftari --init", () => {
     expect(code).toBe(0);
 
     expect(existsSync(join(vault, ".daftari", "config.yaml"))).toBe(true);
-    expect(readFileSync(join(vault, ".daftari", "config.yaml"), "utf8")).toContain(
-      "manage_integrations: true",
-    );
+    const scaffolded = readFileSync(join(vault, ".daftari", "config.yaml"), "utf8");
+    expect(scaffolded).toContain("manage_integrations: true");
+    // kg64: a fresh local vault is usable without --role.
+    expect(scaffolded).toMatch(/^default_role: admin$/m);
     expect(existsSync(join(vault, ".gitignore"))).toBe(true);
     for (const collection of ["competitive-intel", "pricing", "moonshot", "_drafts"]) {
       expect(existsSync(join(vault, collection))).toBe(true);
@@ -65,18 +74,13 @@ describe("daftari --vault", () => {
   // Boots the CLI as a subprocess and waits for the server to report it is
   // serving over stdio. A clean boot proves --vault wiring (config load, index
   // build, server connect) works end to end.
-  function bootServer(vault: string): Promise<{ ok: boolean; stderr: string }> {
+  function bootServer(
+    vault: string,
+    extra: string[] = ["--user", "tester", "--role", "admin"],
+  ): Promise<{ ok: boolean; stderr: string }> {
     return new Promise((resolveBoot) => {
       const tsx = resolve("node_modules/.bin/tsx");
-      const proc = spawn(tsx, [
-        "src/cli.ts",
-        "--vault",
-        vault,
-        "--user",
-        "tester",
-        "--role",
-        "admin",
-      ]);
+      const proc = spawn(tsx, ["src/cli.ts", "--vault", vault, ...extra]);
       let stderr = "";
       // Resolve only from the exit handler so cleanupVault never races the
       // child's background work (the lazy-model warm in #38 PR 2/5 actively
@@ -104,6 +108,36 @@ describe("daftari --vault", () => {
       const result = await bootServer(vault);
       expect(result.ok).toBe(true);
       expect(result.stderr).toContain("role=admin");
+    } finally {
+      cleanupVault(vault);
+    }
+  }, 60_000);
+
+  // kg64: an --init vault declares default_role: admin, so a local stdio
+  // start without --role is usable instead of a silent deny-all guest.
+  it("runs as the config's default_role when --role is omitted", async () => {
+    const vault = makeTempVault();
+    try {
+      mkdirSync(join(vault, ".daftari"), { recursive: true });
+      writeFileSync(
+        join(vault, ".daftari", "config.yaml"),
+        "version: 1\nroles:\n  admin:\n    read: ['*']\n    write: ['*']\ndefault_role: admin\n",
+      );
+      const result = await bootServer(vault, []);
+      expect(result.ok).toBe(true);
+      expect(result.stderr).toContain("role=admin");
+      expect(result.stderr).toContain("no --role given — using default_role 'admin'");
+    } finally {
+      cleanupVault(vault);
+    }
+  }, 60_000);
+
+  it("stays deny-all guest without --role when no default_role is set", async () => {
+    const vault = makeTempVault();
+    try {
+      const result = await bootServer(vault, []);
+      expect(result.ok).toBe(true);
+      expect(result.stderr).toContain("role=guest");
     } finally {
       cleanupVault(vault);
     }
@@ -277,6 +311,109 @@ describe("--tools tier flag (#103/#104)", () => {
       });
       expect(result.ok).toBe(true);
       expect(result.stderr).toContain("unknown tool 'vault_definitely_not'");
+    } finally {
+      cleanupVault(vault);
+    }
+  }, 60_000);
+});
+
+describe("daftari --vault <path> --init-if-missing", () => {
+  const boot = (vault: string) =>
+    new Promise<{ stdout: string; stderr: string }>((resolveBoot) => {
+      const tsx = resolve("node_modules/.bin/tsx");
+      const proc = spawn(tsx, [
+        "src/cli.ts",
+        "--vault",
+        vault,
+        "--init-if-missing",
+        "--user",
+        "me",
+        "--role",
+        "admin",
+      ]);
+      let stdout = "";
+      let stderr = "";
+      const timer = setTimeout(() => proc.kill(), 50_000);
+      proc.stdout.on("data", (c) => {
+        stdout += c.toString();
+        if (stdout.includes("\n")) proc.kill();
+      });
+      proc.stderr.on("data", (c) => {
+        stderr += c.toString();
+      });
+      proc.on("exit", () => {
+        clearTimeout(timer);
+        resolveBoot({ stdout, stderr });
+      });
+      proc.stdin.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2025-06-18",
+            capabilities: {},
+            clientInfo: { name: "t", version: "1" },
+          },
+        })}\n`,
+      );
+    });
+
+  it("scaffolds an empty vault on first start and keeps stdout pure JSON-RPC", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "daftari-plugin-"));
+    const vault = join(parent, "data", "vault");
+    try {
+      const { stdout } = await boot(vault);
+      expect(JSON.parse(stdout.split("\n")[0] ?? "").result.serverInfo.name).toBe("daftari");
+      expect(existsSync(join(vault, ".daftari", "config.yaml"))).toBe(true);
+      expect(existsSync(join(vault, ".git"))).toBe(true);
+      // A real memory store must not start with fictional example documents.
+      expect(existsSync(join(vault, "pricing", "helios-consumption-pricing.md"))).toBe(false);
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("scaffolds into an existing empty folder the user picked", async () => {
+    const vault = mkdtempSync(join(tmpdir(), "daftari-picked-"));
+    const { writeFileSync } = await import("node:fs");
+    // Finder drops one of these into any folder it has opened.
+    writeFileSync(join(vault, ".DS_Store"), "");
+    try {
+      const { stdout } = await boot(vault);
+      expect(JSON.parse(stdout.split("\n")[0] ?? "").result.serverInfo.name).toBe("daftari");
+      expect(existsSync(join(vault, ".daftari", "config.yaml"))).toBe(true);
+      const { execFileSync } = await import("node:child_process");
+      const tracked = execFileSync("git", ["ls-files"], { cwd: vault, encoding: "utf8" });
+      expect(tracked).not.toContain(".DS_Store");
+    } finally {
+      rmSync(vault, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("refuses a non-empty folder that is not a vault", async () => {
+    const vault = mkdtempSync(join(tmpdir(), "daftari-notes-"));
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(join(vault, "notes.md"), "# mine\n");
+    try {
+      const { stdout, stderr } = await boot(vault);
+      expect(stdout).toBe("");
+      expect(stderr).toContain("not a Daftari vault");
+      expect(existsSync(join(vault, ".daftari"))).toBe(false);
+    } finally {
+      rmSync(vault, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("leaves an existing vault untouched", async () => {
+    const vault = makeTempVault();
+    const { writeFileSync } = await import("node:fs");
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    writeFileSync(join(vault, ".daftari", "config.yaml"), "roles:\n  admin:\n    read: ['*']\n");
+    try {
+      const { stdout } = await boot(vault);
+      expect(JSON.parse(stdout.split("\n")[0] ?? "").result).toBeDefined();
+      expect(readFileSync(join(vault, ".daftari", "config.yaml"), "utf8")).toContain("read: ['*']");
     } finally {
       cleanupVault(vault);
     }

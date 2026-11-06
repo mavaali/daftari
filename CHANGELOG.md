@@ -7,6 +7,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Release metadata drift; MCP registry publishing** (slrf) — `server.json` (1.32.0) and `manifest.json` (3.13.1, no tools) had drifted from npm. New `npm run sync:release` syncs both to `package.json` and lists every registered tool in the MCPB manifest; `test/release-metadata.test.ts` fails CI on drift. A tag push now also publishes `server.json` to the official MCP registry via GitHub OIDC (pinned, checksummed `mcp-publisher`).
+- **Tension log fields can no longer forge lines or blocks** — every free-text value written to `.daftari/tensions.md` (title, claims, logged-by, principal, positions, readers, resolution rationale/references) is flattened to one line at the single render boundary. Before, a line break in any of them could inject a `- **Label:**` line (e.g. a fake `Status: resolved`) or a whole `## ` block on re-parse.
+
+### Changed
+
+- **`default_role` config key; `--init` vaults default to `admin`** (kg64) — a stdio server started without `--role` now runs as the config's `default_role` instead of silently becoming the deny-all guest. `daftari --init` scaffolds `default_role: admin`, so a fresh local vault works out of the box. Existing vaults without the key keep the deny-all guest default; `daftari serve` ignores it. An undeclared role name is a malformed-config error.
+
+### Security
+
+- **Board session cookies are bound to their deployment** (3p4.8) — the signed session payload now carries a per-vault random audience (`.daftari/session-audience`, gitignored, generated on first `serve`), and `/board` accepts a cookie only if it matches this vault and the configured `server.auth.session.maps_to` user and role. A validly-signed cookie from another deployment sharing the key is rejected. Existing board sessions are invalidated once; log in again. Docs now require a unique signing key per deployment.
+
+## [3.17.0] - 2026-10-25
+
+### Added
+
+- **Daftari as a plugin for Claude Code, Cowork, ChatGPT, and Codex** — `plugins/daftari/` carries both an [Agent Plugins](https://agent-plugins.org) manifest (ChatGPT / Codex, via `.agents/plugins/marketplace.json`) and a Claude plugin manifest (Claude Code / Cowork, via `.claude-plugin/marketplace.json`), sharing one `daftari-memory` skill that tells the agent when to search, write drafts with truthful provenance, supersede, and leave contradictions visible. Claude installs prompt for a **vault folder**. See `docs/agent-plugin.md`.
+- **`--init-if-missing`** — the stdio server seeds an empty vault (no example documents; summary to stderr so stdout stays JSON-RPC) when `--vault` is missing or an empty folder (Finder's `.DS_Store` ignored), serves an existing vault as-is, and refuses a non-empty folder that is not a vault rather than serving arbitrary files as one.
+
+## [3.16.0] - 2026-10-03
+
+### Added
+
+- **Cross-vault private→shared leak gate** (opt-in, default off) — a `visibility: private|shared` vault flag and a `leak_gate.mode: refuse|warn|off` block. In `refuse`, a write to a `shared` vault is blocked when the same agent run (`run_id`) read a `private`-visibility source, correlated via a cross-process, run_id-keyed session ledger (no document paths stored). A `visibility: private` vault defaults to an active mode so its reads are journaled — `refuse` on the shared vault alone is enough. Covers `vault_write`/`append`/frontmatter tools and `vault_merge` — every one accepts an optional `run_id`, so agents can use them on a `refuse`-mode shared vault; fail-closed (run_id-less agent write, unreadable ledger, or un-journalable private read all deny). Documented limitations in `docs/leak-gate.md` (rephrase laundering + single-host ledger are out of scope).
+
+## [3.15.0] - 2026-09-29
+
+### Added
+
+- **Local `ollama` LLM transport** — `--transport ollama` (or `DAFTARI_LLM_TRANSPORT=ollama`) runs distill/sleep/consolidate/eval against an OpenAI-compatible server on this machine (default `http://127.0.0.1:11434/v1`, override `DAFTARI_OLLAMA_BASE_URL`). Loopback-only by construction: an off-host base URL is refused, never honored — the transport's guarantee is that source text never leaves the box. No API key needed. Distill receipts record `provider: "ollama"`.
+
+### Fixed
+
+- **Distill dropped every assistant-side claim** — a `--sender user` pass then a `--sender assistant` pass over the same session file shared one whole-file content hash, so the second pass matched the first and returned `noop` after already paying for extraction. Sender-scoped passes now keep their own hash (`scope_hashes`) on the same source entry; the landed-claim map stays shared. Unscoped callers are unchanged.
+- **A new transport could silently bill the Anthropic key** — four copies of an `openrouter ? … : anthropic` ternary (distill, sleep, consolidate, eval) are replaced by one `createTransportClient`, so an unhandled transport can no longer fall through to Anthropic.
+
+### Changed
+
+- **OpenRouter requests ask for zero data retention** — every OpenRouter call sends `provider: { zdr: true }`, routing only to ZDR endpoints (Haiku 4.5 → Amazon Bedrock / Google). A model with no ZDR endpoint now errors ("No endpoints found matching your data policy") instead of falling back to a retaining provider.
+
+## [3.14.0] - 2026-09-16
+
+### Added
+
+- **Microsoft 365 (Graph) human-selected document ingestion connector** (#492, #514) — a third `ProviderAdapter` alongside Google Docs and Notion: Entra OAuth with rotated refresh tokens, Graph `delta` discovery over an opaque-cursor contract, bounded fetch/download with no token leak on the SAS redirect, webhook subscriptions (timing-safe verify, one per drive), enrollment resolve/estimate/status routes, and a File Picker page (vendored MSAL, exact CSP, no token ever reaches Daftari). Native OOXML (docx/pptx, speaker notes preserved) and `pdfjs-dist` text-layer PDF extraction run through a new provider-neutral `src/extract/`, with a bounded `worker_threads` harness and zip-bomb/entity-expansion/encrypted-file guards. Declassification is explicit and twice-gated rather than inherited from per-source permissions. Known follow-ups (bead-tracked, none blocking): per-enrollment status counts need `enrollmentId` engine plumbing, and the picker doesn't yet render the pre-consent cost/readers estimate.
+- **Viewer R11: code syntax highlighting** (#572) — the `/board` viewer highlights code blocks, continuing the R-series redesign.
+
+### Fixed
+
+- **Search walker/watcher parity** (#537, #560) — the file walker and the live watcher applied different rules for which documents count as managed, so a change could be indexed on one path and missed on the other. They now share one exclusion implementation.
+- **Sleep tension-scan retries failed verdicts** (#539) — a failed or unparseable LLM verdict during the tension scan logged no conflict and was then treated as judged, so it was never revisited. Only successfully-judged pairs are now skipped on the next scan; failures are retried.
+
+### Changed
+
+- **Dependency bumps** (#563, #564, #567, #568, #569, #570) — `tsx`, the npm-minor-and-patch group, `hono` (root and `packages/router`), and `sharp`/`next` in the Berlin Bureau example app.
+
+## [3.13.1] - 2026-09-06
+
+### Security
+
+- **OKF import confinement and validation** (#540) — preflight the complete import batch before mutation, reject unsafe source and destination paths and conflicting destinations, and validate imported frontmatter before writing. Includes regression coverage for path confinement and failure recovery.
+- **Dependency fixes** (#557) — override sharp and adm-zip to patched versions.
+
+### Fixed
+
+- **OKF failure reporting and retries** (#540) — report incomplete writes, commits, and indexing as failures. Retrying unchanged documents completes pending commit or indexing work without an empty commit. Runtime write failures can still leave partial files; the CLI reports that state explicitly.
+- **Webhook registration** (#558, #559) — persist two-phase webhook registration state before provider callbacks, support plaintext validation echoes, and avoid replacing pending webhook state while an existing webhook remains fresh.
+
+## [3.13.0] - 2026-09-05
+
+### Added
+
+- **Declared frontmatter filtering in search** (#513) — a bounded `indexed_fields` config promotes scalar `schema_extensions` into a typed, rebuildable `document_fields` projection, and `vault_search` gains AND-composed equality and range predicates over those fields (deterministic queryless filtering and exact filtered-vector ranking). Filter values compile to bound SQL parameters, RBAC and validity constraints apply before filter limits, hidden documents stay omitted, and existing unfiltered KNN behavior is unchanged. The projection rebuilds when its config fingerprint changes while preserving durable embeddings.
+
+### Fixed
+
+- **Connector updates stay retryable** (#553, #534) — a failed connector update no longer persists a new revision under the old completed hash; changed revisions keep their empty-hash pending marker until distillation succeeds, so a later sync retries the failed work instead of skipping it. (Revisions already persisted as falsely-complete are not auto-migrated and need a targeted refresh.)
+- **Exact Git path history preserved** (#553, #538) — bulk Git history parsing uses NUL-delimited fields and preserves exact pathnames instead of trimming trailing whitespace on quoted, newline-delimited paths, covering accented/CJK names, tabs, embedded newlines, and control-byte prefixes.
+
+### Changed
+
+- **Dependency and CI bumps** (#497, #483, #502, #503, #504, #434) — the npm-minor-and-patch group plus `qs`, `fast-uri`, `vitest`, and `actions/upload-artifact` are updated.
+
+## [3.12.1] - 2026-08-27
+
+### Security
+
+Hardening pass from an internal security audit (advisories GHSA-8896-gmfh-87m5 and a companion advisory covering the serve findings).
+
+- **RBAC read gated on the canonical path** — `vault_read` and the `daftari://` resource read now derive the access-control collection from the resolved canonical path, not the caller-supplied path, closing a read-authorization bypass via noncanonical paths.
+- **Backups no longer carry executable hook modules** — vault hook modules are excluded from the sync/backup channel in both directions and the hook loader is realpath-confined, so a poisoned restore cannot deliver code a later write would execute.
+- **Bounded `/mcp` request body** — the request body is capped (`server.limits.max_body_bytes`, default 4 MiB) and read under an absolute deadline before processing, bounding memory/slot exhaustion from oversized or slow bodies.
+- **Trusted-proxy CIDRs** — `X-Forwarded-For` is honored only from configured `server.trusted_proxies` CIDRs, with the client taken from the first non-proxy hop, so a direct client cannot forge their rate-limit/penalty key. **Breaking:** the boolean `server.trust_proxy` is removed — set `server.trusted_proxies` (a CIDR list) instead.
+- **Filesystem storage backend realpath-confined** — the fs backend rejects symlinked path components that escape the vault root.
+- **CI security-review action pinned** — the third-party GitHub Action that holds repository secrets is pinned to a commit SHA.
+- **Penalty box hard cap** — the per-source auth-failure penalty box stays bounded under source-IP churn.
+
 ## [3.12.0] - 2026-08-26
 
 ### Added

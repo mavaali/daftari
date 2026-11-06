@@ -12,8 +12,12 @@
 //   - the payload bytes are parsed ONLY after the MAC verifies, so no
 //     attacker-controlled JSON is trusted before authentication;
 //   - `exp` (unix seconds) is enforced against an injected `nowSec` so the
-//     check is deterministic in tests and monotonic in production.
-import { createHmac, timingSafeEqual } from "node:crypto";
+//     check is deterministic in tests and monotonic in production;
+//   - `aud` binds the token to one deployment (3p4.8): a cookie minted by
+//     another vault's server is rejected even if the signing key is shared.
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { err, ok, type Result } from "../frontmatter/types.js";
 
 export interface SessionPayload {
@@ -21,6 +25,27 @@ export interface SessionPayload {
   role: string;
   // Absolute expiry, unix seconds.
   exp: number;
+  // Deployment audience — sessionAudience(vaultRoot) of the minting server.
+  aud: string;
+}
+
+// The audience a server mints and accepts: a random id generated once per
+// vault and kept in .daftari/session-audience (gitignored, machine-local).
+// Not derived from the path — containers that all mount at /vault would
+// otherwise share it. Created with 'wx' so concurrent first starts agree.
+export function sessionAudience(vaultRoot: string): string {
+  const path = join(vaultRoot, ".daftari", "session-audience");
+  try {
+    return readFileSync(path, "utf-8").trim();
+  } catch {
+    mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
+    try {
+      writeFileSync(path, randomBytes(16).toString("hex"), { flag: "wx", mode: 0o600 });
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    }
+    return readFileSync(path, "utf-8").trim();
+  }
 }
 
 export function signSession(payload: SessionPayload, key: Buffer): string {
@@ -33,6 +58,7 @@ export function verifySession(
   token: string,
   key: Buffer,
   nowSec: number,
+  audience: string,
 ): Result<SessionPayload, Error> {
   const dot = token.indexOf(".");
   // A single interior "." with non-empty halves. `a.b.c` fails here too, since
@@ -76,5 +102,8 @@ export function verifySession(
   if (obj.exp <= nowSec) {
     return err(new Error("session expired"));
   }
-  return ok({ user: obj.user, role: obj.role, exp: obj.exp });
+  if (obj.aud !== audience) {
+    return err(new Error("session audience mismatch"));
+  }
+  return ok({ user: obj.user, role: obj.role, exp: obj.exp, aud: audience });
 }

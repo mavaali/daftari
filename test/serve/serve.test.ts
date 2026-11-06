@@ -17,7 +17,6 @@ import {
   httpCallbackBase,
   matchToken,
   prepareStorageSync,
-  resolvePublicRemote,
   runServe,
   type ServeHandle,
   startHttpServer,
@@ -34,7 +33,7 @@ const LIGHT = "zephyr overview note";
 
 // A vault with a restricted collection ranked on top (the RBAC leak vector)
 // plus a config declaring two roles and two token entries.
-function buildVault(withTokens: boolean): string {
+function buildVault(withTokens: boolean, extraConfig = ""): string {
   const dir = mkdtempSync(join(tmpdir(), "daftari-serve-"));
   mkdirSync(join(dir, "notes"), { recursive: true });
   const notes = [
@@ -73,7 +72,7 @@ roles:
     read: ["*"]
     write: ["*"]
     manage_integrations: true
-${tokensBlock}`,
+${tokensBlock}${extraConfig}`,
   );
   return dir;
 }
@@ -368,6 +367,39 @@ describe("serve with no auth declared (loopback guest mode)", () => {
   }, 30_000);
 });
 
+// kg64: default_role is a stdio convenience for a local single user. serve
+// must never apply it — an unauthenticated HTTP caller stays the guest even
+// when the vault's config names admin as its default.
+describe("serve ignores default_role (kg64)", () => {
+  let vault: string;
+  let handle: ServeHandle;
+
+  beforeAll(async () => {
+    vault = buildVault(false, "default_role: admin\n");
+    const reindexed = await vaultReindex(vault);
+    if (!reindexed.ok) throw reindexed.error;
+    const cfg = loadedConfig(vault);
+    expect(cfg.defaultRole).toBe("admin");
+    const gate = validateServeStartup(cfg, "127.0.0.1", process.env);
+    if (!gate.ok) throw new Error(gate.error);
+    handle = await startHttpServer(vault, cfg, gate.tokens, "127.0.0.1", 0);
+  }, 60_000);
+
+  afterAll(async () => {
+    await handle.close();
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("a request without a token is the deny-all guest, not default_role", async () => {
+    const guest = await connect(handle.port);
+    try {
+      expect(await searchPaths(guest, "zephyr protocol calibration")).toEqual([]);
+    } finally {
+      await guest.close();
+    }
+  }, 30_000);
+});
+
 describe("prepareStorageSync gates periodic sync before the listener (#6)", () => {
   it("no configured cadence is ok(null); an uncreatable backend refuses", async () => {
     const dir = mkdtempSync(join(tmpdir(), "daftari-serve-sync-"));
@@ -623,12 +655,6 @@ describe("serve integration runtime wiring", () => {
   it("brackets an IPv6 loopback callback host", () => {
     expect(httpCallbackBase("::1", 8787)).toBe("http://[::1]:8787");
     expect(httpCallbackBase("127.0.0.1", 8787)).toBe("http://127.0.0.1:8787");
-  });
-
-  it("trusts a validated forwarded client IP only when proxy trust is explicit", () => {
-    expect(resolvePublicRemote("10.0.0.5", "203.0.113.9, 10.0.0.4", true)).toBe("203.0.113.9");
-    expect(resolvePublicRemote("10.0.0.5", "203.0.113.9", false)).toBe("10.0.0.5");
-    expect(resolvePublicRemote("10.0.0.5", "attacker.example", true)).toBe("10.0.0.5");
   });
 
   it("enforces connector capability, authentication penalty, and in-flight limits", async () => {

@@ -6,6 +6,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { err, ok, type Result } from "../../frontmatter/types.js";
+import { confineRealpath } from "../../utils/realpath-confine.js";
 import type { StorageBackend } from "../backend.js";
 import { walkFiles } from "../fs-walk.js";
 
@@ -17,6 +18,12 @@ function keyToPath(root: string, key: string): Result<string, Error> {
   if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
     return err(new Error(`storage key escapes backend root: ${key}`));
   }
+  // Lexical confinement above cannot see through symlinks: a component under
+  // the root may link outside it, and get/put/delete would follow it (F5).
+  // Realpath both root and target (walking up over a not-yet-created leaf) and
+  // re-check confinement so an escaping symlink is rejected.
+  const confined = confineRealpath(root, target, "storage key");
+  if (!confined.ok) return err(new Error(`storage key escapes backend root: ${key}`));
   return ok(target);
 }
 
@@ -34,6 +41,10 @@ export function createFsBackend(path: string, prefix?: string): Result<StorageBa
     if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
       return err(new Error(`storage.prefix escapes the fs path: ${prefix}`));
     }
+    // A prefix that is itself a symlink out of `base` passes the lexical check
+    // above but resolves outside the declared path (F5). Realpath-confine it.
+    const confined = confineRealpath(base, root, "storage.prefix");
+    if (!confined.ok) return err(new Error(`storage.prefix escapes the fs path: ${prefix}`));
   }
 
   return ok({

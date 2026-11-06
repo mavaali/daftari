@@ -1,4 +1,13 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import matter from "gray-matter";
@@ -35,6 +44,133 @@ One row per order.
 
   afterEach(() => {
     for (const dir of tmpDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it.each([false, true])(
+    "rejects an invalid batch before changing any files (dryRun=%s)",
+    async (dryRun) => {
+      const bundle = mkTmp("okf-bundle-");
+      const vault = mkTmp("okf-vault-");
+      writeDoc(bundle, "a.md", foreignDoc);
+      writeDoc(bundle, "z.md", "---\ntitle: [broken\n---\n");
+      writeDoc(vault, "a.md", "original bytes");
+      const result = await importBundle(bundle, vault, { dryRun });
+      expect(result.ok).toBe(false);
+      expect(readFileSync(join(vault, "a.md"), "utf8")).toBe("original bytes");
+      expect(readdirSync(vault)).toEqual(["a.md"]);
+    },
+  );
+
+  it.each(["source", "destination"])(
+    "preflights %s confinement for the entire batch",
+    async (side) => {
+      const bundle = mkTmp("okf-bundle-");
+      const vault = mkTmp("okf-vault-");
+      const outside = mkTmp("okf-outside-");
+      writeDoc(bundle, "a.md", foreignDoc);
+      writeDoc(vault, "a.md", "original bytes");
+      writeDoc(outside, "z.md", foreignDoc);
+      if (side === "source") {
+        symlinkSync(join(outside, "z.md"), join(bundle, "z.md"));
+      } else {
+        writeDoc(bundle, "nested/z.md", foreignDoc);
+        symlinkSync(outside, join(vault, "nested"));
+      }
+      const before = readFileSync(join(outside, "z.md"), "utf8");
+      const result = await importBundle(bundle, vault);
+      expect(result.ok).toBe(false);
+      expect(readFileSync(join(vault, "a.md"), "utf8")).toBe("original bytes");
+      expect(readFileSync(join(outside, "z.md"), "utf8")).toBe(before);
+      expect(existsSync(join(vault, ".git"))).toBe(false);
+    },
+  );
+
+  it("rejects two planned destinations resolving to the same file", async () => {
+    const bundle = mkTmp("okf-bundle-");
+    const vault = mkTmp("okf-vault-");
+    writeDoc(bundle, "a.md", foreignDoc);
+    writeDoc(bundle, "b.md", foreignDoc.replace("Orders", "Different"));
+    writeDoc(vault, "a.md", "original bytes");
+    symlinkSync("a.md", join(vault, "b.md"));
+    const result = await importBundle(bundle, vault);
+    expect(result.ok).toBe(false);
+    expect(readFileSync(join(vault, "a.md"), "utf8")).toBe("original bytes");
+  });
+
+  it("rejects directory destinations before writing earlier documents", async () => {
+    const bundle = mkTmp("okf-bundle-");
+    const vault = mkTmp("okf-vault-");
+    writeDoc(bundle, "a.md", foreignDoc);
+    writeDoc(bundle, "z.md", foreignDoc);
+    mkdirSync(join(vault, "z.md"));
+    const result = await importBundle(bundle, vault);
+    expect(result.ok).toBe(false);
+    expect(existsSync(join(vault, "a.md"))).toBe(false);
+  });
+
+  it("rejects a dangling destination link before writing earlier documents", async () => {
+    const bundle = mkTmp("okf-bundle-");
+    const vault = mkTmp("okf-vault-");
+    const outside = mkTmp("okf-outside-");
+    writeDoc(bundle, "a.md", foreignDoc);
+    writeDoc(bundle, "z.md", foreignDoc);
+    symlinkSync(join(outside, "missing.md"), join(vault, "z.md"));
+    const result = await importBundle(bundle, vault);
+    expect(result.ok).toBe(false);
+    expect(existsSync(join(vault, "a.md"))).toBe(false);
+    expect(readdirSync(outside)).toEqual([]);
+  });
+
+  it("allows confined destination links and commits the actual document", async () => {
+    const bundle = mkTmp("okf-bundle-");
+    const vault = mkTmp("okf-vault-");
+    writeDoc(bundle, "a.md", foreignDoc);
+    writeDoc(vault, "actual.md", "original");
+    symlinkSync("actual.md", join(vault, "a.md"));
+    const result = await importBundle(bundle, vault);
+    expect(result.ok && result.value.commit).toBeTruthy();
+    expect(readFileSync(join(vault, "actual.md"), "utf8")).toContain("One row per order.");
+  });
+
+  it("reimports identical documents successfully without an empty commit", async () => {
+    const bundle = mkTmp("okf-bundle-");
+    const vault = mkTmp("okf-vault-");
+    writeDoc(bundle, "a.md", foreignDoc);
+    expect((await importBundle(bundle, vault)).ok).toBe(true);
+    const repeat = await importBundle(bundle, vault);
+    expect(repeat.ok).toBe(true);
+    if (!repeat.ok) return;
+    expect(repeat.value.commit).toBeNull();
+    expect(repeat.value.imported).toBe(0);
+    expect(repeat.value.reindexed).toBe(true);
+  });
+
+  it("rejects invalid mapped frontmatter instead of silently coercing it", async () => {
+    const bundle = mkTmp("okf-bundle-");
+    const vault = mkTmp("okf-vault-");
+    writeDoc(bundle, "a.md", foreignDoc);
+    writeDoc(
+      bundle,
+      "z.md",
+      matter.stringify("body", {
+        type: "note",
+        daftari: { title: "Invalid", status: "bogus" },
+      }),
+    );
+    const result = await importBundle(bundle, vault);
+    expect(result.ok).toBe(false);
+    expect(readdirSync(vault)).toEqual([]);
+  });
+
+  it("preserves nested documents named index.md and log.md", async () => {
+    const bundle = mkTmp("okf-bundle-");
+    const vault = mkTmp("okf-vault-");
+    writeDoc(bundle, "notes/index.md", foreignDoc);
+    writeDoc(bundle, "notes/log.md", foreignDoc);
+    const result = await importBundle(bundle, vault);
+    expect(result.ok && result.value.imported).toBe(2);
+    expect(existsSync(join(vault, "notes/index.md"))).toBe(true);
+    expect(existsSync(join(vault, "notes/log.md"))).toBe(true);
   });
 
   it("dry-run reports the plan and writes nothing", async () => {

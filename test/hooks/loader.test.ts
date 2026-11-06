@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -89,6 +89,22 @@ describe("hooks loader", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.message).toContain("escapes vault root");
+  });
+
+  it("rejects a hook reached through a symlinked component that escapes the vault (F2)", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "daftari-hook-outside-"));
+    try {
+      writeFileSync(join(outside, "evil.mjs"), "export default function evil() { return []; }\n");
+      mkdirSync(join(vault, ".daftari"), { recursive: true });
+      // vault/.daftari/hooks → outside: a lexical path check sees no `..`.
+      symlinkSync(outside, join(vault, ".daftari", "hooks"));
+      const result = await loadHook(vault, { path: ".daftari/hooks/evil.mjs" });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("escapes vault root");
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it("rejects an absolute hook path", async () => {

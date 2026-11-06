@@ -12,15 +12,21 @@
 #   manage_integrations — whether the role may connect OAuth providers and
 #                         manage webhook verification material (default false)
 #
-# "*" in a read or write list is a wildcard matching every collection. A role
-# that is not started with --role, or a name not listed here, falls back to an
-# implicit "guest" with no permissions — every tool is denied.
+# "*" in a read or write list is a wildcard matching every collection. Without
+# --role the server uses default_role (below); with neither, or with a name not
+# listed here, it falls back to an implicit "guest" with no permissions — every
+# tool is denied.
 #
 # The roles below are scoped to the collections `daftari --init` scaffolds
 # (competitive-intel, pricing, moonshot, _drafts). Edit them to match your own
 # collections — they are examples, not a fixed schema.
 version: 1
 vault_name: my-vault
+
+# The role a local (stdio) server runs as when started without --role. Remove
+# it to make a missing --role mean the deny-all guest. `daftari serve` ignores
+# it: network callers get their role from server.auth.
+default_role: admin
 
 roles:
   analyst:

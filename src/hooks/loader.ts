@@ -9,6 +9,7 @@ import { stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import { confineRealpath } from "../utils/realpath-confine.js";
 import type {
   HookDeclaration,
   LoadedHook,
@@ -33,6 +34,12 @@ function resolveHookPath(vaultRoot: string, hookPath: string): Result<string, Er
   if (!existsSync(abs)) {
     return err(new Error(`hook file not found: ${hookPath}`));
   }
+  // Lexical confinement above cannot see through symlinks: a component under
+  // the vault (e.g. a symlinked .daftari/hooks) can point outside it, and the
+  // dynamic import would then execute code from beyond the vault (F2). Realpath
+  // both vault root and target and re-check confinement.
+  const confined = confineRealpath(vaultRoot, abs, "hook path");
+  if (!confined.ok) return err(new Error(`hook path escapes vault root: ${hookPath}`));
   return ok(abs);
 }
 

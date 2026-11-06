@@ -7,8 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createOpenRouterClient,
   OPENROUTER_BASE_URL,
+  ollamaBaseUrl,
   resolveTransport,
 } from "../../src/eval/llm-openrouter.js";
+import { createTransportClient } from "../../src/eval/transport.js";
 
 // Minimal fake of the fetch Response surface the client uses.
 function fakeRes(status: number, body: unknown) {
@@ -75,6 +77,9 @@ describe("complete", () => {
     expect(headers.Authorization).toBe("Bearer sk-or-test");
     const body = JSON.parse(String(init.body));
     expect(body.model).toBe("anthropic/claude-haiku-4.5");
+    // Zero data retention on every request: OpenRouter routes only to ZDR endpoints
+    // and errors (no fallback) when none exists — verified live 2026-09-29.
+    expect(body.provider).toEqual({ zdr: true });
     expect(body.max_tokens).toBe(4096);
     expect(body.temperature).toBe(0);
     expect(body.messages).toEqual([
@@ -103,6 +108,38 @@ describe("complete", () => {
     const fetchImpl = vi.fn(async () => fakeRes(200, okBody("x")));
     const client = createOpenRouterClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
     await client.complete(OPTS);
+    const body = JSON.parse(
+      String((fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1].body),
+    );
+    expect("temperature" in body).toBe(false);
+  });
+
+  it("omits temperature for an anthropic model id that rejects sampling params (bead 4v1q)", async () => {
+    const fetchImpl = vi.fn(async () => fakeRes(200, okBody("x")));
+    const client = createOpenRouterClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    const r = await client.complete({
+      ...OPTS,
+      model: "anthropic/claude-sonnet-5.5",
+      temperature: 0,
+    });
+    const body = JSON.parse(
+      String((fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1].body),
+    );
+    expect("temperature" in body).toBe(false);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.effectiveTemperature).toBeUndefined();
+  });
+
+  it("omits temperature on the tool loop for a model that rejects sampling params", async () => {
+    const fetchImpl = vi.fn(async () => fakeRes(200, okBody("x")));
+    const client = createOpenRouterClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    await client.completeWithTools({
+      ...OPTS,
+      model: "anthropic/claude-opus-4.7",
+      temperature: 0,
+      tools: [],
+      toolHandler: async () => null,
+    });
     const body = JSON.parse(
       String((fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1].body),
     );
@@ -472,5 +509,50 @@ describe("createOpenRouterClient — completeWithTools", () => {
     if (!r.ok) return;
     expect(r.value.text).toBe("recovered");
     expect(r.value.tool_calls[0].output).toEqual({ tool_error: "boom" });
+  });
+});
+
+describe("ollama transport (loopback-only)", () => {
+  const saved = { ...process.env };
+  afterEach(() => {
+    process.env = { ...saved };
+  });
+
+  it("resolves 'ollama' as a transport", () => {
+    const r = resolveTransport("ollama");
+    expect(r.ok && r.value).toBe("ollama");
+  });
+
+  it("defaults to the local Ollama OpenAI-compatible endpoint", () => {
+    delete process.env.DAFTARI_OLLAMA_BASE_URL;
+    expect(ollamaBaseUrl()).toBe("http://127.0.0.1:11434/v1");
+  });
+
+  it("refuses an off-host base URL — the transport's guarantee is on-machine", () => {
+    process.env.DAFTARI_OLLAMA_BASE_URL = "https://ollama.example.com/v1";
+    expect(() => ollamaBaseUrl()).toThrow(/loopback-only/);
+    const c = createTransportClient("ollama");
+    expect(c.ok).toBe(false);
+  });
+
+  it("needs no API key and never falls through to Anthropic", () => {
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.DAFTARI_OLLAMA_BASE_URL;
+    expect(createTransportClient("ollama").ok).toBe(true);
+    expect(createTransportClient("anthropic").ok).toBe(false);
+  });
+
+  it("posts to the injected base URL", async () => {
+    const fetchImpl = vi.fn(async () =>
+      fakeRes(200, { choices: [{ message: { content: "ok" } }] }),
+    );
+    const client = createOpenRouterClient({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      baseUrl: "http://127.0.0.1:11434/v1",
+      apiKey: "ollama",
+    });
+    await client.complete({ model: "qwen3:14b", system: "s", user: "u" });
+    expect(String(fetchImpl.mock.calls[0][0])).toBe("http://127.0.0.1:11434/v1/chat/completions");
   });
 });

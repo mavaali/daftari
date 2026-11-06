@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type ServeHandle, startHttpServer, validateServeStartup } from "../../src/serve/index.js";
+import { sessionAudience, signSession } from "../../src/serve/session.js";
 import { type DaftariConfig, loadConfig } from "../../src/utils/config.js";
 
 const SIGNING_KEY = "0123456789abcdef0123456789abcdef"; // 32 bytes
@@ -263,6 +264,42 @@ describe("board login shim — session configured", () => {
     });
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("/board/login");
+  });
+
+  // 3p4.8: a validly-signed cookie must also match this deployment's
+  // configured session identity and audience — a shared signing key alone
+  // is not enough to authenticate.
+  async function boardWith(token: string): Promise<Response> {
+    return fetch(u(handle.port, "/board"), {
+      headers: { accept: "text/html", cookie: `daftari_session=${token}` },
+      redirect: "manual",
+    });
+  }
+  const key = Buffer.from(SIGNING_KEY, "utf-8");
+  const exp = () => Math.floor(Date.now() / 1000) + 3600;
+
+  it("3p4.8: a validly-signed cookie for another vault (same key) is rejected", async () => {
+    const other = signSession(
+      { user: "human:mihir", role: "admin", exp: exp(), aud: "0".repeat(32) },
+      key,
+    );
+    expect((await boardWith(other)).status).toBe(302);
+  });
+
+  it("3p4.8: a validly-signed cookie with a non-configured user is rejected", async () => {
+    const wrongUser = signSession(
+      { user: "agent:machine", role: "admin", exp: exp(), aud: sessionAudience(vault) },
+      key,
+    );
+    expect((await boardWith(wrongUser)).status).toBe(302);
+  });
+
+  it("3p4.8: a validly-signed cookie matching identity + audience is honored", async () => {
+    const good = signSession(
+      { user: "human:mihir", role: "admin", exp: exp(), aud: sessionAudience(vault) },
+      key,
+    );
+    expect((await boardWith(good)).status).toBe(200);
   });
 
   it("U7: cookie-authed dispose without CSRF token → 403", async () => {

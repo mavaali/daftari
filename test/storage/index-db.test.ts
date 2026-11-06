@@ -21,12 +21,14 @@ import {
   getMeta,
   type IndexDb,
   type IndexedDocument,
+  type IndexedFieldValue,
   insertChunkRow,
   insertDocument,
   insertEmbedding,
   insertEmbeddingVec,
   openIndexDb,
   parseJsonColumn,
+  replaceDocumentFields,
   setMeta,
 } from "../../src/storage/index-db.js";
 import { sha256Hex } from "../../src/utils/hash.js";
@@ -77,6 +79,77 @@ describe("index-db", () => {
     const read = getDocument(db, "pricing/foo.md");
     expect(read).toEqual(sampleDoc);
     expect(getAllDocuments(db)).toEqual([sampleDoc]);
+  });
+
+  it("creates the typed document-fields projection and lookup indexes", () => {
+    const columns = db.prepare("PRAGMA table_info(document_fields)").all() as { name: string }[];
+    expect(columns.map((column) => column.name)).toEqual([
+      "path",
+      "field",
+      "kind",
+      "text_value",
+      "number_value",
+      "bool_value",
+    ]);
+    const indexes = db.prepare("PRAGMA index_list(document_fields)").all() as { name: string }[];
+    expect(indexes.map((index) => index.name)).toEqual(
+      expect.arrayContaining([
+        "idx_document_fields_text",
+        "idx_document_fields_number",
+        "idx_document_fields_bool",
+      ]),
+    );
+  });
+
+  it("replaces, clears, and explicitly deletes projected field rows", () => {
+    insertDocument(db, sampleDoc);
+    const initial: IndexedFieldValue[] = [
+      { field: "owner", kind: "string", textValue: "human:mihir" },
+      { field: "priority", kind: "number", numberValue: 2 },
+      { field: "urgent", kind: "boolean", boolValue: true },
+      { field: "due_date", kind: "date", textValue: "2026-09-15" },
+    ];
+    replaceDocumentFields(db, sampleDoc.path, initial);
+    expect(
+      db
+        .prepare(
+          "SELECT field, kind, text_value, number_value, bool_value FROM document_fields WHERE path = ? ORDER BY field",
+        )
+        .all(sampleDoc.path),
+    ).toEqual([
+      {
+        field: "due_date",
+        kind: "date",
+        text_value: "2026-09-15",
+        number_value: null,
+        bool_value: null,
+      },
+      {
+        field: "owner",
+        kind: "string",
+        text_value: "human:mihir",
+        number_value: null,
+        bool_value: null,
+      },
+      { field: "priority", kind: "number", text_value: null, number_value: 2, bool_value: null },
+      { field: "urgent", kind: "boolean", text_value: null, number_value: null, bool_value: 1 },
+    ]);
+
+    replaceDocumentFields(db, sampleDoc.path, [
+      { field: "priority", kind: "number", numberValue: 5 },
+    ]);
+    expect(
+      db
+        .prepare("SELECT field, number_value FROM document_fields WHERE path = ?")
+        .all(sampleDoc.path),
+    ).toEqual([{ field: "priority", number_value: 5 }]);
+
+    clearIndex(db);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM document_fields").get()).toEqual({ n: 0 });
+    insertDocument(db, sampleDoc);
+    replaceDocumentFields(db, sampleDoc.path, initial);
+    deleteDocument(db, sampleDoc.path);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM document_fields").get()).toEqual({ n: 0 });
   });
 
   it("round-trips a chunk and its embedding via the join", () => {
@@ -172,9 +245,15 @@ describe("index-db", () => {
 
   it("schema versioning: drops and recreates tables on version mismatch", () => {
     // Stamp a stale schema version and insert a document.
-    setMeta(db, "schema_version", "1");
+    setMeta(db, "schema_version", "11");
     insertDocument(db, sampleDoc);
+    replaceDocumentFields(db, sampleDoc.path, [
+      { field: "priority", kind: "number", numberValue: 2 },
+    ]);
+    const hash = sha256Hex("durable cache");
+    insertEmbedding(db, hash, MODEL, new Float32Array([1, 2, 3]), "2026-05-20T00:00:00Z", 3);
     expect(documentCount(db)).toBe(1);
+    expect(embeddingCount(db)).toBe(1);
     db.close();
 
     // Reopen the same DB — openIndexDb must detect the version mismatch,
@@ -189,8 +268,9 @@ describe("index-db", () => {
     db = reopened.value;
 
     expect(documentCount(db)).toBe(0);
-    expect(embeddingCount(db)).toBe(0);
-    expect(getMeta(db, "schema_version")).toBe("11");
+    expect(embeddingCount(db)).toBe(1);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM document_fields").get()).toEqual({ n: 0 });
+    expect(getMeta(db, "schema_version")).toBe("12");
     expect(getMeta(db, "vault_manifest")).toBeNull();
   });
 
@@ -213,10 +293,9 @@ describe("index-db", () => {
     db = reopened.value;
 
     expect(documentCount(db)).toBe(0);
-    expect(getMeta(db, "schema_version")).toBe("11");
-    // All five expected tables now exist on a fresh index: three
-    // regular tables (documents, chunks, embeddings, meta) plus two
-    // virtual tables (documents_fts, embeddings_vec).
+    expect(getMeta(db, "schema_version")).toBe("12");
+    // The fresh index includes the document-fields projection in addition to
+    // the document/chunk/cache/meta tables and both virtual search tables.
     const tables = db
       .prepare(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -226,6 +305,7 @@ describe("index-db", () => {
     expect(names.has("documents")).toBe(true);
     expect(names.has("chunks")).toBe(true);
     expect(names.has("embeddings")).toBe(true);
+    expect(names.has("document_fields")).toBe(true);
     expect(names.has("documents_fts")).toBe(true);
     expect(names.has("embeddings_vec")).toBe(true);
     // The new embeddings table now has a `dim` column — confirm via a write

@@ -51,6 +51,11 @@ import — adopt an OKF bundle into a vault (auto-commits + reindexes):
   self-declared type is not an authorization; review it and elevate with
   vault_set_tier. Unmapped OKF fields are preserved under okf_* keys.
 
+  The complete batch is validated before any document is written, including
+  during --dry-run. Invalid batches fail without applying earlier documents.
+  Write, commit, or indexing failures return a nonzero status; files already
+  written remain on disk. Rerun after fixing the error to finish the import.
+
   --help, -h           Show this help.
 `;
 

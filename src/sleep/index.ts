@@ -23,12 +23,9 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { resolveAccess } from "../access/rbac.js";
 import { sourceReadable } from "../curation/tension-access.js";
-import { createAnthropicClient, type LlmClient } from "../eval/llm.js";
-import {
-  createOpenRouterClient,
-  type LlmTransport,
-  resolveTransport,
-} from "../eval/llm-openrouter.js";
+import type { LlmClient } from "../eval/llm.js";
+import { type LlmTransport, resolveTransport } from "../eval/llm-openrouter.js";
+import { createTransportClient } from "../eval/transport.js";
 import { ok } from "../frontmatter/types.js";
 import { openIndexForActiveProvider, vaultSearchRelated } from "../tools/search.js";
 import { loadConfig } from "../utils/config.js";
@@ -80,10 +77,10 @@ Dream types (--dream, default 'circadian'):
     for each candidate doc (never-scanned first, then changed since the last
     scan, capped at --max-docs), retrieve related docs and judge ONE pair of
     claims per LLM call. Conservative: related-but-compatible is not a
-    conflict; an unparseable verdict defaults to no-conflict. Conflicts land
+    conflict; a failed verdict logs no conflict and is retried. Conflicts land
     on the tension ledger (kind factual|temporal|interpretive), attributed to
     the scan agent. Judged pairs persist in .daftari/tension-scan-state.json
-    — unchanged pairs are never re-judged; open tensions are never re-logged.
+    — successful unchanged pairs are never re-judged; open tensions are never re-logged.
 
 Flags (circadian):
   --vault <path>         Vault root (default: current directory).
@@ -250,17 +247,8 @@ function readPositiveInt(
 // check runs before the constructor so a missing key fails fast with a clear
 // message instead of the client's terse internal throw.
 function constructLlm(transport: LlmTransport): { llm: LlmClient } | { error: string } {
-  const keyVar = transport === "openrouter" ? "OPENROUTER_API_KEY" : "ANTHROPIC_API_KEY";
-  if (!process.env[keyVar]) {
-    return { error: `${keyVar} env var is required (transport: ${transport})` };
-  }
-  try {
-    return {
-      llm: transport === "openrouter" ? createOpenRouterClient() : createAnthropicClient(),
-    };
-  } catch (e) {
-    return { error: e instanceof Error ? e.message : String(e) };
-  }
+  const res = createTransportClient(transport);
+  return res.ok ? { llm: res.value } : { error: res.error.message };
 }
 
 async function runTensionScanCli(argv: string[], vaultRoot: string): Promise<number> {

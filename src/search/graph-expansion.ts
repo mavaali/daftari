@@ -159,7 +159,7 @@ function adjacency(pairs: readonly (readonly [string, string])[]): Map<string, S
 // The pass. Returns `ranked` UNCHANGED (same reference) when disabled or when no
 // neighbor clears the floor, so the call site's identity check is meaningful.
 export async function applyGraphExpansion(
-  db: IndexDb,
+  _db: IndexDb,
   vaultRoot: string,
   query: string,
   ranked: HybridHit[],

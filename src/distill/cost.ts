@@ -51,6 +51,9 @@ import type { DistillConfig } from "../utils/config.js";
 import type { Chunk } from "./chunk.js";
 import type { ExtractOutcome } from "./extract.js";
 
+/** A DistillConfig whose claim cap has been resolved for this run (resolveMaxClaims). */
+export type RunDistillConfig = DistillConfig & { maxClaims: number };
+
 // ---------------------------------------------------------------------------
 // Token estimation constants (pre-flight heuristic)
 // ---------------------------------------------------------------------------
@@ -108,13 +111,13 @@ export interface DistillPlan {
 export interface BuildReceiptOpts {
   /** The outcome from a completed extractClaims run. */
   outcome: ExtractOutcome;
-  /** The distill config that governed this run. */
-  config: DistillConfig;
+  /** The distill config that governed this run, with its resolved claim cap. */
+  config: RunDistillConfig;
   /**
-   * Transport that made the LLM calls: "anthropic" | "openrouter".
+   * Transport that made the LLM calls: "anthropic" | "openrouter" | "ollama".
    * Passed explicitly by the CLI (U7) from resolveDistillClient's transport.
    */
-  provider: "anthropic" | "openrouter";
+  provider: "anthropic" | "openrouter" | "ollama";
   /**
    * Zero-data-retention flag. Must be supplied explicitly by the caller —
    * never inferred from provider. See ZDR design note at the top of this file.
@@ -143,7 +146,7 @@ export interface DistillReceipt {
   /** Model id used for every extraction call. */
   model: string;
   /** LLM transport used. */
-  provider: "anthropic" | "openrouter";
+  provider: "anthropic" | "openrouter" | "ollama";
   /**
    * Whether this run was made under a zero-data-retention arrangement.
    * This is caller-asserted, not verified by daftari. Default: false.
@@ -183,7 +186,7 @@ export interface DistillReceipt {
  * @param chunks   - Pre-computed chunks from chunkMessages().
  * @param config   - DistillConfig for this vault.
  */
-export function planDistill(chunks: Chunk[], config: DistillConfig): DistillPlan {
+export function planDistill(chunks: Chunk[], config: RunDistillConfig): DistillPlan {
   const chunkCount = chunks.length;
 
   if (chunkCount === 0) {

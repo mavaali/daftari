@@ -154,6 +154,73 @@ describe("runTensionScan — detection and attribution", () => {
 });
 
 describe("runTensionScan — conservative failure modes", () => {
+  it.each([
+    { error: { kind: "runtime", message: "transient failure" } },
+    { parsed: { verdict: "yes" } },
+  ] satisfies ScriptEntry[])("retries failed pairs after reloading state: %j", async (failure) => {
+    writeDoc("ops/a.md", "A.");
+    writeDoc("ops/b.md", "B.");
+    writeDoc("ops/c.md", "C.");
+    const { llm, calls } = stubLlm([failure, NO_CONFLICT, NO_CONFLICT]);
+    const deps = {
+      llm,
+      searchNeighbors: stubSearch({
+        "ops/a.md": ["ops/b.md", "ops/c.md"],
+        "ops/b.md": ["ops/a.md"],
+      }),
+    };
+    const first = await runTensionScan(opts(), deps);
+    expect(first.ok && first.value.parseFailures).toBe(1);
+    expect(readTensionScanState(vault).scanned["ops/a.md"]).toBeUndefined();
+    expect(readTensionScanState(vault).scanned["ops/b.md"]).toBeUndefined();
+    expect(readTensionScanState(vault).judgedPairs).toHaveLength(1);
+    const retry = await runTensionScan(opts(), deps);
+    expect(retry.ok && retry.value.pairsJudged).toBe(1);
+    expect(calls()).toBe(3);
+    const done = await runTensionScan(opts(), deps);
+    expect(done.ok && done.value.candidates).toBe(0);
+  });
+
+  it("retries a failed ledger write without checkpointing the conflict", async () => {
+    writeDoc("ops/a.md", "A.");
+    writeDoc("ops/b.md", "B.");
+    const scripted = stubLlm([CONFLICT, CONFLICT]);
+    let failWrite = true;
+    const deps = {
+      llm: {
+        ...scripted.llm,
+        completeJson: async (request: Parameters<LlmClient["completeJson"]>[0]) => {
+          if (failWrite) mkdirSync(join(vault, ".daftari", "tensions.md"), { recursive: true });
+          return scripted.llm.completeJson(request);
+        },
+      },
+      searchNeighbors: stubSearch({ "ops/a.md": ["ops/b.md"], "ops/b.md": ["ops/a.md"] }),
+    };
+    const first = await runTensionScan(opts(), deps);
+    expect(first.ok && first.value.tensionLogFailures).toBe(1);
+    expect(readTensionScanState(vault).judgedPairs).toHaveLength(0);
+    failWrite = false;
+    rmSync(join(vault, ".daftari", "tensions.md"), { recursive: true });
+    const retry = await runTensionScan(opts(), deps);
+    expect(retry.ok && retry.value.tensionsLogged).toBe(1);
+    expect(scripted.calls()).toBe(2);
+  });
+
+  it("invalidates an earlier completed document when a later neighbor judgment fails", async () => {
+    writeDoc("ops/a.md", "A.");
+    writeDoc("ops/b.md", "B.");
+    const { llm } = stubLlm([{ parsed: null }, NO_CONFLICT]);
+    const deps = {
+      llm,
+      searchNeighbors: stubSearch({ "ops/b.md": ["ops/a.md"] }),
+    };
+    const first = await runTensionScan(opts(), deps);
+    expect(first.ok && first.value.docsScanned).toBe(0);
+    expect(readTensionScanState(vault).scanned).toEqual({});
+    const retry = await runTensionScan(opts(), deps);
+    expect(retry.ok && retry.value.docsScanned).toBe(2);
+  });
+
   it("defaults an LLM error to no-conflict and continues the pass", async () => {
     writeDoc("ops/a.md", "A.");
     writeDoc("ops/b.md", "B.");

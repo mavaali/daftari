@@ -16,7 +16,7 @@ import {
   readersFromLineage,
 } from "../../src/distill/reader-fingerprint.js";
 import type { LlmClient } from "../../src/eval/llm.js";
-import { err, ok } from "../../src/frontmatter/types.js";
+import { ok } from "../../src/frontmatter/types.js";
 import { vaultRead } from "../../src/tools/read.js";
 import { vaultRatify } from "../../src/tools/staged-actions.js";
 import { vaultWrite } from "../../src/tools/write.js";

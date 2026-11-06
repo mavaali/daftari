@@ -1,0 +1,20 @@
+{
+  "name": "daftari",
+  "interface": {
+    "displayName": "Daftari"
+  },
+  "plugins": [
+    {
+      "name": "daftari",
+      "source": {
+        "source": "local",
+        "path": "./plugins/daftari"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

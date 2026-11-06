@@ -18,9 +18,18 @@ import {
   type Result,
 } from "../frontmatter/types.js";
 import type { HookConfig, HookDeclaration } from "../hooks/types.js";
-import type { IntegrationConfig, IntegrationProviderConfig } from "../integrations/types.js";
+import {
+  type IntegrationConfig,
+  type IntegrationProviderConfig,
+  type MicrosoftProviderConfig,
+  PROVIDER_NAMES,
+  type ProviderName,
+} from "../integrations/types.js";
+import { parseCidr } from "../serve/proxy-trust.js";
+import { normalizeIsoDate } from "./dates.js";
 import { sha256Hex } from "./hash.js";
 import { hasCatastrophicBacktracking } from "./redos.js";
+import { AUTHOR_PRESERVING_YAML_SCHEMA } from "./yaml.js";
 
 // Permissions for a single role. `read` / `write` are collection names; the
 // wildcard "*" matches every collection. `promote` gates draft→canonical.
@@ -77,12 +86,47 @@ export interface SchemaExtension {
   pattern?: string; // present only for type === "string"
 }
 
+export type IndexedFieldType = Exclude<ExtensionType, "array">;
+
+export interface IndexedFieldDeclaration {
+  field: string;
+  type: IndexedFieldType;
+  enum?: string[];
+}
+
 // Recognised values of `embeddings.provider`. The vault owner picks one;
 // the runtime instantiates the matching backend (see search/vector.ts
 // getProvider). Adding a third provider would mean a new id here AND a new
 // branch in getProvider AND a config-load check if it needs env vars.
 export const EMBEDDING_PROVIDERS = ["local-minilm", "openai-3-small"] as const;
 export type EmbeddingProviderId = (typeof EMBEDDING_PROVIDERS)[number];
+
+// Vault-level visibility marker for the cross-vault leak gate. A vault
+// declares itself "private" or "shared" in .daftari/config.yaml; a later
+// reader stamps documents from it accordingly.
+export const VAULT_VISIBILITIES = ["private", "shared"] as const;
+export type VaultVisibility = (typeof VAULT_VISIBILITIES)[number];
+
+// `leak_gate` block (U2): where the cross-vault, run_id-keyed session ledger
+// lives on disk. The ledger sits OUTSIDE any vault (both a private-owner and
+// a shared-canonical process must be able to reach it), so its path is not a
+// vault-relative setting like everything else in this file — it defaults to
+// an OS-level location (see leak-ledger.ts's defaultLeakLedgerPath) and this
+// key only overrides that default.
+// U3: write-time enforcement mode. "refuse" blocks a shared write
+// that a run's private reads implicate, fail-closed on an unreadable ledger.
+// "warn" lands the write and attaches an advisory (WriteResult.leak_warning)
+// instead of blocking. "off" disables the gate entirely.
+export const LEAK_GATE_MODES = ["refuse", "warn", "off"] as const;
+export type LeakGateMode = (typeof LEAK_GATE_MODES)[number];
+
+export interface LeakGateConfig {
+  sessionLedgerPath?: string;
+  // Always populated once the block is validated (default "off", or "refuse"
+  // on a `visibility: private` vault — see validateLeakGate) — the
+  // gate itself (write.ts) reads this directly rather than re-defaulting.
+  mode: LeakGateMode;
+}
 
 // Budgets and attribution for the sleep tension-scan dream (`daftari sleep
 // --dream tension-scan`). All values are HARD requirements on the pass:
@@ -168,8 +212,12 @@ export interface ServerConfig {
   // upstream (or the network is trusted). Required for non-loopback binds —
   // the shadow_mode precedent applied to transport.
   transportSecurity?: "external";
-  /** Trust the first X-Forwarded-For hop for public-route rate limiting. */
-  trustProxy?: boolean;
+  // CIDRs of the reverse proxies we operate. X-Forwarded-For is honored for
+  // public-route rate limiting ONLY when the immediate peer is inside one of
+  // these; from any other peer the header is ignored (it is spoofable). Empty
+  // = trust no proxy, the safe default. Replaces the old boolean trust_proxy,
+  // which trusted a forged header from a direct attacker (finding F4).
+  trustedProxies: string[];
   tokens: ServerTokenConfig[];
   // Optional and composable with static tokens (#7): agents commonly hold
   // static tokens while humans come through the IdP.
@@ -193,6 +241,10 @@ export interface ServeLimitsConfig {
   authFailureBurst: number;
   authFailuresPerMinute: number;
   maxInFlight: number;
+  // Hard ceiling on a request body, in bytes. The MCP adapter buffers the
+  // whole body in memory, so this bounds what one request (× maxInFlight) can
+  // pin. 4 MiB clears real tool-call payloads while staying far below a DoS.
+  maxBodyBytes: number;
 }
 
 export const DEFAULT_SERVE_LIMITS: ServeLimitsConfig = {
@@ -201,6 +253,7 @@ export const DEFAULT_SERVE_LIMITS: ServeLimitsConfig = {
   authFailureBurst: 10,
   authFailuresPerMinute: 6,
   maxInFlight: 32,
+  maxBodyBytes: 4_194_304,
 };
 
 // `storage` block (#6, spec 2026-07-20 Decision 3): a durable sync target
@@ -245,8 +298,13 @@ export interface DistillConfig {
   model: string;
   /** Hard cap on total LLM calls per distill invocation. */
   maxLlmCalls: number;
-  /** Maximum raw claims the extract stage may produce per run. */
-  maxClaims: number;
+  /**
+   * Maximum raw claims the extract stage may produce per run. Set only when
+   * declared (`max_claims`) or overridden (`--max-claims`), and then
+   * authoritative. Unset ⇒ the run scales the cap with source size
+   * (resolveMaxClaims in src/distill/extract.ts).
+   */
+  maxClaims?: number;
   /** Maximum verbatim-quoted characters across all claims per run. */
   maxVerbatimChars: number;
   /**
@@ -260,6 +318,13 @@ export interface DistillConfig {
    * rest stay queued for a human. A float in [0, 1].
    */
   corroborationThreshold: number;
+  /**
+   * R39: optional USD-per-call cost estimate for the distill pipeline's LLM
+   * calls. Absent ⇒ downstream USD estimation is disabled (the enrollment
+   * preview only emits `estimatedUsd` when this is set) — an explicit opt-in,
+   * never a silent guess at spend.
+   */
+  estimatedUsdPerCall?: number;
 }
 
 // Conservative default: a high bar queues more for human review and
@@ -269,7 +334,6 @@ export const DEFAULT_CORROBORATION_THRESHOLD = 0.8;
 
 export const DISTILL_NUMERIC_DEFAULTS: Omit<DistillConfig, "model"> = {
   maxLlmCalls: 100,
-  maxClaims: 50,
   maxVerbatimChars: 8000,
   inCallInputCap: 16000,
   corroborationThreshold: DEFAULT_CORROBORATION_THRESHOLD,
@@ -307,7 +371,13 @@ export const RESERVED_MOUNT_ALIASES: readonly string[] = ["local"];
 
 export interface DaftariConfig {
   roles: Record<string, RoleConfig>;
+  // The role a stdio server runs as when started without --role (kg64).
+  // null (absent) keeps the deny-all guest. `daftari --init` scaffolds
+  // `default_role: admin` so a fresh local vault works out of the box;
+  // `daftari serve` ignores it — network principals come from server.auth.
+  defaultRole: string | null;
   schemaExtensions: SchemaExtension[];
+  indexedFields: IndexedFieldDeclaration[];
   // Vault-owner-supplied pre-write hooks. v1 lists pre-write only; future
   // hook surfaces (read-time, post-write) would extend this block. See the
   // README "Vault hooks" section for the trust model.
@@ -371,6 +441,15 @@ export interface DaftariConfig {
   // The consolidate loop refuses live writes (mode != scan) unless the operator
   // has made an explicit choice, so a surprising default can't spend or mutate.
   shadowModeSet: boolean;
+  // Cross-vault leak gate (U1): whether this vault is "private" or "shared".
+  // Vault-level only, not per-doc. Defaults to "shared" — a single-vault
+  // install has no private reads and the future gate is a no-op.
+  visibility: VaultVisibility;
+  // Cross-vault leak gate (U2): where the session ledger lives. Always
+  // populated (an empty object when the `leak_gate` block is absent) — the
+  // ledger module resolves its own OS-level default when sessionLedgerPath
+  // is undefined.
+  leakGate: LeakGateConfig;
   // Absolute path to an external git directory (git's --separate-git-dir), or
   // undefined for a normal in-vault .git. Lets a cloud-synced vault hold only a
   // static `.git` file while git's churn lives off-cloud. Always resolved
@@ -492,7 +571,9 @@ const VEC_KNN_K_MAX = 4096;
 function emptyConfig(): DaftariConfig {
   return {
     roles: {},
+    defaultRole: null,
     schemaExtensions: [],
+    indexedFields: [],
     hooks: { preWrite: [], preWriteTransform: [] },
     autoCommit: true,
     watch: true,
@@ -503,12 +584,14 @@ function emptyConfig(): DaftariConfig {
     holderAliases: {},
     shadowMode: false,
     shadowModeSet: false,
+    visibility: "shared",
+    leakGate: { mode: "off" },
     gitDir: undefined,
     repoRoot: undefined,
     lintVoice: "plain",
     tensionScan: { ...TENSION_SCAN_DEFAULTS },
     tools: { ...TOOLS_DEFAULTS, include: [], exclude: [] },
-    server: { tokens: [], limits: { ...DEFAULT_SERVE_LIMITS }, audit: true },
+    server: { tokens: [], limits: { ...DEFAULT_SERVE_LIMITS }, audit: true, trustedProxies: [] },
     storage: undefined,
     codeRepos: {},
     jitAnchors: true,
@@ -527,13 +610,84 @@ export function configPath(vaultRoot: string): string {
 const RECOGNISED_INTEGRATIONS_KEYS = [
   "encryption_key_env",
   "polling_interval_minutes",
-  "google",
-  "notion",
+  ...PROVIDER_NAMES,
 ] as const;
-const RECOGNISED_INTEGRATION_PROVIDER_KEYS = ["client_id_env", "client_secret_env"] as const;
+
+// Shared key set for a plain OAuth-only provider block (Google, Notion): just
+// the env-var NAMES holding the client id/secret — the secret VALUES never
+// live in config (existing rule).
+const RECOGNISED_STANDARD_PROVIDER_KEYS = ["client_id_env", "client_secret_env"] as const;
+
+// The `integrations.m365` block (Microsoft Graph) carries extra keys beyond the
+// shared pair above (tenant, scope profile, enrollment collection allowlist,
+// speaker-note default, picker host). Per-provider table (U11): each
+// provider's block is checked against its OWN recognised-key set, so these
+// Microsoft-only keys are rejected under `integrations.google` /
+// `integrations.notion` just as an unknown key would be, and Google/Notion's
+// set stays exactly what it was before Microsoft grew extra keys.
+const RECOGNISED_MICROSOFT_PROVIDER_KEYS = [
+  "client_id_env",
+  "client_secret_env",
+  "tenant_id",
+  "scope_profile",
+  "collections",
+  "include_speaker_notes",
+  "picker_host",
+] as const;
+
+const RECOGNISED_INTEGRATION_PROVIDER_KEYS: Record<ProviderName, readonly string[]> = {
+  google: RECOGNISED_STANDARD_PROVIDER_KEYS,
+  notion: RECOGNISED_STANDARD_PROVIDER_KEYS,
+  m365: RECOGNISED_MICROSOFT_PROVIDER_KEYS,
+};
+
+// Compile-time drift guard: every field of MicrosoftProviderConfig must map to
+// one of the snake_case keys in RECOGNISED_MICROSOFT_PROVIDER_KEYS above. If a
+// field is later added to the config type without adding its YAML key to the
+// array, this Record literal fails to typecheck (missing property) rather
+// than letting rejectUnknownKeys silently reject that field's otherwise-valid
+// config as "not a recognised setting". (Runtime coverage lives in the
+// "recognises every Microsoft key" test in test/utils/config.test.ts.)
+const _MICROSOFT_CONFIG_FIELD_TO_KEY: Record<
+  keyof MicrosoftProviderConfig,
+  (typeof RECOGNISED_MICROSOFT_PROVIDER_KEYS)[number]
+> = {
+  clientIdEnv: "client_id_env",
+  clientSecretEnv: "client_secret_env",
+  tenantId: "tenant_id",
+  scopeProfile: "scope_profile",
+  collections: "collections",
+  includeSpeakerNotes: "include_speaker_notes",
+  pickerHost: "picker_host",
+};
+void _MICROSOFT_CONFIG_FIELD_TO_KEY;
+
+const MICROSOFT_SCOPE_PROFILES = ["onedrive", "sharepoint"] as const;
+const DEFAULT_MICROSOFT_SCOPE_PROFILE: MicrosoftProviderConfig["scopeProfile"] = "sharepoint";
+const DEFAULT_MICROSOFT_INCLUDE_SPEAKER_NOTES = true;
+
 const DEFAULT_INTEGRATION_POLLING_INTERVAL_MINUTES = 15;
 
-function validateIntegrationProvider(
+// Validates the shared client_id_env/client_secret_env pair common to every
+// provider block, returning the trimmed mapping (callers layer any
+// provider-specific fields on top of this).
+function validateSharedProviderCredentials(
+  provider: ProviderName,
+  mapping: Record<string, unknown>,
+): Result<IntegrationProviderConfig, Error> {
+  for (const key of RECOGNISED_STANDARD_PROVIDER_KEYS) {
+    const value = mapping[key];
+    if (typeof value !== "string" || value.trim().length === 0) {
+      return err(new Error(`'integrations.${provider}.${key}' must be a non-empty string`));
+    }
+  }
+  return ok({
+    clientIdEnv: (mapping.client_id_env as string).trim(),
+    clientSecretEnv: (mapping.client_secret_env as string).trim(),
+  });
+}
+
+function validateStandardProvider(
   provider: "google" | "notion",
   raw: unknown,
 ): Result<IntegrationProviderConfig, Error> {
@@ -541,19 +695,77 @@ function validateIntegrationProvider(
   if (!mapping.ok) return mapping;
   const known = rejectUnknownKeys(
     mapping.value,
-    RECOGNISED_INTEGRATION_PROVIDER_KEYS,
+    RECOGNISED_INTEGRATION_PROVIDER_KEYS[provider],
     `integrations.${provider}`,
   );
   if (!known.ok) return known;
-  for (const key of RECOGNISED_INTEGRATION_PROVIDER_KEYS) {
-    const value = mapping.value[key];
-    if (typeof value !== "string" || value.trim().length === 0) {
-      return err(new Error(`'integrations.${provider}.${key}' must be a non-empty string`));
-    }
+  return validateSharedProviderCredentials(provider, mapping.value);
+}
+
+function validateMicrosoftProvider(raw: unknown): Result<MicrosoftProviderConfig, Error> {
+  const mapping = requireMapping(raw, "'integrations.m365'");
+  if (!mapping.ok) return mapping;
+  const known = rejectUnknownKeys(
+    mapping.value,
+    RECOGNISED_INTEGRATION_PROVIDER_KEYS.m365,
+    "integrations.m365",
+  );
+  if (!known.ok) return known;
+  const shared = validateSharedProviderCredentials("m365", mapping.value);
+  if (!shared.ok) return shared;
+
+  const tenantId = mapping.value.tenant_id;
+  if (typeof tenantId !== "string" || tenantId.trim().length === 0) {
+    return err(new Error("'integrations.m365.tenant_id' must be a non-empty string"));
   }
+
+  let scopeProfile: MicrosoftProviderConfig["scopeProfile"] = DEFAULT_MICROSOFT_SCOPE_PROFILE;
+  if (mapping.value.scope_profile !== undefined) {
+    const scope = mapping.value.scope_profile;
+    if (
+      typeof scope !== "string" ||
+      !(MICROSOFT_SCOPE_PROFILES as readonly string[]).includes(scope)
+    ) {
+      return err(
+        new Error(
+          `'integrations.m365.scope_profile' must be one of ` +
+            `${MICROSOFT_SCOPE_PROFILES.join(", ")}`,
+        ),
+      );
+    }
+    scopeProfile = scope as MicrosoftProviderConfig["scopeProfile"];
+  }
+
+  const collections = asStringArray(mapping.value.collections, "'integrations.m365.collections'");
+  if (!collections.ok) return collections;
+  if (collections.value.length === 0) {
+    return err(new Error("'integrations.m365.collections' must be a non-empty list of strings"));
+  }
+
+  let includeSpeakerNotes = DEFAULT_MICROSOFT_INCLUDE_SPEAKER_NOTES;
+  if (mapping.value.include_speaker_notes !== undefined) {
+    if (typeof mapping.value.include_speaker_notes !== "boolean") {
+      return err(new Error("'integrations.m365.include_speaker_notes' must be true or false"));
+    }
+    includeSpeakerNotes = mapping.value.include_speaker_notes;
+  }
+
+  let pickerHost: string | undefined;
+  if (mapping.value.picker_host !== undefined) {
+    const host = mapping.value.picker_host;
+    if (typeof host !== "string" || host.trim().length === 0) {
+      return err(new Error("'integrations.m365.picker_host' must be a non-empty string"));
+    }
+    pickerHost = host.trim();
+  }
+
   return ok({
-    clientIdEnv: (mapping.value.client_id_env as string).trim(),
-    clientSecretEnv: (mapping.value.client_secret_env as string).trim(),
+    ...shared.value,
+    tenantId: tenantId.trim(),
+    scopeProfile,
+    collections: collections.value,
+    includeSpeakerNotes,
+    ...(pickerHost !== undefined ? { pickerHost } : {}),
   });
 }
 
@@ -582,11 +794,18 @@ function validateIntegrations(raw: unknown): Result<IntegrationConfig | undefine
     encryptionKeyEnv: encryptionKeyEnv.trim(),
     pollingIntervalMinutes,
   };
-  for (const provider of ["google", "notion"] as const) {
-    if (mapping.value[provider] === undefined) continue;
-    const config = validateIntegrationProvider(provider, mapping.value[provider]);
-    if (!config.ok) return config;
-    integrations[provider] = config.value;
+  for (const provider of PROVIDER_NAMES) {
+    const raw = mapping.value[provider];
+    if (raw === undefined) continue;
+    if (provider === "m365") {
+      const config = validateMicrosoftProvider(raw);
+      if (!config.ok) return config;
+      integrations.m365 = config.value;
+    } else {
+      const config = validateStandardProvider(provider, raw);
+      if (!config.ok) return config;
+      integrations[provider] = config.value;
+    }
   }
   return ok(integrations);
 }
@@ -723,7 +942,10 @@ function validateDefault(
       if (value instanceof Date && !Number.isNaN(value.getTime())) {
         return ok(value.toISOString().slice(0, 10));
       }
-      if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return ok(value);
+      if (typeof value === "string") {
+        const normalized = normalizeIsoDate(value);
+        if (normalized !== null) return ok(normalized);
+      }
       return bad("a YYYY-MM-DD date");
     }
     case "number":
@@ -916,6 +1138,53 @@ function validateExtensions(raw: unknown): Result<SchemaExtension[], Error> {
   return ok(out);
 }
 
+const MAX_INDEXED_FIELDS = 64;
+const MAX_INDEXED_FIELD_NAME_BYTES = 128;
+export const MAX_INDEXED_FIELD_TEXT_BYTES = 4096;
+
+function validateIndexedFields(
+  raw: unknown,
+  extensions: SchemaExtension[],
+): Result<IndexedFieldDeclaration[], Error> {
+  if (raw === undefined) return ok([]);
+  if (!Array.isArray(raw)) return err(new Error("'indexed_fields' must be a list"));
+  if (raw.length > MAX_INDEXED_FIELDS) {
+    return err(new Error(`'indexed_fields' may contain at most ${MAX_INDEXED_FIELDS} fields`));
+  }
+
+  const byField = new Map(extensions.map((extension) => [extension.field, extension]));
+  const seen = new Set<string>();
+  const out: IndexedFieldDeclaration[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const field = raw[i];
+    if (typeof field !== "string" || field.length === 0) {
+      return err(new Error(`'indexed_fields[${i}]' must be a non-empty string`));
+    }
+    if (Buffer.byteLength(field, "utf8") > MAX_INDEXED_FIELD_NAME_BYTES) {
+      return err(
+        new Error(
+          `indexed_fields '${field}' must be at most ${MAX_INDEXED_FIELD_NAME_BYTES} UTF-8 bytes`,
+        ),
+      );
+    }
+    if (seen.has(field)) return err(new Error(`indexed_fields '${field}' is duplicated`));
+    seen.add(field);
+
+    const extension = byField.get(field);
+    if (!extension)
+      return err(new Error(`indexed_fields '${field}' is not declared in schema_extensions`));
+    if (extension.type === "array") {
+      return err(new Error(`indexed_fields '${field}' has unsupported type 'array'`));
+    }
+    out.push({
+      field,
+      type: extension.type,
+      ...(extension.enum ? { enum: [...extension.enum] } : {}),
+    });
+  }
+  return ok(out);
+}
+
 // Recognised child keys of the `hooks` block. Anything else is a loud config
 // error so a typo can't silently shadow a hook surface.
 const RECOGNISED_HOOK_KEYS = ["pre_write", "pre_write_transform"] as const;
@@ -1064,6 +1333,7 @@ const RECOGNISED_DISTILL_KEYS = [
   "max_verbatim_chars",
   "in_call_input_cap",
   "corroboration_threshold",
+  "estimated_usd_per_call",
 ] as const;
 
 function validateDistill(raw: unknown): Result<DistillConfig | undefined, Error> {
@@ -1108,6 +1378,18 @@ function validateDistill(raw: unknown): Result<DistillConfig | undefined, Error>
     }
     out.corroborationThreshold = ct;
   }
+
+  // estimated_usd_per_call (R39): optional; absent leaves USD estimation
+  // disabled downstream. A positive number only — a zero or negative
+  // estimate is a config mistake, not a valid "no cost" signal (absence
+  // already means that).
+  const usdPerCall = obj.estimated_usd_per_call;
+  if (usdPerCall !== undefined) {
+    if (typeof usdPerCall !== "number" || !Number.isFinite(usdPerCall) || usdPerCall <= 0) {
+      return err(new Error("'distill.estimated_usd_per_call' must be a positive number"));
+    }
+    out.estimatedUsdPerCall = usdPerCall;
+  }
   return ok(out);
 }
 
@@ -1116,6 +1398,54 @@ function validateDistill(raw: unknown): Result<DistillConfig | undefined, Error>
 // all need the filesystem and live at mount load (src/federation/mounts.ts).
 // What IS decidable here fails loud here: alias grammar, reserved and
 // duplicate aliases, index mode, principals shape.
+// `leak_gate` block (U2). Single optional key: an override for the session
+// ledger's OS-level path. Shape-only here, like every block — the ledger
+// module resolves its own default when this is absent.
+// The engine default is "off": the gate is a household-topology feature, not
+// a general-engine default. A household deployment opts in by setting
+// `mode: "refuse"` explicitly in its `.daftari/config.yaml`.
+const RECOGNISED_LEAK_GATE_KEYS = ["session_ledger_path", "mode"] as const;
+const DEFAULT_LEAK_GATE_MODE: LeakGateMode = "off";
+
+// A private vault defaults to an active mode: its own writes are never gated
+// (checkLeakGate only gates shared vaults), but its reads must reach the ledger
+// or a shared vault in `refuse` sees nothing and allows every write. An explicit
+// `mode: off` still opts out.
+function validateLeakGate(
+  raw: unknown,
+  visibility: VaultVisibility,
+): Result<LeakGateConfig, Error> {
+  const defaultMode: LeakGateMode = visibility === "private" ? "refuse" : DEFAULT_LEAK_GATE_MODE;
+  if (raw === undefined) return ok({ mode: defaultMode });
+  const mapping = requireMapping(raw, "'leak_gate'");
+  if (!mapping.ok) return mapping;
+  const obj = mapping.value;
+  const known = rejectUnknownKeys(obj, RECOGNISED_LEAK_GATE_KEYS, "leak_gate");
+  if (!known.ok) return known;
+
+  let mode: LeakGateMode = defaultMode;
+  if (obj.mode !== undefined) {
+    if (
+      typeof obj.mode !== "string" ||
+      !(LEAK_GATE_MODES as readonly string[]).includes(obj.mode)
+    ) {
+      return err(
+        new Error(
+          `'leak_gate.mode' must be one of ${LEAK_GATE_MODES.join(", ")}, ` +
+            `got ${JSON.stringify(obj.mode)}`,
+        ),
+      );
+    }
+    mode = obj.mode as LeakGateMode;
+  }
+
+  if (obj.session_ledger_path === undefined) return ok({ mode });
+  if (typeof obj.session_ledger_path !== "string" || obj.session_ledger_path.trim().length === 0) {
+    return err(new Error("'leak_gate.session_ledger_path' must be a non-empty string"));
+  }
+  return ok({ sessionLedgerPath: obj.session_ledger_path, mode });
+}
+
 const RECOGNISED_FEDERATION_KEYS = ["mounts", "principals"] as const;
 const RECOGNISED_MOUNT_KEYS = ["alias", "path", "index", "optional"] as const;
 const MOUNT_INDEX_MODES = ["full", "lexical"] as const;
@@ -1223,7 +1553,7 @@ function validateFederation(raw: unknown): Result<FederationConfig | undefined, 
 
 const RECOGNISED_SERVER_KEYS = [
   "transport_security",
-  "trust_proxy",
+  "trusted_proxies",
   "public_base_url",
   "auth",
   "limits",
@@ -1235,6 +1565,7 @@ const RECOGNISED_SERVER_LIMITS_KEYS = [
   "auth_failure_burst",
   "auth_failures_per_minute",
   "max_in_flight",
+  "max_body_bytes",
 ] as const;
 const RECOGNISED_SERVER_AUTH_KEYS = ["tokens", "oauth", "session"] as const;
 const RECOGNISED_SERVER_TOKEN_KEYS = ["env", "user", "role"] as const;
@@ -1362,7 +1693,7 @@ function validateServer(raw: unknown): Result<ServerConfig, Error> {
       tokens: [],
       limits: { ...DEFAULT_SERVE_LIMITS },
       audit: true,
-      trustProxy: false,
+      trustedProxies: [],
     });
   }
   const mapping = requireMapping(raw, "'server'");
@@ -1374,13 +1705,22 @@ function validateServer(raw: unknown): Result<ServerConfig, Error> {
     tokens: [],
     limits: { ...DEFAULT_SERVE_LIMITS },
     audit: true,
-    trustProxy: false,
+    trustedProxies: [],
   };
-  if (obj.trust_proxy !== undefined) {
-    if (typeof obj.trust_proxy !== "boolean") {
-      return err(new Error("'server.trust_proxy' must be true or false"));
+  if (obj.trusted_proxies !== undefined) {
+    if (!Array.isArray(obj.trusted_proxies)) {
+      return err(new Error("'server.trusted_proxies' must be a list of CIDR strings"));
     }
-    out.trustProxy = obj.trust_proxy;
+    for (const entry of obj.trusted_proxies) {
+      if (typeof entry !== "string" || parseCidr(entry) === null) {
+        return err(
+          new Error(
+            `'server.trusted_proxies' entries must be CIDRs or IPs (got ${JSON.stringify(entry)})`,
+          ),
+        );
+      }
+    }
+    out.trustedProxies = obj.trusted_proxies as string[];
   }
   if (obj.public_base_url !== undefined) {
     if (typeof obj.public_base_url !== "string" || obj.public_base_url.trim().length === 0) {
@@ -1418,6 +1758,7 @@ function validateServer(raw: unknown): Result<ServerConfig, Error> {
       ["auth_failure_burst", "authFailureBurst"],
       ["auth_failures_per_minute", "authFailuresPerMinute"],
       ["max_in_flight", "maxInFlight"],
+      ["max_body_bytes", "maxBodyBytes"],
     ];
     for (const [key, field] of numeric) {
       const v = limits[key];
@@ -1795,7 +2136,10 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
 
   let parsed: unknown;
   try {
-    parsed = parseYaml(text);
+    // Do not let the default YAML timestamp resolver normalize impossible
+    // calendar dates before schema-extension validation sees the authored
+    // scalar. The custom schema retains every other DEFAULT_SCHEMA feature.
+    parsed = parseYaml(text, { schema: AUTHOR_PRESERVING_YAML_SCHEMA });
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     // js-yaml's position points at where parsing BROKE, which for a comment
@@ -1828,8 +2172,24 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     }
   }
 
+  let defaultRole: string | null = null;
+  if (root.default_role !== undefined && root.default_role !== null) {
+    if (typeof root.default_role !== "string" || !Object.hasOwn(roles, root.default_role)) {
+      return err(
+        new Error(
+          `malformed config: 'default_role' must name a role declared under 'roles' ` +
+            `(got ${JSON.stringify(root.default_role)})`,
+        ),
+      );
+    }
+    defaultRole = root.default_role;
+  }
+
   const extensions = validateExtensions(root.schema_extensions);
   if (!extensions.ok) return err(new Error(`malformed config: ${extensions.error.message}`));
+
+  const indexedFields = validateIndexedFields(root.indexed_fields, extensions.value);
+  if (!indexedFields.ok) return err(new Error(`malformed config: ${indexedFields.error.message}`));
 
   const hooks = validateHooks(root.hooks);
   if (!hooks.ok) return err(new Error(`malformed config: ${hooks.error.message}`));
@@ -1928,6 +2288,27 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
       return err(new Error("malformed config: 'shadow_mode' must be true or false"));
     }
     shadowMode = root.shadow_mode;
+  }
+
+  let visibility: VaultVisibility = "shared";
+  if (root.visibility !== undefined) {
+    if (typeof root.visibility !== "string") {
+      return err(new Error("malformed config: 'visibility' must be a string"));
+    }
+    if (!(VAULT_VISIBILITIES as readonly string[]).includes(root.visibility)) {
+      return err(
+        new Error(
+          `malformed config: unknown visibility ${JSON.stringify(root.visibility)} ` +
+            `(expected one of ${VAULT_VISIBILITIES.join(", ")})`,
+        ),
+      );
+    }
+    visibility = root.visibility as VaultVisibility;
+  }
+
+  const leakGateConfig = validateLeakGate(root.leak_gate, visibility);
+  if (!leakGateConfig.ok) {
+    return err(new Error(`malformed config: ${leakGateConfig.error.message}`));
   }
 
   // Embedding provider selection. Defaults to local-minilm. Unknown ids fail
@@ -2093,7 +2474,9 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
 
   return ok({
     roles,
+    defaultRole,
     schemaExtensions: extensions.value,
+    indexedFields: indexedFields.value,
     hooks: hooks.value,
     autoCommit,
     watch,
@@ -2104,6 +2487,8 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     holderAliases: holderAliases.value,
     shadowMode,
     shadowModeSet,
+    visibility,
+    leakGate: leakGateConfig.value,
     gitDir: gitDir.value,
     repoRoot: repoRoot.value,
     lintVoice: lintVoice.value,
