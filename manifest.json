@@ -101,6 +101,10 @@
       "description": "Compute settled vs contested belief over a depth-bounded topic graph seeded at `seed`."
     },
     {
+      "name": "vault_chains",
+      "description": "List the end of every supersede chain: per chain, the current entry with its status and date, and the entries it replaced."
+    },
+    {
       "name": "vault_witness",
       "description": "Per-principal track records aggregated from the vault's own ledgers (provenance log, tension log, staged actions), priced by the wager schedule: writing a claim at a confidence level stakes points (low 0 / medium 1 / high 3, provisional); a claim later corrected or retired burns the stake; a claim maintained through a full TTL cycle earns credit."
     },
