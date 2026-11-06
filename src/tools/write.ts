@@ -70,7 +70,12 @@ import { getIndexStatus, indexingBusyMessage } from "../search/index-state.js";
 import { indexDocument } from "../search/reindex.js";
 import { noteSelfWrite } from "../search/self-write.js";
 import { allDocumentPaths, getDocumentsByPaths } from "../storage/index-db.js";
-import { readFile, resolveVaultPath } from "../storage/local.js";
+import {
+  collectionOfPath,
+  matchesIgnoreList,
+  readFile,
+  resolveVaultPath,
+} from "../storage/local.js";
 import {
   type DaftariConfig,
   type LeakGateConfig,
@@ -186,7 +191,14 @@ export function requireIndexReady(): Result<void, Error> {
 // A document's RBAC collection: its frontmatter `collection`, falling back to
 // the top-level directory of its vault-relative path.
 function collectionOf(relPath: string, fm: Frontmatter): string {
-  return fm.collection || (relPath.split("/")[0] ?? "");
+  return fm.collection || collectionOfPath(relPath);
+}
+
+// An ignored path is not a vault document (#646). A write there would commit a
+// file that no search, status or lint can see, so it is refused instead.
+function refuseIgnoredPath(relPath: string, ignore: readonly string[]): Result<void, Error> {
+  if (!matchesIgnoreList(relPath, ignore)) return ok(undefined);
+  return err(new Error(`${relPath} is excluded by the vault's 'ignore' config`));
 }
 
 // The collection the write gate for a *new* write must key off: the top-level
@@ -204,7 +216,7 @@ function collectionOf(relPath: string, fm: Frontmatter): string {
 // write; `resolveVaultPath` rejects it properly downstream.
 export function targetCollection(vaultRoot: string, relPath: string): string {
   const rel = relative(resolve(vaultRoot), resolve(vaultRoot, relPath));
-  return rel.split(sep)[0] ?? "";
+  return collectionOfPath(rel.split(sep).join("/"));
 }
 
 // Resolves an extension field's serializable value from the raw frontmatter:
@@ -463,6 +475,13 @@ async function performWrite(params: {
   // bypass on the foreign-position check above (~line 1346).
   hasAccessContext: boolean;
 }): Promise<Result<WriteResult, Error>> {
+  // Loaded here, not threaded from callers like the fields above: this gate has
+  // to hold for every write tool, including ones added later.
+  const config = loadConfig(params.vaultRoot);
+  if (!config.ok) return config;
+  const ignored = refuseIgnoredPath(params.relPath, config.value.ignore);
+  if (!ignored.ok) return ignored;
+
   // Shadow mode (spec §11.5): everything up to here ran exactly as live —
   // validation, RBAC, frontmatter assembly, diff — so the logged do() is one
   // that WOULD have executed. Log it with its impact/budget verdict and stop:
@@ -2223,6 +2242,10 @@ export async function vaultSupersede(
 
   const config = loadConfig(vaultRoot);
   if (!config.ok) return config;
+  // The old document's write refuses in performWrite; the successor is only
+  // pointed at, and superseded_by must not name a non-document.
+  const successorIgnored = refuseIgnoredPath(resolvedNew.value.relPath, config.value.ignore);
+  if (!successorIgnored.ok) return successorIgnored;
 
   const oldFrontmatter = parsed.value.frontmatter;
   const rbac = requireWriteAccess(access, collectionOf(oldPath.value, oldFrontmatter));
@@ -2373,6 +2396,12 @@ export async function vaultMerge(
   const config = loadConfig(vaultRoot);
   if (!config.ok) return config;
   const extensions = config.value.schemaExtensions;
+
+  // Merge does not go through performWrite, so its gate is applied here.
+  for (const resolved of [resolvedA, resolvedB, resolvedTarget]) {
+    const ignored = refuseIgnoredPath(resolved.value.relPath, config.value.ignore);
+    if (!ignored.ok) return ignored;
+  }
 
   // RBAC: a merge writes/mutates all three docs, so the caller needs write on
   // each one's collection.

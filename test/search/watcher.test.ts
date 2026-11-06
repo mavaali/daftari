@@ -79,6 +79,28 @@ describe("startWatcher", () => {
     await w.close();
   });
 
+  it("drops events for paths on the ignore list (#646)", async () => {
+    const fake = new FakeChokidar();
+    const calls: string[] = [];
+    const w = startWatcher(vault, {
+      watcherFactory: () => fake as never,
+      debounceMs: 20,
+      ignore: ["README.md", "Clippings/**"],
+      indexFn: async (_root, relPath) => {
+        calls.push(relPath);
+        return ok(undefined);
+      },
+    });
+
+    fake.emit("add", osPath(abs(vault, "README.md")));
+    fake.emit("change", osPath(abs(vault, "Clippings/article.md")));
+    fake.emit("add", osPath(abs(vault, "notes/a.md")));
+    await sleep(60);
+    expect(calls).toEqual(["notes/a.md"]);
+
+    await w.close();
+  });
+
   it("routes an external add to indexFn", async () => {
     const fake = new FakeChokidar();
     const calls: string[] = [];
@@ -484,6 +506,14 @@ describe("watchIgnored — watch-time extension filter (#107)", () => {
   const root = "/vault";
   const fileStats = { isFile: () => true, isDirectory: () => false } as import("node:fs").Stats;
   const dirStats = { isFile: () => false, isDirectory: () => true } as import("node:fs").Stats;
+
+  it("skips files and folders on the ignore list (#646)", () => {
+    const ignore = ["README.md", "Clippings"];
+    expect(watchIgnored(root, "/vault/README.md", fileStats, ignore)).toBe(true);
+    expect(watchIgnored(root, "/vault/Clippings", dirStats, ignore)).toBe(true);
+    expect(watchIgnored(root, "/vault/Clippings/a.md", fileStats, ignore)).toBe(true);
+    expect(watchIgnored(root, "/vault/notes/README.md", fileStats, ignore)).toBe(false);
+  });
 
   it("skips non-markdown FILES so assets never consume watch handles", () => {
     expect(watchIgnored(root, "/vault/assets/dag.png", fileStats)).toBe(true);

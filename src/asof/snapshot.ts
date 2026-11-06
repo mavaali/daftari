@@ -17,6 +17,7 @@ import { computeValidity } from "../curation/validity.js";
 import { type LoadedDoc, loadDocuments } from "../curation/vault-docs.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import { collectionOfPath } from "../storage/local.js";
 import {
   type AsofCommit,
   listTreeDocs,
@@ -101,7 +102,7 @@ function countBy(docs: LoadedDoc[], key: (d: LoadedDoc) => string): Record<strin
 }
 
 function collectionOf(d: LoadedDoc): string {
-  return d.frontmatter.collection || (d.path.split("/")[0] ?? "");
+  return d.frontmatter.collection || collectionOfPath(d.path);
 }
 
 function tensionIdentity(t: TensionEntry): string {
