@@ -95,6 +95,7 @@ const SUGGESTED_ACTIONS: Record<LintCheckName, string> = {
   unverifiableSourceRefs:
     "Restore or correct repository evidence, or re-present a discarded distill source",
   supersedeChains: "Point the superseded_by chain at a canonical current entry",
+  danglingAmends: "Fix or remove the unresolvable amends[] reference(s)",
 };
 
 // ---------------------------------------------------------------------------

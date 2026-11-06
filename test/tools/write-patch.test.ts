@@ -89,6 +89,17 @@ describe("vault_patch (#640)", () => {
       expect(raw(vault).sources).toEqual(["https://a.example"]);
     });
 
+    it("warns about amends only when the patch sets them (#643)", async () => {
+      seed(vault, PATH, ["amends:", "  - pricing/nope.md"]);
+      const unrelated = await vaultPatch(vault, patch({ frontmatter: { ttl_days: 90 } }));
+      if (!unrelated.ok) throw unrelated.error;
+      expect(unrelated.value.amends_warnings).toBeUndefined();
+
+      const set = await vaultPatch(vault, patch({ frontmatter: { amends: ["pricing/gone.md"] } }));
+      if (!set.ok) throw set.error;
+      expect(set.value.amends_warnings?.[0]).toContain("pricing/gone.md");
+    });
+
     it("deletes a field on explicit null, matching vault_write's opt-in deletion", async () => {
       seed(vault, PATH, ["custom_note: remove me"]);
       const result = await vaultPatch(vault, patch({ frontmatter: { custom_note: null } }));

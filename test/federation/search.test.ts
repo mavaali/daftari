@@ -284,6 +284,32 @@ describe("federated vault_search", () => {
   });
 });
 
+describe("federated amendedBy (#643)", () => {
+  beforeEach(() => {
+    const amender = (collection: string, title: string) =>
+      doc(title, collection, "An unrelated note.").replace(
+        "provenance: direct\n",
+        "provenance: direct\namends: [pricing/zephyr-pricing.md]\n",
+      );
+    writeFileSync(join(refRoot, "pricing", "amender.md"), amender("pricing", "Open amender"));
+    writeFileSync(join(refRoot, "strategy", "amender.md"), amender("strategy", "Hidden amender"));
+  });
+
+  it("rewrites amender paths to alias form, under the mount's role", async () => {
+    await mountRef();
+    const result = await vaultSearch(
+      canonical,
+      { query: "zephyrmark price", vaults: ["research"] },
+      LOCAL_ANALYST,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const hit = result.value.hits.find((h) => h.path === "research:pricing/zephyr-pricing.md");
+    expect(hit?.amendedBy?.map((e) => e.path)).toEqual(["research:pricing/amender.md"]);
+    expect(hit?.amendedByCount).toBe(1);
+  });
+});
+
 describe("federated vault_search_related", () => {
   it("seeds from a mount document and ranks candidates across the scope", async () => {
     await mountRef();

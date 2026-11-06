@@ -7,7 +7,7 @@ date, after two notes have started to contradict each other and nobody noticed.
 
 Most of this document is about the hard job. The easy job fits in a paragraph:
 Daftari is a single MCP server, holding one writable vault under one process
-lock, running as one access identity for its lifetime, serving 45 tools over
+lock, running as one access identity for its lifetime, serving 46 tools over
 stdio. (Federation, #297, lets that process additionally mount other vaults
 read-only — the invariant is one *writable* vault, one lock, one identity, not
 one directory; mounts expose documents, never vault state, and nothing is ever
@@ -104,7 +104,7 @@ consumer's own frontmatter.
 
 ```
                       ┌─────────────────────────────┐
-   MCP client  ──────▶ │  MCP server (stdio, 45 tools)│
+   MCP client  ──────▶ │  MCP server (stdio, 46 tools)│
    (agent)             └──────────────┬──────────────┘
                                       │  every call
                        ┌──────────────▼──────────────┐
@@ -1168,6 +1168,14 @@ quietly settled. That is the entire product, in one fact's lifetime.
      leaking neither path nor title. daftari authors the relation; the
      successor snippet is read verbatim from indexed content, never
      synthesized.
+   - **Amendment foregrounding.** A document that stays true as written
+     but has a later document declaring `amends` on it gains `amendedBy`:
+     direct amenders only, each with its status. The relation is declared
+     on the later document and inverted by the `doc_amends` index table, so
+     the earlier file is never written. Unreadable amenders are omitted
+     with no marker: unlike a superseded document, an amended one carries
+     no mark of its own for a marker to restate. It is never an input to
+     ranking or to the suppression pass.
 
 A **write** (`vault_write`, `vault_patch`, `vault_append`, `vault_promote`,
 `vault_deprecate`, `vault_supersede`, `vault_unsupersede`, `vault_merge`,
