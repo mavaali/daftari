@@ -197,7 +197,7 @@ function collectionOf(relPath: string, fm: Frontmatter): string {
 
 // An ignored path is not a vault document (#646). A write there would commit a
 // file that no search, status or lint can see, so it is refused instead.
-function refuseIgnoredPath(relPath: string, ignore: readonly string[]): Result<void, Error> {
+export function refuseIgnoredPath(relPath: string, ignore: readonly string[]): Result<void, Error> {
   if (!matchesIgnoreList(relPath, ignore)) return ok(undefined);
   return err(new Error(`${relPath} is excluded by the vault's 'ignore' config`));
 }
