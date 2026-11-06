@@ -7,7 +7,7 @@ date, after two notes have started to contradict each other and nobody noticed.
 
 Most of this document is about the hard job. The easy job fits in a paragraph:
 Daftari is a single MCP server, holding one writable vault under one process
-lock, running as one access identity for its lifetime, serving 42 tools over
+lock, running as one access identity for its lifetime, serving 43 tools over
 stdio. (Federation, #297, lets that process additionally mount other vaults
 read-only — the invariant is one *writable* vault, one lock, one identity, not
 one directory; mounts expose documents, never vault state, and nothing is ever
@@ -104,7 +104,7 @@ consumer's own frontmatter.
 
 ```
                       ┌─────────────────────────────┐
-   MCP client  ──────▶ │  MCP server (stdio, 42 tools)│
+   MCP client  ──────▶ │  MCP server (stdio, 43 tools)│
    (agent)             └──────────────┬──────────────┘
                                       │  every call
                        ┌──────────────▼──────────────┐
@@ -300,6 +300,20 @@ Three things sit alongside the markdown:
   roll-forward never has to clear the cache first.
 - **SQLite lock store** (`.daftari/locks.db`). Holds active write locks. Also
   ephemeral.
+
+#### Open-question candidates (`vault_question_candidates`)
+
+A question closes only on an exact (normalized) copy of its text in some
+document's `questions_answered`. This read-only tool proposes where a reworded
+answer may live: per open question, the documents with `updated` on or after
+its earliest raising, ranked by the best cosine between the question and each
+document's title and `questions_answered` entries. `questions_answered` is
+frontmatter and never reaches the FTS or chunk tables, so the corpus is
+embedded in memory through the active provider, with no index change and no
+writes to the embeddings cache, instead of going through `hybridSearch`.
+Openness and candidates both compute from the caller's vantage; hidden
+documents are omitted with no count. Accepting a candidate stays a curator's
+edit.
 
 #### Thematic clustering (`vault_themes`)
 

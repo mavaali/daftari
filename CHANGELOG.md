@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`vault_question_candidates`** (#647) — an open question closes only when its exact text lands in some document's `questions_answered`, so reworded answers left it open. The new full-tier tool lists, for each open question, the documents touched since it was raised whose title or `questions_answered` read closest in meaning, for a curator to accept or reject. Read-only and paged; embeds through the active provider, falling back to term overlap (`vectorUsed: false`). Nothing is closed automatically.
+
 ### Fixed
 
 - **Release metadata drift; MCP registry publishing** (slrf) — `server.json` (1.32.0) and `manifest.json` (3.13.1, no tools) had drifted from npm. New `npm run sync:release` syncs both to `package.json` and lists every registered tool in the MCPB manifest; `test/release-metadata.test.ts` fails CI on drift. A tag push now also publishes `server.json` to the official MCP registry via GitHub OIDC (pinned, checksummed `mcp-publisher`).

@@ -29,6 +29,7 @@ import { curationTools } from "./tools/curation.js";
 import { edgeStalenessTools } from "./tools/edge-staleness.js";
 import { edgeTools } from "./tools/edges.js";
 import { positionsTools } from "./tools/positions.js";
+import { questionCandidatesTools } from "./tools/question-candidates.js";
 import { readTools, type ToolDefinition } from "./tools/read.js";
 import { receiptTools } from "./tools/receipt.js";
 import { searchTools } from "./tools/search.js";
@@ -54,6 +55,7 @@ const allTools: ToolDefinition[] = [
   ...witnessTools,
   ...searchTools,
   ...themesTools,
+  ...questionCandidatesTools,
   ...writeTools,
   ...positionsTools,
   ...curationTools,
