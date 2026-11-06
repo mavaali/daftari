@@ -169,7 +169,9 @@ It reports—never fixes—problems such as:
 The full report also covers structural, grounding, validity, edge, and
 cross-domain problems as those features apply to the vault.
 
-Pass `{ "filter": "oldDrafts" }` to restrict the report to one check.
+The default result is a summary: the count per check and its first few
+findings. Pass `{ "filter": "oldDrafts" }` to restrict the report to one check,
+with `limit` and `offset` to page through it.
 
 ## 7. Promote a draft to canonical
 

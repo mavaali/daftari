@@ -7,14 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`series` frontmatter field: dated snapshots stop going stale forever** (#645) — mark a run of write-once documents (weekly reviews, say) with a shared `series: <name>`. Staleness is judged on the newest member by `created`, so the TTL fires when no new snapshot has been written, not on each old one. Applies to `vault_lint`, `vault_status`, the board, `daftari sleep` and `daftari interview`; the per-document decay banner on `vault_read` and search does not read it yet. A vault that declared `series` as a schema extension must remove or rename it.
+
 ### Fixed
 
 - **The orphan check counts `sources` citations** (#641) — a `sources` entry that resolves to a vault document is now an inbound edge, so a document cited only that way is no longer an orphan in `vault_lint`, on `vault_read`, or as `orphan: true` on search hits. `retiredStillLinked` stays body links only, because `lifecycleConflicts` already reports canonical documents citing retired ones. A backticked vault path is not an edge; an orphan's lint finding names the documents that mention it that way, and `vault_lint` gains `orphanSummary` (`noInboundLink`, `nothingRefers`). Index schema 13; existing indexes rebuild on next open.
+- **`superseded_by` loops are refused and linted** (#639) — `vault_supersede`, `vault_deprecate`, and `vault_merge` refuse a write that would close a loop among documents the caller can read, and write nothing; `vault_supersede` returns a `successor_warning` when the successor is itself superseded or deprecated. New advisory `supersedeChains` lint check: one finding per loop, one per chain ending on a non-canonical document.
 - **Release metadata drift; MCP registry publishing** (slrf) — `server.json` (1.32.0) and `manifest.json` (3.13.1, no tools) had drifted from npm. New `npm run sync:release` syncs both to `package.json` and lists every registered tool in the MCPB manifest; `test/release-metadata.test.ts` fails CI on drift. A tag push now also publishes `server.json` to the official MCP registry via GitHub OIDC (pinned, checksummed `mcp-publisher`).
 - **Tension log fields can no longer forge lines or blocks** — every free-text value written to `.daftari/tensions.md` (title, claims, logged-by, principal, positions, readers, resolution rationale/references) is flattened to one line at the single render boundary. Before, a line break in any of them could inject a `- **Label:**` line (e.g. a fake `Status: resolved`) or a whole `## ` block on re-parse.
 
 ### Changed
 
+- **`vault_lint` returns a summary by default** (#644) — a full report ran to 88K+ characters on a 295-document vault, past what MCP clients accept. The default result is now `counts` per check plus clipped previews of the first few findings, with the staged and shadow lists previewed too; a 300-document vault delivers under 10,000 characters. `limit` and `offset` page each check, `nextOffset` gives its resume point, and `filter` keeps narrowing to one check, now 50 findings per call by default. Scripts that read the whole of `checks` should pass an explicit `limit`. Pages are cut after the visibility filter, so RBAC scoping is unchanged, and vault-global aggregates still read the same for every role.
 - **`default_role` config key; `--init` vaults default to `admin`** (kg64) — a stdio server started without `--role` now runs as the config's `default_role` instead of silently becoming the deny-all guest. `daftari --init` scaffolds `default_role: admin`, so a fresh local vault works out of the box. Existing vaults without the key keep the deny-all guest default; `daftari serve` ignores it. An undeclared role name is a malformed-config error.
 
 ### Security

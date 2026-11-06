@@ -410,6 +410,7 @@ export function validateFrontmatter(
     sources: optionalStringArray("sources"),
     superseded_by: optionalString("superseded_by"),
     ttl_days: optionalNumber("ttl_days"),
+    series: optionalString("series"),
     valid_from: optionalDate("valid_from"),
     valid_until: optionalDate("valid_until"),
     said_at: optionalTimestamp("said_at"),

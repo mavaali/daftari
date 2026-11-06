@@ -33,11 +33,12 @@ import {
   pendingLintItems,
   type StagedActionLintItem,
 } from "./staged-actions.js";
+import { supersedeChainFindings } from "./supersede-chains.js";
 
 export type { StagedActionLintItem } from "./staged-actions.js";
 
 import { parseDescribesEntry } from "../audit/describes.js";
-import { ageInDays, computeStaleness } from "./staleness.js";
+import { ageInDays, computeStaleness, olderSeriesMembers } from "./staleness.js";
 import {
   agingTier,
   listTensions,
@@ -72,6 +73,7 @@ export const LINT_CHECKS = [
   "malformedPins",
   "verbatimQuoteOverrun",
   "unverifiableSourceRefs",
+  "supersedeChains",
 ] as const;
 export type LintCheckName = (typeof LINT_CHECKS)[number];
 
@@ -92,8 +94,8 @@ export const TIER0_LINT_CHECKS: readonly LintCheckName[] = [
 ];
 
 // Content-channel budget (Decision 3): the compact `content` summary shows counts
-// plus a capped handful of findings, one line each; the full report still rides
-// the structured channel. Both the plain and ledger-keeper renderers honor these.
+// plus a capped handful of findings, one line each. Both the plain and
+// ledger-keeper renderers honor these; lint-page.ts bounds the structured channel.
 export const LINT_SUMMARY_TOP_FINDINGS = 6;
 export const LINT_SUMMARY_DETAIL_CHARS = 110;
 
@@ -352,6 +354,7 @@ export async function runLint(
     malformedPins: [],
     verbatimQuoteOverrun: [],
     unverifiableSourceRefs: [],
+    supersedeChains: [],
   };
 
   // 12. Valid-time conflicts. The ONLY surface that reports a malformed or
@@ -377,6 +380,9 @@ export async function runLint(
   checks.lifecycleConflicts = t0.lifecycleConflicts;
   checks.schemaInvalid = t0.schemaInvalid;
   checks.domainLeaks = t0.domainLeaks;
+  // 15. superseded_by chains that loop, or end on a non-canonical document
+  // (#639). Over the caller-visible doc set, like the rest of lint.
+  checks.supersedeChains = supersedeChainFindings(docs);
   // runLint historically remains useful against partially configured vaults;
   // server startup is the surface that rejects malformed config. Authorized
   // repo verification treats an unavailable root as unconfigured. Distill
@@ -407,11 +413,17 @@ export async function runLint(
     positionalByDoc.set(t.sourceA, refs);
   }
 
+  const olderMembers = olderSeriesMembers(docs);
+
   for (const doc of docs) {
     const fm = doc.frontmatter;
 
-    // 1. Stale: a document at or past its TTL.
-    const staleness = computeStaleness({ updated: fm.updated, ttl_days: fm.ttl_days }, now);
+    // 1. Stale: a document at or past its TTL. An older series member's TTL
+    // has passed to the newest member (#645).
+    const staleness = computeStaleness(
+      { updated: fm.updated, ttl_days: olderMembers.has(doc.path) ? null : fm.ttl_days },
+      now,
+    );
     if (staleness.expired) {
       checks.staleFiles.push({
         path: doc.path,

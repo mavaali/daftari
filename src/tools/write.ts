@@ -24,6 +24,7 @@ import { frontmatterDiff, recordProvenance } from "../curation/provenance.js";
 import { recordShadowAction } from "../curation/shadow.js";
 import { resolveVaultSourceRef } from "../curation/source-refs.js";
 import { stageActionWithConflictCheck } from "../curation/staged-actions.js";
+import { closesSupersedeLoop, type SupersedeEdit } from "../curation/supersede-chains.js";
 import { sourceReadable } from "../curation/tension-access.js";
 import {
   type BlastDownstreamEntry,
@@ -270,6 +271,9 @@ export function serializeDocument(
     sources: fm.sources,
     superseded_by: fm.superseded_by,
     ttl_days: fm.ttl_days,
+    // Emitted only when set (the positions convention) so documents outside a
+    // series stay byte-stable.
+    ...(fm.series != null ? { series: fm.series } : {}),
     // `?? null` for the same reason as tier: a hand-built Frontmatter that
     // predates these fields carries undefined, which js-yaml refuses to dump.
     valid_from: fm.valid_from ?? null,
@@ -357,6 +361,9 @@ export interface WriteResult {
   // superseded_by edge instead. Purely additive — the write has already
   // landed, nothing blocks, no edge is auto-created.
   supersede_hint?: string;
+  // vault_supersede only (#639): the named successor is itself retired, so the
+  // chain does not end there. The write landed; a loop-closing one is refused.
+  successor_warning?: string;
   // #4: advisory epistemic-boundary warnings — this accumulation-domain
   // write references generative-domain docs (via `sources` or body links).
   // Speculative sketches must not read as settled canon. The write has
@@ -1872,6 +1879,36 @@ async function buildDependentsAdvisory(
 }
 
 // ---------------------------------------------------------------------------
+// superseded_by loop guard (#639)
+// ---------------------------------------------------------------------------
+
+// Refuses a write that would close a superseded_by loop, which leaves a topic
+// with no current entry. A precondition of the edge, like "the successor must
+// exist", not a curation verdict. Walks only what the caller can read: this
+// answers any writer, per pair of documents, so a refusal driven by a hidden
+// hop would be an exact oracle for edges behind the ACL (2026-07-14 spec). A
+// loop through a hidden hop is left to a vault_lint run that can see the hop.
+async function refuseSupersedeLoop(
+  vaultRoot: string,
+  edits: readonly SupersedeEdit[],
+  message: string,
+  access?: AccessContext,
+): Promise<Result<void, Error>> {
+  const docs = await loadDocuments(vaultRoot);
+  if (!docs.ok) return docs;
+  let visible = docs.value;
+  if (access) {
+    const db = openIndexForAccessOrNull(vaultRoot);
+    try {
+      visible = visible.filter((d) => sourceReadable(db, access, d.path));
+    } finally {
+      db?.close();
+    }
+  }
+  return closesSupersedeLoop(visible, edits) ? err(new Error(message)) : ok(undefined);
+}
+
+// ---------------------------------------------------------------------------
 // vault_deprecate
 // ---------------------------------------------------------------------------
 
@@ -1929,6 +1966,18 @@ export async function vaultDeprecate(
       const closing = closingUntil(oldFrontmatter, boundary.value, "vault_deprecate", path.value);
       if (!closing.ok) return closing;
       validUntil = closing.value;
+    }
+
+    if (supersededBy !== null) {
+      const successor = resolveVaultPath(vaultRoot, supersededBy);
+      const loop = await refuseSupersedeLoop(
+        vaultRoot,
+        [[target.value.relPath, successor.ok ? successor.value.relPath : supersededBy]],
+        `vault_deprecate: refused: ${path.value} is already on the superseded_by chain of ` +
+          `${supersededBy}, so this would close a loop. Nothing was written.`,
+        access,
+      );
+      if (!loop.ok) return loop;
     }
 
     return performFrontmatterWrite({
@@ -2236,6 +2285,15 @@ export async function vaultSupersede(
     validUntil = closing.value;
   }
 
+  const loop = await refuseSupersedeLoop(
+    vaultRoot,
+    [[resolvedOld.value.relPath, resolvedNew.value.relPath]],
+    `vault_supersede: refused: ${oldPath.value} is already on the superseded_by chain of ` +
+      `${newPath.value}, so this would close a loop. Nothing was written.`,
+    access,
+  );
+  if (!loop.ok) return loop;
+
   const written = await performFrontmatterWrite({
     vaultRoot,
     // Canonical relPath keys the lock/provenance/commit (#127/#128).
@@ -2267,10 +2325,44 @@ export async function vaultSupersede(
   if (!written.ok) return written;
   // Build the downstream dependents advisory (best-effort, never fails the write).
   const dependents = await buildDependentsAdvisory(vaultRoot, oldPath.value, access);
-  if (boundary.value === null) {
-    return ok({ ...written.value, dependents });
+  const successorWarning = retiredSuccessorWarning(
+    vaultRoot,
+    resolvedNew.value.relPath,
+    successor.value,
+    access,
+  );
+  return ok({
+    ...written.value,
+    ...(boundary.value !== null ? { hint: boundaryHint(newPath.value, boundary.value) } : {}),
+    dependents,
+    ...(successorWarning !== null ? { successor_warning: successorWarning } : {}),
+  });
+}
+
+// Advisory for a successor that is itself retired. Silent when the caller
+// cannot read the successor: its status is that document's content.
+function retiredSuccessorWarning(
+  vaultRoot: string,
+  successorPath: string,
+  successorText: string,
+  access?: AccessContext,
+): string | null {
+  const parsed = parseDocument(successorText);
+  if (!parsed.ok) return null;
+  const { status } = parsed.value.frontmatter;
+  if (status !== "superseded" && status !== "deprecated") return null;
+  if (access) {
+    const db = openIndexForAccessOrNull(vaultRoot);
+    try {
+      if (!sourceReadable(db, access, successorPath)) return null;
+    } finally {
+      db?.close();
+    }
   }
-  return ok({ ...written.value, hint: boundaryHint(newPath.value, boundary.value), dependents });
+  return (
+    `Successor ${successorPath} is itself ${status}, so the chain does not end there. ` +
+    `Point at the current entry, or check vault_lint's supersedeChains.`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -2631,6 +2723,21 @@ export async function vaultMerge(
     });
   }
 
+  // The target inherits path_a's superseded_by, which can point back at a
+  // source that is about to point at the target.
+  const loop = await refuseSupersedeLoop(
+    vaultRoot,
+    writes.map((w) => [
+      w.relPath,
+      w.action === "supersede" ? resolvedTarget.value.relPath : w.newFrontmatter.superseded_by,
+    ]),
+    `vault_merge: refused: ${targetPath.value} would land on a superseded_by loop through ` +
+      `its sources. Clear its inherited superseded_by with a frontmatter override. ` +
+      `Nothing was written.`,
+    access,
+  );
+  if (!loop.ok) return loop;
+
   // Shadow mode (spec §11.5): the full write set is assembled and validated —
   // the do() that WOULD have executed. Log one merge record whose blast seeds
   // every touched path, write nothing.
@@ -2943,6 +3050,13 @@ const frontmatterProperty = {
       description:
         "Number of days after which this document is considered stale and " +
         "should be reviewed. null = no TTL.",
+    },
+    series: {
+      type: ["string", "null"],
+      description:
+        "Name of the run of dated snapshots this document belongs to (e.g. " +
+        "weekly reviews). Staleness is judged on the newest member by `created`: " +
+        "the TTL fires when no new snapshot has been written, not on each old one.",
     },
     valid_from: {
       type: ["string", "null"],
@@ -3448,7 +3562,9 @@ export const writeTools: ToolDefinition[] = [
     annotations: { destructiveHint: true },
     description:
       "Mark a document superseded by a named successor. Sets status=superseded " +
-      "and superseded_by; the successor must already exist. Distinct from " +
+      "and superseded_by; the successor must already exist. Refuses a write " +
+      "that would close a superseded_by loop; a successor that is itself " +
+      "superseded or deprecated returns a successor_warning. Distinct from " +
       "vault_deprecate (which sets status=deprecated with an optional " +
       "successor). Auto-commits." +
       shadowNote,
@@ -3481,6 +3597,14 @@ export const writeTools: ToolDefinition[] = [
         "old_path). Status is always 'superseded' on success.",
       actions: ["supersede"],
       statuses: ["superseded"],
+      properties: {
+        successor_warning: {
+          type: "string",
+          description:
+            "Advisory, present when the successor is itself superseded or " +
+            "deprecated. The write landed.",
+        },
+      },
     }),
     handler: (vaultRoot, args, access) => vaultSupersede(vaultRoot, args, access),
   },
