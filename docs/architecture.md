@@ -724,7 +724,8 @@ Three of its concerns are simple enough to state in a line:
 
 - **Staleness.** Each document has a `ttl_days`. Past it, the document is
   flagged stale with a decay score. Stale does not mean deleted — it means "a
-  human or agent should re-verify this."
+  human or agent should re-verify this." A `series` of dated snapshots is judged
+  on its newest member only, so old snapshots do not stay flagged forever.
 - **Lint.** `vault_lint` runs cross-vault checks and produces a report.
   The originals: stale files, orphans, old drafts, stagnant low-confidence
   files, deprecated-but-still-linked, and questions raised but unanswered

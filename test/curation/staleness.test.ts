@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ageInDays, computeStaleness } from "../../src/curation/staleness.js";
+import { ageInDays, computeStaleness, olderSeriesMembers } from "../../src/curation/staleness.js";
 
 const NOW = new Date("2026-02-15T12:00:00Z");
 
@@ -46,6 +46,102 @@ describe("staleness", () => {
       expect(r.score).toBe(0);
       expect(r.expired).toBe(false);
       expect(r.ttlDays).toBeNull();
+    });
+  });
+
+  describe("olderSeriesMembers", () => {
+    const member = (
+      path: string,
+      created: string,
+      over: { series?: string | null; status?: string; updated?: string } = {},
+    ) => ({
+      path,
+      frontmatter: {
+        series: "s" as string | null,
+        status: "canonical",
+        created,
+        updated: created,
+        ...over,
+      },
+    });
+
+    it("returns every member but the newest by created", () => {
+      const older = olderSeriesMembers([
+        member("b.md", "2026-01-08"),
+        member("c.md", "2026-01-15"),
+        member("a.md", "2026-01-01"),
+      ]);
+      expect([...older].sort()).toEqual(["a.md", "b.md"]);
+    });
+
+    it("ignores documents outside a series, including a blank name", () => {
+      const older = olderSeriesMembers([
+        member("a.md", "2026-01-01", { series: null }),
+        member("b.md", "2026-01-02", { series: null }),
+        member("c.md", "2026-01-01", { series: "  " }),
+        member("d.md", "2026-01-02", { series: "  " }),
+      ]);
+      expect(older.size).toBe(0);
+    });
+
+    it("does not order by updated", () => {
+      const older = olderSeriesMembers([
+        member("old.md", "2026-01-01", { updated: "2026-02-15" }),
+        member("new.md", "2026-01-08"),
+      ]);
+      expect([...older]).toEqual(["old.md"]);
+    });
+
+    it("breaks a created tie on path, descending", () => {
+      const older = olderSeriesMembers([
+        member("w-01.md", "2026-01-01"),
+        member("w-02.md", "2026-01-01"),
+      ]);
+      expect([...older]).toEqual(["w-01.md"]);
+    });
+
+    it("falls back to updated when created is missing or malformed", () => {
+      const older = olderSeriesMembers([
+        member("a.md", "", { updated: "2026-01-08" }),
+        member("b.md", "2026-01-01"),
+        member("c.md", "not a date", { updated: "not a date" }),
+      ]);
+      expect([...older].sort()).toEqual(["b.md", "c.md"]);
+    });
+
+    it("still breaks the tie when no member has a usable date", () => {
+      const older = olderSeriesMembers([
+        member("a.md", "not a date", { updated: "not a date" }),
+        member("b.md", "not a date", { updated: "not a date" }),
+      ]);
+      expect([...older]).toEqual(["a.md"]);
+    });
+
+    for (const status of ["deprecated", "superseded", "archived"]) {
+      it(`passes over a ${status} member as newest, and keeps it out of the head`, () => {
+        const older = olderSeriesMembers([
+          member("a.md", "2026-01-01"),
+          member("b.md", "2026-01-08"),
+          member("c.md", "2026-01-15", { status }),
+        ]);
+        expect([...older].sort()).toEqual(["a.md", "c.md"]);
+      });
+    }
+
+    it("lets a draft be the newest member", () => {
+      const older = olderSeriesMembers([
+        member("a.md", "2026-01-01"),
+        member("b.md", "2026-01-08", { status: "draft" }),
+      ]);
+      expect([...older]).toEqual(["a.md"]);
+    });
+
+    it("treats a fully retired series as having no head", () => {
+      const older = olderSeriesMembers([
+        member("a.md", "2026-01-01", { status: "archived" }),
+        member("b.md", "2026-01-08", { status: "archived" }),
+      ]);
+      expect([...older].sort()).toEqual(["a.md", "b.md"]);
     });
   });
 });

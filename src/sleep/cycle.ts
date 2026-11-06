@@ -28,7 +28,7 @@ import {
   stageActionWithConflictCheck,
   sweepExpiredActions,
 } from "../curation/staged-actions.js";
-import { computeStaleness } from "../curation/staleness.js";
+import { computeStaleness, olderSeriesMembers } from "../curation/staleness.js";
 import { agingTier, listTensions } from "../curation/tension.js";
 import {
   buildReverseLinkMap,
@@ -194,10 +194,14 @@ export async function runSleepCycle(
   const decayedQuiet: QuietDecay[] = [];
   const sourceHistoryCache = new Map<string, SourceHistoryEvidence>();
   let generativeStale = 0;
+  const olderMembers = olderSeriesMembers(docs.value);
 
   for (const doc of docs.value) {
     const s = computeStaleness(
-      { updated: doc.frontmatter.updated, ttl_days: doc.frontmatter.ttl_days },
+      {
+        updated: doc.frontmatter.updated,
+        ttl_days: olderMembers.has(doc.path) ? null : doc.frontmatter.ttl_days,
+      },
       now,
     );
     staleness.total += 1;
