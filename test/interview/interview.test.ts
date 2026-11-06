@@ -148,6 +148,20 @@ describe("runInterview — ask mode", () => {
     expect(existsSync(join(vault, "..", "evil"))).toBe(false);
   });
 
+  it("refuses an ignored collection before asking a single question", async () => {
+    writeTension();
+    writeFileSync(
+      join(vault, ".daftari", "config.yaml"),
+      "version: 1\nignore:\n  - interviews\n",
+      "utf-8",
+    );
+    const { io, output } = scriptedIo(["should never be consumed"]);
+    const code = await runInterview(["ask", "--vault", vault], io);
+    expect(code).toBe(2);
+    expect(output()).toBe(""); // no testimony given, so none is lost
+    expect(existsSync(join(vault, "interviews"))).toBe(false);
+  });
+
   it("says so when nothing is unclear", async () => {
     writeDoc("pricing/fine.md", TODAY, 365);
     const { io } = scriptedIo([]);
