@@ -18,11 +18,14 @@
 // on this surface can spend. This module is operator-only and takes no access
 // context — the court convention; see the 2026-07-25 design spec.
 
+import { collectOpenQuestions } from "../curation/questions.js";
 import { computeStaleness, olderSeriesMembers } from "../curation/staleness.js";
 import { agingTier, listTensions, type TensionEntry } from "../curation/tension.js";
 import { computeValidity } from "../curation/validity.js";
 import { type LoadedDoc, loadDocuments } from "../curation/vault-docs.js";
 import { ok, type Result } from "../frontmatter/types.js";
+
+export { normalizeQuestion } from "../curation/questions.js";
 
 export const QUESTION_KINDS = ["tension", "stale", "open_question"] as const;
 export type QuestionKind = (typeof QUESTION_KINDS)[number];
@@ -33,17 +36,6 @@ export interface InterviewQuestion {
   question: string; // the text put to the principal
   context: string; // why the sheet is asking (which signal, and its state)
   refs: string[]; // tension ids and vault-relative doc paths
-}
-
-// Statuses whose questions_raised no longer count as open: the doc has been
-// retired, and its curiosity retired with it. Its questions_answered still
-// count — an answer recorded anywhere stays an answer.
-const RETIRED_STATUSES = new Set(["deprecated", "superseded", "archived"]);
-
-// Whitespace/case normalization for matching a raised question against the
-// vault's answered set. Exact semantics stay deterministic — no fuzzy match.
-export function normalizeQuestion(q: string): string {
-  return q.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 // Aging-tier priority for tension questions: the disputes the vault has
@@ -166,32 +158,7 @@ function daysBetween(fromISO: string, toISO: string): number {
 }
 
 function openQuestions(docs: LoadedDoc[]): InterviewQuestion[] {
-  // An answer recorded anywhere counts, whatever the answering doc's status.
-  const answered = new Set<string>();
-  for (const doc of docs) {
-    for (const q of doc.frontmatter.questions_answered) {
-      answered.add(normalizeQuestion(q));
-    }
-  }
-
-  // Duplicate raisings merge into one question with every raising doc as a
-  // ref. Insertion order over the sorted file walk keeps the sheet stable.
-  const raised = new Map<string, { text: string; refs: string[] }>();
-  for (const doc of docs) {
-    if (RETIRED_STATUSES.has(doc.frontmatter.status)) continue;
-    for (const q of doc.frontmatter.questions_raised) {
-      const norm = normalizeQuestion(q);
-      if (norm.length === 0 || answered.has(norm)) continue;
-      const existing = raised.get(norm);
-      if (existing) {
-        if (!existing.refs.includes(doc.path)) existing.refs.push(doc.path);
-      } else {
-        raised.set(norm, { text: q.trim(), refs: [doc.path] });
-      }
-    }
-  }
-
-  return [...raised.values()].map(({ text, refs }) => ({
+  return collectOpenQuestions(docs).map(({ text, raisedBy: refs }) => ({
     id: "",
     kind: "open_question" as const,
     question:
