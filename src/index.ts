@@ -400,7 +400,8 @@ function maybeStartWatcher(vaultRoot: string, watchEnabled: boolean): void {
     return;
   }
   if (activeWatcher) return;
-  activeWatcher = startWatcher(vaultRoot);
+  const config = loadConfig(vaultRoot);
+  activeWatcher = startWatcher(vaultRoot, { ignore: config.ok ? config.value.ignore : [] });
   process.stderr.write(`daftari: watching vault for out-of-band edits\n`);
 }
 

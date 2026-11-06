@@ -125,6 +125,10 @@
       "description": "Surface thematic clusters across the vault using k-means over CHUNK embeddings, with per-document theme distributions."
     },
     {
+      "name": "vault_question_candidates",
+      "description": "For each open question (a questions_raised entry whose exact text is in no document's questions_answered), list the documents touched since it was raised whose title or questions_answered read closest in meaning."
+    },
+    {
       "name": "vault_write",
       "description": "Create a new vault document or overwrite an existing one."
     },
