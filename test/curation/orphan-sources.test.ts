@@ -8,6 +8,7 @@ import { structuralDecay } from "../../src/curation/structural.js";
 import { buildPathIndexes } from "../../src/curation/vault-docs.js";
 import { LOCAL_MINILM_DIM } from "../../src/search/providers/local-minilm.js";
 import { openIndexDb } from "../../src/storage/index-db.js";
+import { vaultLint } from "../../src/tools/curation.js";
 import { vaultRead } from "../../src/tools/read.js";
 import { vaultReindex, vaultSearch } from "../../src/tools/search.js";
 import { vaultWrite } from "../../src/tools/write.js";
@@ -172,6 +173,38 @@ describe("lint orphan check counts sources (#641)", () => {
     expect(finding?.detail).toContain("decisions/mentioner.md");
     expect(finding?.detail).toContain("not an edge");
     expect(finding?.detail).not.toContain("moonshot");
+  });
+
+  it("reports how far each document is from being referenced", async () => {
+    dir = mkdtempSync(join(tmpdir(), "daftari-orphan-sources-"));
+    doc("decisions/linked.md", {}, "Body.");
+    doc("decisions/cited.md", {}, "Body.");
+    doc("decisions/named.md", {}, "Body.");
+    doc("decisions/lonely.md", {}, "Body.");
+    doc(
+      "decisions/hub.md",
+      { sources: ["vault:decisions/cited.md"] },
+      "See [[linked]] and `decisions/named.md`.",
+    );
+
+    const report = await runLint(dir);
+    if (!report.ok) throw report.error;
+    expect(report.value.checks.orphanFiles).toHaveLength(3); // hub, named, lonely
+    expect(report.value.orphanSummary).toEqual({ noInboundLink: 4, nothingRefers: 2 });
+
+    const viaTool = await vaultLint(dir, { check: "orphanFiles" });
+    if (!viaTool.ok) throw viaTool.error;
+    expect(viaTool.value.orphanSummary).toEqual({ noInboundLink: 4, nothingRefers: 2 });
+  });
+
+  it("computes the summary from the caller's vantage", async () => {
+    dir = mkdtempSync(join(tmpdir(), "daftari-orphan-sources-"));
+    doc("decisions/named.md", {}, "Body.");
+    doc("moonshot/hidden.md", {}, "See `decisions/named.md`.");
+
+    const report = await runLint(dir, { pathVisible: (p: string) => p.startsWith("decisions/") });
+    if (!report.ok) throw report.error;
+    expect(report.value.orphanSummary).toEqual({ noInboundLink: 1, nothingRefers: 1 });
   });
 
   it("caps the backticked mentions it names", async () => {

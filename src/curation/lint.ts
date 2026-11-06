@@ -169,6 +169,14 @@ export interface TensionHealth {
   blastRadiusOfStaleTensions: number;
 }
 
+export interface OrphanSummary {
+  // No wikilink or markdown link points here: orphanFiles before `sources`
+  // counted, so one run shows what the citations are worth.
+  noInboundLink: number;
+  // Orphaned and not named by a backticked path either.
+  nothingRefers: number;
+}
+
 export interface LintReport {
   generatedAt: string;
   checks: Record<LintCheckName, LintFinding[]>;
@@ -190,6 +198,9 @@ export interface LintReport {
   // #420: coverage of mechanically observed compiled dependencies, separate
   // from freshness. Computed over the same visibility-scoped docs as checks.
   compiledEdgeCoverage: CompiledEdgeCoverageSummary;
+  // #641: the two ends of what checks.orphanFiles sits between. Over the same
+  // visibility-scoped docs as checks.
+  orphanSummary: OrphanSummary;
   // #235's headline measurement (quick win 2 of #236): proposal arrival rate
   // vs. review throughput over the staged-actions log. Vault-global counts by
   // design, like tensionHealth — no paths or principals cross here.
@@ -702,6 +713,10 @@ export async function runLint(
       docs.map((doc) => doc.path),
       consumesRes.value,
     ),
+    orphanSummary: {
+      noInboundLink: docs.filter((d) => !linked.has(d.path)).length,
+      nothingRefers: checks.orphanFiles.filter((f) => !mentioned.has(f.path)).length,
+    },
     reviewThroughput: reviewThroughputSummary(stagedRes.value, now),
   });
 }

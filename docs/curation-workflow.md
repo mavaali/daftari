@@ -120,7 +120,9 @@ what is missing. Fix that, then re-promote.
 
 A document no other document links to or cites in `sources` is disconnected
 knowledge. A backticked path doesn't count; the finding lists documents that
-name the orphan that way, which are the first places to look. For each orphan:
+name the orphan that way, which are the first places to look. `orphanSummary`
+counts what is left: `nothingRefers` is the documents with no reference of any
+kind. For each orphan:
 
 - **Still relevant?** Link it in. Add a wikilink to it from a related hub
   document (`vault_append` a "See also" line, or weave the link into prose), or

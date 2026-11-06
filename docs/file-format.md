@@ -336,6 +336,10 @@ A document that nothing links to or cites is reported as an **orphan** by
 `vault_lint` — not an error, but a signal that a piece of knowledge is
 disconnected from the rest of the vault.
 
+`vault_lint` also returns `orphanSummary`, with the two counts either side of
+`orphanFiles`: `noInboundLink` (no wikilink or markdown link points here) and
+`nothingRefers` (an orphan that no backticked path names either).
+
 ## A complete example
 
 ```markdown
