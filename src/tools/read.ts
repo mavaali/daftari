@@ -59,7 +59,7 @@ import {
 import { type ContestedTension, contestedFor } from "../search/contested.js";
 import { getProvider } from "../search/vector.js";
 import { countDimMismatches, getMeta, openIndexDb } from "../storage/index-db.js";
-import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
+import { collectionOfPath, listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { loadConfig } from "../utils/config.js";
 import { sha256Hex } from "../utils/hash.js";
 import { readRunId } from "../utils/run-id.js";
@@ -770,15 +770,14 @@ export interface VaultIndexResult {
 }
 
 // A document's collection is its frontmatter `collection`, falling back to the
-// top-level directory of its vault-relative path.
+// top-level directory of its vault-relative path. A root file with neither has
+// no collection ("").
 //
 // Exported because the MCP resource layer (src/resources.ts) gates
 // `resources/read` on the same predicate vault_read uses. One visibility rule,
 // not two that can drift apart.
 export function collectionOf(relPath: string, fm: Frontmatter): string {
-  if (fm.collection) return fm.collection;
-  const top = relPath.split("/")[0];
-  return top ?? "";
+  return fm.collection || collectionOfPath(relPath);
 }
 
 // One parsed document from a whole-vault scan. Shared by vaultIndex and
@@ -969,7 +968,11 @@ export async function vaultStatus(
   const byCollection = new Map<string, number>();
   let invalidCount = 0;
   for (const entry of indexEntries.entries) {
-    byCollection.set(entry.collection, (byCollection.get(entry.collection) ?? 0) + 1);
+    // A root file with no declared collection still counts toward fileCount;
+    // it is just not in a collection.
+    if (entry.collection) {
+      byCollection.set(entry.collection, (byCollection.get(entry.collection) ?? 0) + 1);
+    }
     if (!entry.valid) invalidCount += 1;
   }
 

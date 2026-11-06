@@ -52,7 +52,13 @@ import {
   replaceDocumentFields,
   setMeta,
 } from "../storage/index-db.js";
-import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
+import {
+  collectionOfPath,
+  listFiles,
+  matchesIgnoreList,
+  readFile,
+  resolveVaultPath,
+} from "../storage/local.js";
 import { mapWithConcurrency } from "../utils/concurrency.js";
 import {
   type DaftariConfig,
@@ -176,6 +182,18 @@ export function readManifest(db: IndexDb): Record<string, number> | null {
     return parsed as Record<string, number>;
   } catch {
     return null;
+  }
+}
+
+// Drops a document from the index and patches the manifest so the next startup
+// freshness check does not read the missing entry as drift. A malformed
+// manifest reads as null — non-fatal; the next full reindex rewrites it.
+export function evictDocument(db: IndexDb, relPath: string): void {
+  deleteDocument(db, relPath);
+  const manifest = readManifest(db);
+  if (manifest && relPath in manifest) {
+    delete manifest[relPath];
+    writeManifest(db, manifest);
   }
 }
 
@@ -418,7 +436,7 @@ async function stageOne(
       doc: {
         path: relPath,
         title: fm.title,
-        collection: fm.collection || (relPath.split("/")[0] ?? ""),
+        collection: fm.collection || collectionOfPath(relPath),
         domain: fm.domain,
         status: fm.status,
         confidence: fm.confidence,
@@ -700,6 +718,17 @@ export async function indexDocument(
   const dbResult = openIndexForActiveProvider(vaultRoot);
   if (!dbResult.ok) return dbResult;
   const db = dbResult.value;
+
+  // An ignored path is not a document (#646). Evict rather than skip, so a file
+  // the list newly covers leaves search on its next event, without a restart.
+  if (matchesIgnoreList(relPath, config.value.ignore)) {
+    try {
+      evictDocument(db, relPath);
+      return ok({ chunkCount: 0, vectorEnabled: true, invalidFrontmatter: null });
+    } finally {
+      db.close();
+    }
+  }
 
   if (
     documentCount(db) > 0 &&

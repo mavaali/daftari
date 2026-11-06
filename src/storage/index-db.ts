@@ -73,10 +73,11 @@ export type IndexDb = Database.Database;
 // durable vector cache survives.
 // 12 adds document_fields, the rebuildable typed projection for explicitly
 // indexed schema-extension values (#512).
-// 13 adds doc_links.kind so `sources` citations join the inbound graph without
+// 13 rebuilds rows whose `collection` was a root file's own name (#646).
+// 14 adds doc_links.kind so `sources` citations join the inbound graph without
 // feeding the link-only retired-still-linked signal (#641). doc_links joins the
 // drop list below: CREATE IF NOT EXISTS would keep the kind-less table.
-const SCHEMA_VERSION = "13";
+const SCHEMA_VERSION = "14";
 
 // Meta key that records the dim at which `embeddings_vec` was created. Used
 // on every open to decide whether to rebuild the virtual table (provider
