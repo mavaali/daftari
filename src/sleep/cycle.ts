@@ -38,6 +38,7 @@ import {
 import { computeValidity } from "../curation/validity.js";
 import { buildPathIndexes, loadDocuments } from "../curation/vault-docs.js";
 import { ok, type Result } from "../frontmatter/types.js";
+import { collectionOfPath } from "../storage/local.js";
 import { ANCHOR_PIN_CAP } from "../tools/anchors.js";
 import { computeRepin } from "../tools/repin.js";
 import { loadConfig } from "../utils/config.js";
@@ -271,7 +272,7 @@ export async function runSleepCycle(
     wake.push({
       path: doc.path,
       title: doc.frontmatter.title,
-      collection: doc.frontmatter.collection || (doc.path.split("/")[0] ?? ""),
+      collection: doc.frontmatter.collection || collectionOfPath(doc.path),
       ageDays: s.ageDays,
       ttlDays: s.ttlDays,
       blastPrimary: blast.primary_blast,

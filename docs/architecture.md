@@ -361,6 +361,13 @@ writer. The watcher is on by default; set `watch: false` in
 `.daftari/config.yaml` to disable it for read-only or batch-script
 environments.
 
+`ignore` in `.daftari/config.yaml` lists paths or globs that are not vault
+documents. `listFiles` applies it, so status, lint, search and every other
+walker inherit it; the watcher skips those paths and write tools refuse them.
+Reading one by exact path still works, under RBAC. Adding an entry changes the
+startup manifest, so already-indexed files drop out at the next start or
+`vault_reindex`. Sync backends are unaffected: they copy the working tree.
+
 Events are debounced per-path with a 500ms window: an editor's atomic-rename
 save burst (write temp, rename onto target, delete temp) coalesces into a
 single `indexDocument()` call for that file. `unlink` events re-stat the

@@ -182,6 +182,7 @@ function makeConfig(roles: Record<string, RoleConfig>, principals: string[] = []
     hooks: { preWrite: [], preWriteTransform: [] },
     autoCommit: false,
     watch: false,
+    ignore: [],
     warmEmbeddings: false,
     embeddingProvider: "local-minilm",
     search: {

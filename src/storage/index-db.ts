@@ -74,8 +74,9 @@ export type IndexDb = Database.Database;
 // durable vector cache survives.
 // 12 adds document_fields, the rebuildable typed projection for explicitly
 // indexed schema-extension values (#512).
-// 13 adds doc_amends, the materialized inverse of `amends` frontmatter (#643).
-const SCHEMA_VERSION = "13";
+// 13 rebuilds rows whose `collection` was a root file's own name (#646).
+// 14 adds doc_amends, the materialized inverse of `amends` frontmatter (#643).
+const SCHEMA_VERSION = "14";
 
 // Meta key that records the dim at which `embeddings_vec` was created. Used
 // on every open to decide whether to rebuild the virtual table (provider
