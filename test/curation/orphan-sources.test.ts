@@ -92,6 +92,12 @@ describe("backtickedVaultPaths (#641)", () => {
       ),
     ).toEqual([]);
   });
+
+  it("treats an unclosed fence as running to the end of the document", () => {
+    expect(
+      backtickedVaultPaths("See `decisions/a.md`.\n\n```sh\ncat `decisions/b.md`\n", byPath),
+    ).toEqual(["decisions/a.md"]);
+  });
 });
 
 describe("lint orphan check counts sources (#641)", () => {

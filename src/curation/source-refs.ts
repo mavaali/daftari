@@ -96,9 +96,13 @@ export function outgoingEdges(
 // Vault paths a body names in inline code. A code span is literal text, not an
 // authored reference (`rm decisions/a.md` matches too), so these are never
 // edges: lint only reports them on an orphan as a hint that a real reference
-// may be missing. Fenced blocks are skipped for the same reason.
+// may be missing. Fenced blocks are skipped for the same reason; an unclosed
+// fence runs to the end of the document, as CommonMark has it.
 export function backtickedVaultPaths(content: string, byPath: Set<string>): string[] {
-  const prose = content.replace(/^ {0,3}(`{3,}|~{3,})[\s\S]*?^ {0,3}\1[`~]*\s*$/gm, "");
+  const prose = content.replace(
+    /^ {0,3}(`{3,}|~{3,})[\s\S]*?(?:^ {0,3}\1[`~]*\s*$|(?![\s\S]))/gm,
+    "",
+  );
   const found = new Set<string>();
   for (const m of prose.matchAll(/`([^`\n]+)`/g)) {
     const span = (m[1] as string).trim();
