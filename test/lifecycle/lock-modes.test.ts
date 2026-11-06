@@ -1,14 +1,24 @@
 // #5 (spec 2026-07-20 Decision 4): mode-aware lock precedence. A LIVE holder
-// is faked by spawning an inert node process whose argv carries the vault
-// path — exactly what isDaftariProcess keys on — so the refusal matrix is
-// testable without booting real servers.
+// is a fresh same-host lease naming a live pid (an inert node process) for
+// the refusal matrix — a refusal never needs proof of life — and a real
+// heartbeating holder (test/helpers/lease-holder.ts) for the takeover rows,
+// since a takeover signals the holder only once its heartbeat is seen to
+// advance (istf).
 
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { acquireLock, type LockData, readLockfile } from "../../src/lifecycle/lock.js";
+import {
+  acquireLock,
+  holderMarkerPath,
+  hostId,
+  hostMacs,
+  type LockData,
+  readLockfile,
+} from "../../src/lifecycle/lock.js";
 
 function lockDataFor(vault: string, pid: number, mode?: "stdio" | "serve"): LockData {
   return {
@@ -17,9 +27,32 @@ function lockDataFor(vault: string, pid: number, mode?: "stdio" | "serve"): Lock
     vaultRoot: vault,
     startedAt: "2026-07-20T00:00:00Z",
     version: "test",
+    host: hostId(),
+    macs: hostMacs(),
+    nonce: `n-${pid}`,
+    heartbeatAt: new Date().toISOString(),
+    heartbeatMs: 1_000,
+    leaseMs: 60_000,
     ...(mode ? { mode } : {}),
     ...(mode === "serve" ? { bind: "127.0.0.1:8787" } : {}),
   };
+}
+
+// A real heartbeating holder; resolves once it holds the lock.
+async function spawnLeaseHolder(vault: string, mode: "stdio" | "serve"): Promise<ChildProcess> {
+  const child = spawn(
+    process.execPath,
+    ["--import", "tsx", resolve("test/helpers/lease-holder.ts"), mode, "100", "2000"],
+    { stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, LEASE_VAULT: vault } },
+  );
+  let out = "";
+  child.stdout?.on("data", (c: Buffer) => {
+    out += c.toString();
+  });
+  const deadline = Date.now() + 15_000;
+  while (!out.includes("ok") && Date.now() < deadline) await sleep(20);
+  if (!out.includes("ok")) throw new Error(`lease holder did not acquire: ${out}`);
+  return child;
 }
 
 describe("mode-aware process lock (#5)", () => {
@@ -39,20 +72,19 @@ describe("mode-aware process lock (#5)", () => {
     rmSync(vault, { recursive: true, force: true });
   });
 
-  // A live process whose ps command line contains the vault path — enough
-  // for isDaftariProcess to treat it as a live daftari for this vault.
+  // A live process to name in a fresh same-host lease.
   async function spawnHolder(): Promise<number> {
-    holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", vault], {
+    holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
       stdio: "ignore",
     });
     const pid = holder.pid;
     if (pid === undefined) throw new Error("spawn failed");
-    // Give ps a beat to see it.
-    await new Promise((r) => setTimeout(r, 200));
     return pid;
   }
 
   function writeHolderLock(pid: number, mode?: "stdio" | "serve"): void {
+    // Same host = same host id + MACs + the holder's temp-dir marker.
+    writeFileSync(holderMarkerPath(`n-${pid}`) as string, String(pid));
     writeFileSync(
       join(vault, ".daftari", "process.lock"),
       JSON.stringify(lockDataFor(vault, pid, mode)),
@@ -87,8 +119,7 @@ describe("mode-aware process lock (#5)", () => {
   });
 
   it("serve --takeover replaces a live holder of either mode", async () => {
-    const pid = await spawnHolder();
-    writeHolderLock(pid, "stdio");
+    holder = await spawnLeaseHolder(vault, "stdio");
     const r = await acquireLock(vault, "test", {
       mode: "serve",
       bind: "127.0.0.1:9999",
@@ -99,17 +130,26 @@ describe("mode-aware process lock (#5)", () => {
     expect(now.ok && now.value?.pid).toBe(process.pid);
     expect(now.ok && now.value?.mode).toBe("serve");
     expect(now.ok && now.value?.bind).toBe("127.0.0.1:9999");
-  }, 10_000);
+  }, 20_000);
 
   it("stdio finding a live stdio holder keeps today's takeover semantics", async () => {
-    const pid = await spawnHolder();
-    // A pre-#5 lockfile has NO mode field — it must read as stdio.
-    writeHolderLock(pid, undefined);
+    holder = await spawnLeaseHolder(vault, "stdio");
+    const exited = new Promise((r) => holder?.once("exit", r));
     const r = await acquireLock(vault, "test", { mode: "stdio" });
     expect(r.ok).toBe(true);
+    await exited; // SIGTERMed, not merely out-waited
     const now = readLockfile(vault);
     expect(now.ok && now.value?.pid).toBe(process.pid);
-  }, 10_000);
+  }, 20_000);
+
+  it("a lease with NO mode field reads as stdio (pre-#5 lockfile shape)", async () => {
+    const pid = await spawnHolder();
+    writeHolderLock(pid, undefined);
+    const r = await acquireLock(vault, "test", { mode: "serve" });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toContain("mode=stdio");
+  });
 
   it("stale serve locks are overwritten silently in every mode", async () => {
     // A dead PID: nothing to refuse against, whatever the recorded mode.
