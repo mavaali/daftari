@@ -598,6 +598,20 @@ describe("vault_patch (#640)", () => {
       expect(raw(vault).title).toBe("Plan");
     });
 
+    it("refuses a patch that changes nothing, staging no proposal", async () => {
+      const result = await vaultPatch(
+        vault,
+        patch({ agent: "agent:proposer", frontmatter: { ttl_days: 30 } }),
+        PROPOSER,
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("changes nothing");
+      const staged = await listStagedActions(vault, "pending");
+      if (!staged.ok) throw staged.error;
+      expect(staged.value).toHaveLength(0);
+    });
+
     it("refuses reserved fields before staging", async () => {
       const result = await vaultPatch(
         vault,

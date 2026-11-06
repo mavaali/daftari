@@ -1042,6 +1042,10 @@ function sameFields(a: Record<string, unknown>, b: Record<string, unknown>): boo
   return JSON.stringify(unstamped(a)) === JSON.stringify(unstamped(b));
 }
 
+function patchChangesNothing(path: string): Error {
+  return new Error(`vault_patch: this patch changes nothing in ${path}`);
+}
+
 function checkTierGuard(args: {
   tool: string;
   path: string;
@@ -1234,6 +1238,13 @@ async function writeDocument(
           else merged[key] = value;
         }
         previewRaw = merged;
+        if (
+          patch &&
+          body === parsedExisting.value.content &&
+          sameFields(parsedExisting.value.raw, merged)
+        ) {
+          return err(patchChangesNothing(path.value));
+        }
       }
     }
     if (previewRaw.updated === undefined || previewRaw.updated === null) {
@@ -1615,7 +1626,7 @@ async function writeDocument(
   // Compared on the raw merged fields: the validated Frontmatter drops
   // undeclared custom keys, and those are patchable too.
   if (patch && oldRaw !== null && body === oldContent && sameFields(oldRaw, rawFrontmatter)) {
-    return err(new Error(`vault_patch: this patch changes nothing in ${path.value}`));
+    return err(patchChangesNothing(path.value));
   }
 
   const stamped: Frontmatter = {
