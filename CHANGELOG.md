@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`vault_chains`: the end of every supersede chain** (#642) — one call lists, per chain, the current entry, its status and date, and the entries it replaced, with no seed. Chains that end in a draft or a retired document, loop, dangle, or carry a superseded status with no pointer forward are flagged; `flagged_only` narrows to those. Under RBAC, unreadable documents are omitted and chains are never stitched across them. Full tier; does not cross federation mounts.
+- **`series` frontmatter field: dated snapshots stop going stale forever** (#645) — mark a run of write-once documents (weekly reviews, say) with a shared `series: <name>`. Staleness is judged on the newest member by `created`, so the TTL fires when no new snapshot has been written, not on each old one. Applies to `vault_lint`, `vault_status`, the board, `daftari sleep` and `daftari interview`; the per-document decay banner on `vault_read` and search does not read it yet. A vault that declared `series` as a schema extension must remove or rename it.
 
 ### Fixed
 
