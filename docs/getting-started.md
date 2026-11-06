@@ -160,7 +160,7 @@ rules.
 It reports—never fixes—problems such as:
 
 - **staleFiles** — past their `ttl_days` and overdue for review
-- **orphanFiles** — no inbound links from any other document
+- **orphanFiles** — no inbound links or `sources` citations from any other document
 - **oldDrafts** — drafts that have sat unpromoted too long
 - **stagnantLowConfidence** — low-confidence documents that have not improved
 - **retiredStillLinked** — retired sources still cited by canonical documents

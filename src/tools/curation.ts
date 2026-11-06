@@ -26,6 +26,7 @@ import {
   LINT_SUMMARY_TOP_FINDINGS,
   type LintCheckName,
   type LintFinding,
+  type OrphanSummary,
   runLint,
   type StagedActionLintItem,
   type TensionHealth,
@@ -422,6 +423,7 @@ export interface VaultLintResult {
   shadowActions: ShadowLintSummary;
   coverageEquity: CoverageEquitySummary;
   compiledEdgeCoverage: CompiledEdgeCoverageSummary;
+  orphanSummary: OrphanSummary;
   reviewThroughput: ReviewThroughputSummary;
 }
 
@@ -499,6 +501,7 @@ export async function vaultLint(
     shadowActions: paging ? lint.shadowActions : previewShadowActions(lint.shadowActions),
     coverageEquity: lint.coverageEquity,
     compiledEdgeCoverage: lint.compiledEdgeCoverage,
+    orphanSummary: lint.orphanSummary,
     reviewThroughput: lint.reviewThroughput,
   });
 }
@@ -1036,6 +1039,24 @@ const lintOutputSchema: Record<string, unknown> = {
       ],
       additionalProperties: false,
     },
+    orphanSummary: {
+      type: "object",
+      description:
+        "How far readable documents are from being referenced; orphanFiles counts those with " +
+        "no link or sources citation, between these two numbers",
+      properties: {
+        noInboundLink: {
+          type: "integer",
+          description: "Documents no wikilink or markdown link points to",
+        },
+        nothingRefers: {
+          type: "integer",
+          description: "Orphans not named by a backticked vault path either",
+        },
+      },
+      required: ["noInboundLink", "nothingRefers"],
+      additionalProperties: false,
+    },
     compiledEdgeCoverage: {
       type: "object",
       description:
@@ -1103,6 +1124,7 @@ const lintOutputSchema: Record<string, unknown> = {
     "shadowActions",
     "coverageEquity",
     "compiledEdgeCoverage",
+    "orphanSummary",
     "reviewThroughput",
   ],
   additionalProperties: false,
@@ -1187,6 +1209,8 @@ export function summarizeLint(value: unknown): string {
       `shadow: ${report.shadowActions.total} logged, ${report.shadowActions.gated} would-gate; ` +
       `coverage: ${report.coverageEquity.backstopOverdue.count} backstop-overdue edge(s); ` +
       `compiled-edge coverage: ${report.compiledEdgeCoverage.message}`,
+    `references: ${report.orphanSummary.noInboundLink} doc(s) with no inbound link, ` +
+      `${report.orphanSummary.nothingRefers} that nothing refers to`,
   ];
 
   const top = flat.slice(0, LINT_SUMMARY_TOP_FINDINGS);
@@ -1416,7 +1440,7 @@ export const curationTools: ToolDefinition[] = [
     annotations: { readOnlyHint: false },
     description:
       "Run the advisory curation checks across the vault: stale files past " +
-      "TTL, orphan files with no inbound links, old drafts, stagnant " +
+      "TTL, orphan files with no inbound links or sources citations, old drafts, stagnant " +
       "low-confidence files, deprecated files still linked from canonical " +
       "ones, and questions raised but unanswered anywhere in the vault. " +
       "Under RBAC, findings compute from the caller's vantage: documents in " +

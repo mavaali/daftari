@@ -42,6 +42,7 @@ function fixture(): VaultLintResult {
       uninstrumented_documents: 0,
       message: "no compiled-edge data (0 docs uninstrumented)",
     },
+    orphanSummary: { noInboundLink: 1, nothingRefers: 1 },
     reviewThroughput: { lifetime: { expired: 0 } },
   } as unknown as VaultLintResult;
 }
