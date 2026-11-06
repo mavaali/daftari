@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`vault_question_candidates`** (#647) — an open question closes only when its exact text lands in some document's `questions_answered`, so reworded answers left it open. The new full-tier tool lists, for each open question, the documents touched since it was raised whose title or `questions_answered` read closest in meaning, for a curator to accept or reject. Read-only and paged; embeds through the active provider, falling back to term overlap (`vectorUsed: false`). Nothing is closed automatically.
 - **`series` frontmatter field: dated snapshots stop going stale forever** (#645) — mark a run of write-once documents (weekly reviews, say) with a shared `series: <name>`. Staleness is judged on the newest member by `created`, so the TTL fires when no new snapshot has been written, not on each old one. Applies to `vault_lint`, `vault_status`, the board, `daftari sleep` and `daftari interview`; the per-document decay banner on `vault_read` and search does not read it yet. A vault that declared `series` as a schema extension must remove or rename it.
 
 ### Fixed
