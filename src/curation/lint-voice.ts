@@ -6,8 +6,8 @@
 // orders findings with the SAME shared constants the plain summary uses
 // (TIER0_LINT_CHECKS, LINT_SUMMARY_TOP_FINDINGS), so the two voices surface the
 // same documents — the voice changes wording, never what is flagged. It is a
-// pure function of its input: no I/O, no LLM, no randomness, no clock. The full
-// structured report still rides the tool's structured channel untouched.
+// pure function of its input: no I/O, no LLM, no randomness, no clock. The
+// structured channel is untouched by the choice of voice.
 
 // Type-only import: erased at compile time, so no runtime import cycle with
 // curation.ts (which imports renderLedgerKeeper from here).
@@ -59,12 +59,12 @@ export function renderLedgerKeeper(report: VaultLintResult): string {
   let advisory = 0;
   const flat: Array<{ check: LintCheckName; finding: LintFinding }> = [];
   for (const check of LINT_CHECKS) {
-    const findings = report.checks[check] ?? [];
-    if (findings.length === 0) continue;
-    perCheck.push(`${check} ${findings.length}`);
-    if (TIER0_LINT_CHECKS.includes(check)) certain += findings.length;
-    else advisory += findings.length;
-    for (const finding of findings) flat.push({ check, finding });
+    const total = report.counts[check] ?? 0;
+    if (total === 0) continue;
+    perCheck.push(`${check} ${total}`);
+    if (TIER0_LINT_CHECKS.includes(check)) certain += total;
+    else advisory += total;
+    for (const finding of report.checks[check] ?? []) flat.push({ check, finding });
   }
   // Certain (tier-0) findings first; stable sort preserves LINT_CHECKS order
   // within each severity — identical selection to the plain summary.
@@ -85,7 +85,7 @@ export function renderLedgerKeeper(report: VaultLintResult): string {
       `${h.aging.fresh} fresh, ${h.aging.aging} aging, ${h.aging.stale} past patience; ` +
       `${count(h.clusters.count, "knot", "knots")} (${h.clusters.large} large, ${h.clusters.aged} aged); ` +
       `${count(h.blastRadiusOfStaleTensions, "entry", "entries")} shadowed by a stale dispute.`,
-    `Awaiting your ruling: ${report.stagedActions.length} staged, ` +
+    `Awaiting your ruling: ${report.stagedActionsTotal} staged, ` +
       `${report.reviewThroughput.lifetime.expired} lapsed unread; ` +
       `${report.shadowActions.total} write(s) watched in shadow, ` +
       `${report.shadowActions.gated} the budget would have stayed; ` +
@@ -96,7 +96,7 @@ export function renderLedgerKeeper(report: VaultLintResult): string {
   const top = flat.slice(0, LINT_SUMMARY_TOP_FINDINGS);
   if (top.length > 0) {
     lines.push(
-      `The ${count(top.length, "entry", "entries")} most wanting your eye, of ${flat.length}:`,
+      `The ${count(top.length, "entry", "entries")} most wanting your eye, of ${report.totalFindings}:`,
     );
     for (const { check, finding } of top) {
       lines.push(
@@ -104,8 +104,13 @@ export function renderLedgerKeeper(report: VaultLintResult): string {
           `(${clip(finding.detail, LINT_SUMMARY_DETAIL_CHARS)})`,
       );
     }
-  } else {
+  } else if (report.totalFindings === 0) {
     lines.push("Nothing demands correction today. I have recorded as much. — the daftari");
+  }
+  if (Object.keys(report.nextOffset).length > 0) {
+    lines.push(
+      "The ledger runs on: turn its pages with filter, limit and offset, as nextOffset marks.",
+    );
   }
 
   return lines.join("\n");

@@ -100,8 +100,8 @@ export const TIER0_LINT_CHECKS: readonly LintCheckName[] = [
 ];
 
 // Content-channel budget (Decision 3): the compact `content` summary shows counts
-// plus a capped handful of findings, one line each; the full report still rides
-// the structured channel. Both the plain and ledger-keeper renderers honor these.
+// plus a capped handful of findings, one line each. Both the plain and
+// ledger-keeper renderers honor these; lint-page.ts bounds the structured channel.
 export const LINT_SUMMARY_TOP_FINDINGS = 6;
 export const LINT_SUMMARY_DETAIL_CHARS = 110;
 

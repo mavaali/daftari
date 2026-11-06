@@ -18,7 +18,10 @@ function fixture(): VaultLintResult {
   return {
     generatedAt: "2026-07-30T00:00:00.000Z",
     filter: null,
+    mode: "summary",
     checks: { orphanFiles: [{ path: "notes/lonely.md", detail: "no inbound links" }] },
+    counts: { orphanFiles: 1 },
+    nextOffset: {},
     totalFindings: 1,
     tensionHealth: {
       total: 0,
@@ -29,6 +32,7 @@ function fixture(): VaultLintResult {
       blastRadiusOfStaleTensions: 0,
     },
     stagedActions: [],
+    stagedActionsTotal: 0,
     shadowActions: { total: 0, gated: 0 },
     coverageEquity: { backstopOverdue: { count: 0 } },
     compiledEdgeCoverage: {
