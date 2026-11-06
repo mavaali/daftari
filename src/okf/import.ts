@@ -105,7 +105,7 @@ export async function importBundle(
   if (!(await directoryExists(bundleDir)) || !(await directoryExists(vaultRoot))) {
     return err(new Error("import requires existing bundle and vault directories"));
   }
-  const listed = await listFiles(bundleDir);
+  const listed = await listFiles(bundleDir, undefined, { raw: true });
   if (!listed.ok) return err(listed.error);
 
   const agent = options.agent ?? DEFAULT_IMPORT_AGENT;

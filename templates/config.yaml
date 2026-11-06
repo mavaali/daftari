@@ -28,6 +28,15 @@ vault_name: my-vault
 # it: network callers get their role from server.auth.
 default_role: admin
 
+# Files that are not vault documents: vault-relative paths or globs. They stay
+# on disk and in git but leave status, lint, search and the other walkers, and
+# write tools refuse them. `Clippings` and `Clippings/**` both cover the folder;
+# `README.md` is the root file only (`**/README.md` for any depth). Uncomment
+# the key itself too — an empty `ignore:` is a config error.
+# ignore:
+#   - README.md
+#   - Clippings/**
+
 roles:
   analyst:
     read: [competitive-intel, pricing]

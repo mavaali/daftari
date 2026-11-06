@@ -394,6 +394,11 @@ export interface DaftariConfig {
   // check (manifest mtimes vs disk) still runs regardless and remains the
   // reconciliation backstop when events are dropped.
   watch: boolean;
+  // Vault-relative paths or globs of files that are not vault documents (#646)
+  // — a README, a clippings folder. Normalized at load: no trailing slash.
+  // `listFiles` applies it, so status, lint, search and every other walker
+  // inherit it; see isIgnoredVaultPath for the match semantics.
+  ignore: string[];
   // When true, the server kicks off a background load of the embedding model
   // after startup so the first user search doesn't pay the cold-start cost.
   // When false, the model loads lazily only on the first miss — useful for
@@ -577,6 +582,7 @@ function emptyConfig(): DaftariConfig {
     hooks: { preWrite: [], preWriteTransform: [] },
     autoCommit: true,
     watch: true,
+    ignore: [],
     warmEmbeddings: true,
     embeddingProvider: "local-minilm",
     search: { ...SEARCH_TUNING_DEFAULTS },
@@ -821,6 +827,36 @@ function asStringArray(value: unknown, where: string): Result<string[], Error> {
     }
   }
   return ok(value as string[]);
+}
+
+// `ignore` patterns are vault-relative. `!` is refused rather than left to the
+// matcher: gitignore readers expect it to un-ignore, and glob negation would
+// ignore everything EXCEPT the named file.
+function validateIgnore(raw: unknown): Result<string[], Error> {
+  const list = asStringArray(raw, "'ignore'");
+  if (!list.ok) return list;
+  const patterns: string[] = [];
+  for (const entry of list.value) {
+    const pattern = entry.trim().replace(/\/+$/, "");
+    const segments = pattern.split("/");
+    if (
+      pattern.length === 0 ||
+      pattern.startsWith("/") ||
+      pattern.startsWith("!") ||
+      pattern.includes("\\") ||
+      segments.includes(".") ||
+      segments.includes("..")
+    ) {
+      return err(
+        new Error(
+          `'ignore' entries must be vault-relative paths or globs ` +
+            `(got ${JSON.stringify(entry)})`,
+        ),
+      );
+    }
+    patterns.push(pattern);
+  }
+  return ok(patterns);
 }
 
 function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
@@ -2284,6 +2320,9 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     watch = root.watch;
   }
 
+  const ignore = validateIgnore(root.ignore);
+  if (!ignore.ok) return err(new Error(`malformed config: ${ignore.error.message}`));
+
   let warmEmbeddings = true;
   if (root.warm_embeddings !== undefined) {
     if (typeof root.warm_embeddings !== "boolean") {
@@ -2491,6 +2530,7 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     hooks: hooks.value,
     autoCommit,
     watch,
+    ignore: ignore.value,
     warmEmbeddings,
     embeddingProvider,
     search,
