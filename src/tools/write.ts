@@ -1881,17 +1881,28 @@ async function buildDependentsAdvisory(
 
 // Refuses a write that would close a superseded_by loop, which leaves a topic
 // with no current entry. A precondition of the edge, like "the successor must
-// exist", not a curation verdict. Walks the full doc set: the invariant is
-// vault-global. The message is the caller's to word and names no walked path,
-// so a hop through an unreadable collection stays undisclosed.
+// exist", not a curation verdict. Walks only what the caller can read: this
+// answers any writer, per pair of documents, so a refusal driven by a hidden
+// hop would be an exact oracle for edges behind the ACL (2026-07-14 spec). A
+// loop through a hidden hop is left to a vault_lint run that can see the hop.
 async function refuseSupersedeLoop(
   vaultRoot: string,
   edits: readonly SupersedeEdit[],
   message: string,
+  access?: AccessContext,
 ): Promise<Result<void, Error>> {
   const docs = await loadDocuments(vaultRoot);
   if (!docs.ok) return docs;
-  return closesSupersedeLoop(docs.value, edits) ? err(new Error(message)) : ok(undefined);
+  let visible = docs.value;
+  if (access) {
+    const db = openIndexForAccessOrNull(vaultRoot);
+    try {
+      visible = visible.filter((d) => sourceReadable(db, access, d.path));
+    } finally {
+      db?.close();
+    }
+  }
+  return closesSupersedeLoop(visible, edits) ? err(new Error(message)) : ok(undefined);
 }
 
 // ---------------------------------------------------------------------------
@@ -1961,6 +1972,7 @@ export async function vaultDeprecate(
         [[target.value.relPath, successor.ok ? successor.value.relPath : supersededBy]],
         `vault_deprecate: refused: ${path.value} is already on the superseded_by chain of ` +
           `${supersededBy}, so this would close a loop. Nothing was written.`,
+        access,
       );
       if (!loop.ok) return loop;
     }
@@ -2275,6 +2287,7 @@ export async function vaultSupersede(
     [[resolvedOld.value.relPath, resolvedNew.value.relPath]],
     `vault_supersede: refused: ${oldPath.value} is already on the superseded_by chain of ` +
       `${newPath.value}, so this would close a loop. Nothing was written.`,
+    access,
   );
   if (!loop.ok) return loop;
 
@@ -2718,6 +2731,7 @@ export async function vaultMerge(
     `vault_merge: refused: ${targetPath.value} would land on a superseded_by loop through ` +
       `its sources. Clear its inherited superseded_by with a frontmatter override. ` +
       `Nothing was written.`,
+    access,
   );
   if (!loop.ok) return loop;
 

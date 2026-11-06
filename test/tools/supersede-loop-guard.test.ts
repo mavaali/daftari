@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../src/access/rbac.js";
+import { runLint } from "../../src/curation/lint.js";
 import { vaultRead } from "../../src/tools/read.js";
 import { vaultDeprecate, vaultMerge, vaultSupersede, vaultWrite } from "../../src/tools/write.js";
 import { log } from "../../src/utils/git.js";
@@ -125,28 +126,60 @@ describe("supersede loop guard", () => {
       expect(result.ok).toBe(false);
     }, 60_000);
 
-    it("does not name a doc the caller cannot read, and still refuses", async () => {
-      await seed(vault, "pricing/a.md");
-      await seed(vault, "competitive-intel/hidden.md", {
-        status: "superseded",
-        superseded_by: "pricing/a.md",
-      });
-      await seed(vault, "pricing/b.md", {
-        status: "superseded",
-        superseded_by: "competitive-intel/hidden.md",
-      });
+    describe("a chain through a document the caller cannot read", () => {
+      async function seedHiddenHop() {
+        await seed(vault, "pricing/a.md");
+        await seed(vault, "competitive-intel/hidden.md", {
+          status: "superseded",
+          superseded_by: "pricing/a.md",
+        });
+        await seed(vault, "pricing/b.md", {
+          status: "superseded",
+          superseded_by: "competitive-intel/hidden.md",
+        });
+      }
+      const args = { old_path: "pricing/a.md", new_path: "pricing/b.md", agent: AGENT };
 
-      const result = await vaultSupersede(
-        vault,
-        { old_path: "pricing/a.md", new_path: "pricing/b.md", agent: AGENT },
-        PRICING_ONLY,
-      );
+      it("is no oracle: the caller gets the same result as for a dangling chain", async () => {
+        await seedHiddenHop();
+        await seed(vault, "pricing/x.md");
+        await seed(vault, "pricing/y.md", {
+          status: "superseded",
+          superseded_by: "competitive-intel/unrelated.md",
+        });
 
-      expect(result.ok).toBe(false);
-      if (result.ok) return;
-      expect(result.error.message).not.toContain("hidden");
-      expect(result.error.message).not.toContain("competitive-intel");
-    }, 60_000);
+        const probe = await vaultSupersede(vault, args, PRICING_ONLY);
+        const control = await vaultSupersede(
+          vault,
+          { old_path: "pricing/x.md", new_path: "pricing/y.md", agent: AGENT },
+          PRICING_ONLY,
+        );
+
+        expect(probe.ok).toBe(true);
+        expect(control.ok).toBe(true);
+      }, 60_000);
+
+      it("is still refused for a caller who can read every hop", async () => {
+        await seedHiddenHop();
+
+        const result = await vaultSupersede(vault, args);
+
+        expect(result.ok).toBe(false);
+        expect(await statusOf(vault, "pricing/a.md")).toEqual(["canonical", null]);
+      }, 60_000);
+
+      it("is reported by a lint run that can see the hop, and only that one", async () => {
+        await seedHiddenHop();
+        const written = await vaultSupersede(vault, args, PRICING_ONLY);
+        expect(written.ok).toBe(true);
+
+        const full = await runLint(vault);
+        const scoped = await runLint(vault, { pathVisible: (p) => p.startsWith("pricing/") });
+
+        expect(full.ok && full.value.checks.supersedeChains).toHaveLength(1);
+        expect(scoped.ok && scoped.value.checks.supersedeChains).toEqual([]);
+      }, 60_000);
+    });
 
     it("lets a loop be repaired by pointing one member at a third doc", async () => {
       await seed(vault, "pricing/a.md", { status: "superseded", superseded_by: "pricing/b.md" });

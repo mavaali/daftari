@@ -5,10 +5,9 @@
 // loop, which has no last entry at all, and a chain ending on a document that
 // is not canonical. Both leave a topic silently without a current entry.
 //
-// The doc set is the resolution universe, as in tier0.ts. Lint passes the
-// caller-visible subset, so a pointer into a hidden doc reads as dangling; the
-// write gate passes the full set because it protects a vault-global invariant,
-// and its callers keep the walked paths out of their messages.
+// The doc set is the resolution universe, as in tier0.ts. Both callers pass the
+// caller-visible subset, so a pointer into a hidden doc reads as dangling and
+// neither surface answers for an edge the caller cannot read.
 
 import type { LintFinding } from "./lint.js";
 import { buildPathIndexes, type LoadedDoc, resolveLink } from "./vault-docs.js";
