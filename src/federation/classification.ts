@@ -67,6 +67,7 @@ export const STATE_READ_TOOLS: ReadonlySet<string> = new Set([
   "vault_themes",
   "vault_lint",
   "vault_canon",
+  "vault_chains",
   "vault_consumes",
   "vault_receipt",
   "vault_staleness",

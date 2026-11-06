@@ -24,6 +24,7 @@ import { docUri, listResources, readResource, resourceTemplates } from "./resour
 import { backlinksTools } from "./tools/backlinks.js";
 import { boardTools } from "./tools/board.js";
 import { canonTools } from "./tools/canon.js";
+import { chainsTools } from "./tools/chains.js";
 import { consumesTools } from "./tools/consumes.js";
 import { curationTools } from "./tools/curation.js";
 import { edgeStalenessTools } from "./tools/edge-staleness.js";
@@ -51,6 +52,7 @@ const allTools: ToolDefinition[] = [
   ...readTools,
   ...receiptTools,
   ...canonTools,
+  ...chainsTools,
   ...witnessTools,
   ...searchTools,
   ...themesTools,

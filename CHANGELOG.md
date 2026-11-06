@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`vault_chains`: the end of every supersede chain** (#642) — one call lists, per chain, the current entry, its status and date, and the entries it replaced, with no seed. Chains that end in a draft or a retired document, loop, dangle, or carry a superseded status with no pointer forward are flagged; `flagged_only` narrows to those. Under RBAC, unreadable documents are omitted and chains are never stitched across them. Full tier; does not cross federation mounts.
+
 ### Fixed
 
 - **Release metadata drift; MCP registry publishing** (slrf) — `server.json` (1.32.0) and `manifest.json` (3.13.1, no tools) had drifted from npm. New `npm run sync:release` syncs both to `package.json` and lists every registered tool in the MCPB manifest; `test/release-metadata.test.ts` fails CI on drift. A tag push now also publishes `server.json` to the official MCP registry via GitHub OIDC (pinned, checksummed `mcp-publisher`).
