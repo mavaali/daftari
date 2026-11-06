@@ -416,6 +416,7 @@ export function validateFrontmatter(
     said_at: optionalTimestamp("said_at"),
     tags: optionalStringArray("tags"),
     describes: optionalStringArray("describes"),
+    amends: optionalStringArray("amends"),
     questions_answered: optionalStringArray("questions_answered"),
     questions_raised: optionalStringArray("questions_raised"),
     subjects: optionalStringArray("subjects"),

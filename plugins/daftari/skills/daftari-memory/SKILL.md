@@ -33,6 +33,9 @@ not save small talk or one-off answers.
 
 ## When facts change
 
+- When something new **amends or fulfils** an old document that stays true as
+  written, set `amends: [old/path.md]` in the new document's frontmatter. Readers
+  of the old document then see it, and the old file is not touched.
 - When something new **replaces** an old document, use `vault_supersede`. Do
   not overwrite the old text; its history is the point.
 - When two documents **disagree** and neither replaces the other, tell the
