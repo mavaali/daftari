@@ -1372,7 +1372,7 @@ export const readTools: ToolDefinition[] = [
       "changed since this document was compiled and what tier 1 says about " +
       "the pending change: current / pending-compatible / pending-broken; " +
       "null when there is nothing to report), a structural report (#8 — " +
-      "orphan: nothing you can read links here; retired_still_linked: " +
+      "orphan: nothing you can read links here or cites this in sources; retired_still_linked: " +
       "canonical docs still lean on this retired (deprecated/superseded) one; null when healthy), " +
       "any unresolved tensions involving the document (contested, same " +
       "shape as search hits), a contested_positions block when principals " +
@@ -1480,7 +1480,7 @@ export const readTools: ToolDefinition[] = [
           properties: {
             orphan: {
               type: "boolean",
-              description: "No document the caller can read links here",
+              description: "No document the caller can read links here or cites this in sources",
             },
             retired_still_linked: {
               type: ["object", "null"],

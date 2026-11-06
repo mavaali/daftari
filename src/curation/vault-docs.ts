@@ -236,10 +236,10 @@ export function buildPathIndexes(docs: Pick<LoadedDoc, "path">[]): {
 }
 
 // The distinct resolved in-vault link targets of one document body, given the
-// known-path universe — the producer side of the materialized inbound-link
-// graph (#8, index-db.ts doc_links). Uses the SAME extraction and resolution
-// as lint's buildInboundMap, so the inline orphan / deprecated-still-linked
-// surfaces can never drift from the vault-global lint findings.
+// known-path universe — the body half of the inbound graph (#8, index-db.ts
+// doc_links). source-refs.ts outgoingEdges adds `sources` and is what lint and
+// the index both call, so the inline orphan / deprecated-still-linked surfaces
+// can never drift from the vault-global lint findings.
 export function outgoingLinkTargets(
   content: string,
   fromPath: string,

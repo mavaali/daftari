@@ -19,8 +19,9 @@
 
 import { stat } from "node:fs/promises";
 import { rebuildEdgesIndex } from "../curation/edges.js";
+import { hasLocalSourceRef, outgoingEdges } from "../curation/source-refs.js";
 import { rebuildStagedActionsIndex } from "../curation/staged-actions.js";
-import { buildPathIndexes, extractLinks, outgoingLinkTargets } from "../curation/vault-docs.js";
+import { buildPathIndexes, extractLinks } from "../curation/vault-docs.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { validateFrontmatter } from "../frontmatter/schema.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
@@ -30,6 +31,7 @@ import {
   type ChunkRowInput,
   clearEmbeddingsVec,
   clearIndex,
+  type DocEdge,
   deleteDocument,
   documentCount,
   existingEmbeddingHashes,
@@ -302,6 +304,7 @@ export function reindexWarnings(result: ReindexResult): string[] {
 
 interface StagedDocument {
   doc: IndexedDocument;
+  sources: string[];
   fields: IndexedFieldValue[];
   chunks: string[];
   hashes: string[];
@@ -429,6 +432,7 @@ async function stageOne(
         validFrom: fm.valid_from,
         validUntil: fm.valid_until,
       },
+      sources: fm.sources,
       fields: projection.fields,
       chunks,
       hashes,
@@ -491,10 +495,10 @@ function writeChunkRows(db: IndexDb, staged: StagedDocument[]): number {
   const linkIndexes = buildPathIndexes(staged.map(({ doc }) => ({ path: doc.path })));
   const write = db.transaction(() => {
     clearIndex(db);
-    for (const { doc, fields, chunks, hashes } of staged) {
+    for (const { doc, sources, fields, chunks, hashes } of staged) {
       insertDocument(db, doc);
       replaceDocumentFields(db, doc.path, fields);
-      replaceDocLinks(db, doc.path, outgoingLinkTargets(doc.content, doc.path, linkIndexes));
+      replaceDocLinks(db, doc.path, outgoingEdges(doc.content, sources, doc.path, linkIndexes));
       chunks.forEach((text, chunkIndex) => {
         const row: ChunkRowInput = {
           path: doc.path,
@@ -729,7 +733,7 @@ export async function indexDocument(
     db.close();
     return err(new Error(`cannot index document: ${relPath} (${outcome.reason})`));
   }
-  const { doc, fields, chunks, hashes } = outcome.staged;
+  const { doc, sources, fields, chunks, hashes } = outcome.staged;
 
   const createdAt = new Date().toISOString();
 
@@ -773,21 +777,22 @@ export async function indexDocument(
     // reindex-granularity staleness, #8).
     //
     // The path index is O(vault) to build, so it is constructed only when the
-    // document actually links out — and outside the write transaction either
+    // document actually links out or cites — and outside the write transaction either
     // way, to keep the transaction to row writes. The doc's OWN path is added
     // to the universe (sorted, matching allDocumentPaths' ORDER BY) because a
     // first-time index runs before this doc's row lands: without it, a bare
     // link matching the doc's own basename would resolve to a same-basename
     // sibling instead of being filtered as a self-link.
-    let linkTargets: string[] = [];
-    if (extractLinks(doc.content).length > 0) {
+    let edges: DocEdge[] = [];
+    if (extractLinks(doc.content).length > 0 || hasLocalSourceRef(sources)) {
       const universe = allDocumentPaths(db);
       if (!universe.includes(doc.path)) {
         universe.push(doc.path);
         universe.sort();
       }
-      linkTargets = outgoingLinkTargets(
+      edges = outgoingEdges(
         doc.content,
+        sources,
         doc.path,
         buildPathIndexes(universe.map((p) => ({ path: p }))),
       );
@@ -797,7 +802,7 @@ export async function indexDocument(
       deleteDocument(db, doc.path);
       insertDocument(db, doc);
       replaceDocumentFields(db, doc.path, fields);
-      replaceDocLinks(db, doc.path, linkTargets);
+      replaceDocLinks(db, doc.path, edges);
       chunks.forEach((text, chunkIndex) => {
         insertChunkRow(db, {
           path: doc.path,

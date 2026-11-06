@@ -1376,7 +1376,7 @@ export const curationTools: ToolDefinition[] = [
     annotations: { readOnlyHint: false },
     description:
       "Run the advisory curation checks across the vault: stale files past " +
-      "TTL, orphan files with no inbound links, old drafts, stagnant " +
+      "TTL, orphan files with no inbound links or sources citations, old drafts, stagnant " +
       "low-confidence files, deprecated files still linked from canonical " +
       "ones, and questions raised but unanswered anywhere in the vault. " +
       "Under RBAC, findings compute from the caller's vantage: documents in " +

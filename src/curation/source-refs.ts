@@ -1,7 +1,8 @@
 import { realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, posix, relative, resolve } from "node:path";
 import { parseSourceRef } from "../frontmatter/source-ref.js";
-import { resolveLink } from "./vault-docs.js";
+import type { DocEdge } from "../storage/index-db.js";
+import { outgoingLinkTargets, resolveLink } from "./vault-docs.js";
 
 export type VaultSourceResolution =
   | { kind: "vault"; explicit: boolean; target: string | null }
@@ -55,6 +56,55 @@ export function resolveVaultSourceRef(
   if (parsed.kind !== "legacy") return { kind: "non-vault" };
   const target = resolveLink(parsed.target, fromPath, byPath, byBasename);
   return target ? { kind: "vault", explicit: false, target } : { kind: "non-vault" };
+}
+
+// Whether any `sources` entry could resolve to a vault document. Lets a
+// single-document index skip the O(vault) path universe, like write.ts does.
+export function hasLocalSourceRef(sources: string[]): boolean {
+  return sources.some((raw) => {
+    const kind = parseSourceRef(raw).kind;
+    return kind === "vault" || kind === "legacy";
+  });
+}
+
+// The single producer of the inbound-reference graph (#641): lint's in-memory
+// map and the materialized doc_links table both read this, so the two orphan
+// surfaces cannot drift. Sources resolve exactly as tier0 and tension-blast
+// resolve them; self-citations are not edges. `superseded_by` is deliberately
+// absent: it is lifecycle routing, not a reference, and counting it would
+// un-orphan every successor nothing live cites.
+export function outgoingEdges(
+  content: string,
+  sources: string[],
+  fromPath: string,
+  indexes: { byPath: Set<string>; byBasename: Map<string, string | null> },
+): DocEdge[] {
+  const edges: DocEdge[] = outgoingLinkTargets(content, fromPath, indexes).map((target) => ({
+    target,
+    kind: "link",
+  }));
+  const cited = new Set<string>();
+  for (const raw of sources) {
+    const source = resolveVaultSourceRef(raw, fromPath, indexes.byPath, indexes.byBasename);
+    const target = source.kind === "vault" ? source.target : null;
+    if (target && target !== fromPath) cited.add(target);
+  }
+  for (const target of cited) edges.push({ target, kind: "source" });
+  return edges;
+}
+
+// Vault paths a body names in inline code. A code span is literal text, not an
+// authored reference (`rm decisions/a.md` matches too), so these are never
+// edges: lint only reports them on an orphan as a hint that a real reference
+// may be missing. Fenced blocks are skipped for the same reason.
+export function backtickedVaultPaths(content: string, byPath: Set<string>): string[] {
+  const prose = content.replace(/^ {0,3}(`{3,}|~{3,})[\s\S]*?^ {0,3}\1[`~]*\s*$/gm, "");
+  const found = new Set<string>();
+  for (const m of prose.matchAll(/`([^`\n]+)`/g)) {
+    const span = (m[1] as string).trim();
+    if (byPath.has(span)) found.add(span);
+  }
+  return [...found];
 }
 
 export type RepoSourceStatus =
