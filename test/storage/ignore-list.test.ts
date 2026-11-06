@@ -29,6 +29,13 @@ describe("matchesIgnoreList", () => {
     }
   });
 
+  it("treats a glob naming a directory as that whole directory", () => {
+    expect(matchesIgnoreList("notes/drafts/a.md", ["*/drafts"])).toBe(true);
+    expect(matchesIgnoreList("notes/drafts/deep/b.md", ["*/drafts"])).toBe(true);
+    expect(matchesIgnoreList("notes/drafts-old/a.md", ["*/drafts"])).toBe(false);
+    expect(matchesIgnoreList("drafts/a.md", ["*/drafts"])).toBe(false);
+  });
+
   it("supports wildcards, including over dotted names", () => {
     expect(matchesIgnoreList("drafts/a.tmp.md", ["drafts/*.tmp.md"])).toBe(true);
     expect(matchesIgnoreList("drafts/a.md", ["drafts/*.tmp.md"])).toBe(false);

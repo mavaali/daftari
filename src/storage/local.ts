@@ -8,7 +8,7 @@ import { realpathSync } from "node:fs";
 import { readFile as fsReadFile, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { glob } from "glob";
-import { Minimatch } from "minimatch";
+import { makeRe } from "minimatch";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { loadConfig } from "../utils/config.js";
 
@@ -146,20 +146,28 @@ export async function readFile(absolutePath: string): Promise<Result<string, Err
 }
 
 // Compiled once per pattern: listFiles runs this for every file on every walk.
-const ignoreMatchers = new Map<string, Minimatch>();
+const ignoreMatchers = new Map<string, RegExp[]>();
+
+function compileIgnorePattern(pattern: string): RegExp[] {
+  const compiled = [pattern, `${pattern}/**`].map((glob) =>
+    makeRe(glob, { dot: true, nocomment: true, nonegate: true }),
+  );
+  return compiled.filter((re) => re !== false);
+}
 
 // True when `relPath` is named by a config `ignore` entry (#646). An entry
-// matches as a glob or as a directory prefix, so `Clippings` and `Clippings/**`
-// both cover the folder; `README.md` is the root file only (`**/README.md` for
-// any depth). Case-sensitive. A leading `#` is literal, not a comment.
+// matches a file or everything under a directory, so `Clippings` and
+// `Clippings/**` both cover the folder, and `*/drafts` covers each such folder;
+// `README.md` is the root file only (`**/README.md` for any depth).
+// Case-sensitive. A leading `#` is literal, not a comment.
 export function matchesIgnoreList(relPath: string, ignore: readonly string[]): boolean {
   return ignore.some((pattern) => {
-    let matcher = ignoreMatchers.get(pattern);
-    if (!matcher) {
-      matcher = new Minimatch(pattern, { dot: true, nocomment: true, nonegate: true });
-      ignoreMatchers.set(pattern, matcher);
+    let matchers = ignoreMatchers.get(pattern);
+    if (!matchers) {
+      matchers = compileIgnorePattern(pattern);
+      ignoreMatchers.set(pattern, matchers);
     }
-    return matcher.match(relPath) || relPath.startsWith(`${pattern}/`);
+    return matchers.some((re) => re.test(relPath));
   });
 }
 
