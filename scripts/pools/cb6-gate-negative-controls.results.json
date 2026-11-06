@@ -1,0 +1,167 @@
+{
+  "date": "2026-07-01",
+  "model": "google/gemini-2.5-flash",
+  "temperature": 0,
+  "maxTokens": 1024,
+  "runs": 1,
+  "seed": 20260701,
+  "promptProvenance": "byte-identical to the CB6 throwaway runner's judgePrompt, recovered from session transcript d3499c05 (the runner itself was a deleted throwaway, never committed)",
+  "selectionRule": "33 scorable stale-trap pairs -> dedupe on governingNum (17 distinct) -> ascending token-set Jaccard(gov, stale) -> first 8",
+  "controlsRejected": "2/8",
+  "tensionsRevalidated": "6/6",
+  "erroredCalls": 0,
+  "controls": [
+    {
+      "num": 63,
+      "revid": 1319062064,
+      "sim": 0.7,
+      "topic": "infobox education entry (Fordham inclusion)",
+      "winnerInSlot": "B",
+      "gt": "settled (governing superseded stale)",
+      "verdict": "no",
+      "rejected": true,
+      "raw": "NO",
+      "error": null
+    },
+    {
+      "num": 37,
+      "revid": 1340952005,
+      "sim": 0.705,
+      "topic": "February 2026 Iran attack — length and detail of the description",
+      "winnerInSlot": "A",
+      "gt": "settled (governing superseded stale)",
+      "verdict": "tension",
+      "rejected": false,
+      "raw": "YES_TENSION",
+      "error": null
+    },
+    {
+      "num": 72,
+      "revid": 1335748675,
+      "sim": 0.802,
+      "topic": "second-presidency lead paragraph (pardons sentence, links, lawsuit count)",
+      "winnerInSlot": "B",
+      "gt": "settled (governing superseded stale)",
+      "verdict": "tension",
+      "rejected": false,
+      "raw": "YES_TENSION",
+      "error": null
+    },
+    {
+      "num": 27,
+      "revid": 1346635421,
+      "sim": 0.891,
+      "topic": "racism section — retention of the September 2016 birther sentence",
+      "winnerInSlot": "B",
+      "gt": "settled (governing superseded stale)",
+      "verdict": "tension",
+      "rejected": false,
+      "raw": "YES_TENSION",
+      "error": null
+    },
+    {
+      "num": 43,
+      "revid": 1322975812,
+      "sim": 0.908,
+      "topic": "lead — democratic-backsliding sentence inclusion",
+      "winnerInSlot": "B",
+      "gt": "settled (governing superseded stale)",
+      "verdict": "tension",
+      "rejected": false,
+      "raw": "YES_TENSION",
+      "error": null
+    },
+    {
+      "num": 54,
+      "revid": 1341340120,
+      "sim": 0.937,
+      "topic": "wikilink on 'scholars and historians ranked him'",
+      "winnerInSlot": "A",
+      "gt": "settled (governing superseded stale)",
+      "verdict": "tension",
+      "rejected": false,
+      "raw": "YES_TENSION",
+      "error": null
+    },
+    {
+      "num": 71,
+      "revid": 1334447176,
+      "sim": 0.941,
+      "topic": "first-presidency foreign policy — Korean peace process mention",
+      "winnerInSlot": "A",
+      "gt": "settled (governing superseded stale)",
+      "verdict": "no",
+      "rejected": true,
+      "raw": "NO",
+      "error": null
+    },
+    {
+      "num": 40,
+      "revid": 1334531111,
+      "sim": 0.948,
+      "topic": "health section — 'battery theory' framing of Trump's exercise views",
+      "winnerInSlot": "A",
+      "gt": "settled (governing superseded stale)",
+      "verdict": "tension",
+      "rejected": false,
+      "raw": "YES_TENSION",
+      "error": null
+    }
+  ],
+  "tensions": [
+    {
+      "article": "Donald Trump",
+      "num": 15,
+      "topic": "2016 election result phrasing in the lead",
+      "gt": "neither",
+      "verdict": "tension",
+      "raw": "YES_TENSION",
+      "error": null
+    },
+    {
+      "article": "Donald Trump",
+      "num": 48,
+      "topic": "COVID-19 response wording in the lead",
+      "gt": "neither",
+      "verdict": "tension",
+      "raw": "YES_TENSION",
+      "error": null
+    },
+    {
+      "article": "Donald Trump",
+      "num": 56,
+      "topic": "Russian bounties wording",
+      "gt": "neither",
+      "verdict": "tension",
+      "raw": "YES_TENSION",
+      "error": null
+    },
+    {
+      "article": "Donald Trump",
+      "num": 65,
+      "topic": "Abraham Accords framing",
+      "gt": "neither",
+      "verdict": "tension",
+      "raw": "YES_TENSION",
+      "error": null
+    },
+    {
+      "article": "Joe Biden",
+      "num": 2,
+      "topic": "gaffes subsection inclusion",
+      "gt": "neither",
+      "verdict": "tension",
+      "raw": "YES_TENSION",
+      "error": null
+    },
+    {
+      "article": "COVID-19 pandemic",
+      "num": 7,
+      "topic": "lead infobox map prominence",
+      "gt": "neither",
+      "verdict": "tension",
+      "raw": "YES_TENSION",
+      "error": null
+    }
+  ]
+}
