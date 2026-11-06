@@ -16,7 +16,7 @@
 // the caller cannot read: linked existence, in a cell of one (#217).
 
 import { type AccessContext, canRead } from "../access/rbac.js";
-import { amendersOf, type IndexDb } from "../storage/index-db.js";
+import { amendersOf, getDocument, type IndexDb } from "../storage/index-db.js";
 import { previewSnippet } from "./current-source.js";
 
 export const AMENDED_BY_CAP = 3;
@@ -45,7 +45,7 @@ export function amendedByFor(db: IndexDb, path: string, access?: AccessContext):
       path: doc.path,
       title: doc.title,
       status: doc.status,
-      snippet: previewSnippet(doc.content),
+      snippet: previewSnippet(getDocument(db, doc.path)?.content ?? ""),
     })),
     amendedByCount: visible.length,
   };

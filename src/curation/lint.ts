@@ -267,7 +267,6 @@ function buildInboundMap(docs: LoadedDoc[]): Map<string, Set<string>> {
   return inbound;
 }
 
-// Runs every lint check across the vault and returns a grouped report.
 // #643: `amends` entries that surface on nothing. Declared on the later doc, so
 // a mistyped target never shows up on the document it meant to reach.
 function danglingAmends(docs: LoadedDoc[]): LintFinding[] {
@@ -285,6 +284,7 @@ function danglingAmends(docs: LoadedDoc[]): LintFinding[] {
   return findings;
 }
 
+// Runs every lint check across the vault and returns a grouped report.
 export async function runLint(
   vaultRoot: string,
   opts: LintOptions = {},

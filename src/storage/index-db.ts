@@ -667,19 +667,23 @@ export function replaceDocAmends(db: IndexDb, amendingPath: string, targets: str
   }
 }
 
-// The documents declaring that they amend `amendedPath`. Joined to `documents`
-// so an amender deleted after its rows were written can never surface.
-export function amendersOf(db: IndexDb, amendedPath: string): IndexedDocument[] {
-  const rows = db
+// The documents declaring that they amend `amendedPath`, without their bodies:
+// this runs per search hit, and the RBAC filter has to see every amender before
+// the caller can cap the list. Joined to `documents` so an amender deleted after
+// its rows were written can never surface.
+export function amendersOf(
+  db: IndexDb,
+  amendedPath: string,
+): { path: string; title: string; status: string; collection: string }[] {
+  return db
     .prepare(
-      `SELECT d.*
+      `SELECT d.path, d.title, d.status, d.collection
          FROM doc_amends AS a
          JOIN documents AS d ON d.path = a.amending_path
         WHERE a.amended_path = ?
         ORDER BY d.path`,
     )
-    .all(amendedPath) as DocumentRow[];
-  return rows.map(rowToDocument);
+    .all(amendedPath) as { path: string; title: string; status: string; collection: string }[];
 }
 
 // Every indexed document path — the known-path universe outgoing-link
