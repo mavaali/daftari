@@ -33,10 +33,10 @@ import { stat } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { default as chokidar, type FSWatcher } from "chokidar";
 import { ok, type Result } from "../frontmatter/types.js";
-import { deleteDocument, openIndexDb } from "../storage/index-db.js";
+import { openIndexDb } from "../storage/index-db.js";
 import { isIgnoredVaultPath, resolveVaultPath } from "../storage/local.js";
 import { getIndexStatus, markPathIndexing, markPathReady, onceIndexReady } from "./index-state.js";
-import { indexDocument, readManifest, writeManifest } from "./reindex.js";
+import { evictDocument, indexDocument } from "./reindex.js";
 import { consumeSelfWrite } from "./self-write.js";
 import { getProvider } from "./vector.js";
 
@@ -57,6 +57,9 @@ export interface WatcherOptions {
   // Logger sink for diagnostics. Defaults to process.stderr.write so
   // operator output matches the rest of the server. Tests pass a buffer.
   log?: (msg: string) => void;
+  // The vault's `ignore` list, so ignored files never reach the indexer. A list
+  // that goes stale is safe: indexDocument re-checks the live config and evicts.
+  ignore?: readonly string[];
   // Override the debounce window. Tests use a smaller value so the suite
   // doesn't sleep for full seconds; production should leave the default.
   debounceMs?: number;
@@ -78,6 +81,7 @@ function resolveOptions(opts: WatcherOptions): Required<Omit<WatcherOptions, "wa
 } {
   return {
     log: opts.log ?? ((msg) => process.stderr.write(msg)),
+    ignore: opts.ignore ?? [],
     debounceMs: opts.debounceMs ?? WATCH_DEBOUNCE_MS,
     indexFn: opts.indexFn ?? indexDocument,
     deleteFn: opts.deleteFn ?? defaultDeleteFn,
@@ -86,10 +90,9 @@ function resolveOptions(opts: WatcherOptions): Required<Omit<WatcherOptions, "wa
   };
 }
 
-// Default unlink handler: open the index db, drop the document and its
-// chunks, and patch the manifest so the next startup freshness check does
-// not see a missing-on-disk entry as drift. The embeddings cache is left
-// alone (content-addressed; reaped by the next full reindex's gc pass).
+// Default unlink handler: open the index db and evict the document and its
+// chunks. The embeddings cache is left alone (content-addressed; reaped by the
+// next full reindex's gc pass).
 async function defaultDeleteFn(
   vaultRoot: string,
   relPath: string,
@@ -98,15 +101,7 @@ async function defaultDeleteFn(
   if (!dbResult.ok) return dbResult;
   const db = dbResult.value;
   try {
-    deleteDocument(db, relPath);
-    // Patch the manifest in place via the shared reindex helpers. A malformed
-    // manifest reads as null — non-fatal here; the next full reindex rewrites
-    // it from scratch.
-    const manifest = readManifest(db);
-    if (manifest && relPath in manifest) {
-      delete manifest[relPath];
-      writeManifest(db, manifest);
-    }
+    evictDocument(db, relPath);
     return ok(undefined);
   } finally {
     db.close();
@@ -165,12 +160,17 @@ function isMarkdown(relPath: string): boolean {
 // falls through to watching; the dispatch-time isMarkdown check still
 // discards those events. Exported for tests — the predicate only runs
 // inside a real chokidar instance otherwise.
-export function watchIgnored(root: string, p: string, stats?: Stats): boolean {
+export function watchIgnored(
+  root: string,
+  p: string,
+  stats?: Stats,
+  ignore: readonly string[] = [],
+): boolean {
   // The root itself must NOT be ignored.
   if (p === root) return false;
   const rel = toVaultRelative(root, p);
   if (rel === null) return false;
-  if (isIgnoredVaultPath(rel)) return true;
+  if (isIgnoredVaultPath(rel, ignore)) return true;
   return stats?.isFile() === true && !isMarkdown(rel);
 }
 
@@ -210,7 +210,7 @@ export function startWatcher(vaultRoot: string, opts: WatcherOptions = {}): Vaul
     watcher = resolved.watcherFactory(root);
   } else {
     watcher = chokidar.watch(root, {
-      ignored: (p: string, stats?: Stats) => watchIgnored(root, p, stats),
+      ignored: (p: string, stats?: Stats) => watchIgnored(root, p, stats, resolved.ignore),
       ignoreInitial: true, // startup freshness check already covers the initial state
       persistent: true,
       followSymlinks: false,
@@ -326,7 +326,7 @@ export function startWatcher(vaultRoot: string, opts: WatcherOptions = {}): Vaul
   // followed by an add inside the window arrives at dispatch() as an add.
   function schedule(relPath: string, event: PendingEvent): void {
     if (closed) return;
-    if (isIgnoredVaultPath(relPath)) return;
+    if (isIgnoredVaultPath(relPath, resolved.ignore)) return;
     if (!isMarkdown(relPath)) return;
 
     const existing = pending.get(relPath);

@@ -28,7 +28,7 @@ import {
   stageActionWithConflictCheck,
   sweepExpiredActions,
 } from "../curation/staged-actions.js";
-import { computeStaleness } from "../curation/staleness.js";
+import { computeStaleness, olderSeriesMembers } from "../curation/staleness.js";
 import { agingTier, listTensions } from "../curation/tension.js";
 import {
   buildReverseLinkMap,
@@ -38,6 +38,7 @@ import {
 import { computeValidity } from "../curation/validity.js";
 import { buildPathIndexes, loadDocuments } from "../curation/vault-docs.js";
 import { ok, type Result } from "../frontmatter/types.js";
+import { collectionOfPath } from "../storage/local.js";
 import { ANCHOR_PIN_CAP } from "../tools/anchors.js";
 import { computeRepin } from "../tools/repin.js";
 import { loadConfig } from "../utils/config.js";
@@ -193,10 +194,14 @@ export async function runSleepCycle(
   const decayedQuiet: QuietDecay[] = [];
   const sourceHistoryCache = new Map<string, SourceHistoryEvidence>();
   let generativeStale = 0;
+  const olderMembers = olderSeriesMembers(docs.value);
 
   for (const doc of docs.value) {
     const s = computeStaleness(
-      { updated: doc.frontmatter.updated, ttl_days: doc.frontmatter.ttl_days },
+      {
+        updated: doc.frontmatter.updated,
+        ttl_days: olderMembers.has(doc.path) ? null : doc.frontmatter.ttl_days,
+      },
       now,
     );
     staleness.total += 1;
@@ -267,7 +272,7 @@ export async function runSleepCycle(
     wake.push({
       path: doc.path,
       title: doc.frontmatter.title,
-      collection: doc.frontmatter.collection || (doc.path.split("/")[0] ?? ""),
+      collection: doc.frontmatter.collection || collectionOfPath(doc.path),
       ageDays: s.ageDays,
       ttlDays: s.ttlDays,
       blastPrimary: blast.primary_blast,

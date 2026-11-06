@@ -13,6 +13,7 @@ import {
   loadDocumentsAt,
 } from "../../src/asof/snapshot.js";
 import { listTensions } from "../../src/curation/tension.js";
+import { clearConfigCache } from "../../src/utils/config.js";
 
 // ---------------------------------------------------------------------------
 // Fixture: a real git repo with two commits and controlled dates.
@@ -189,6 +190,21 @@ describe("listTreeDocs / readBlobsAt", () => {
       "pricing/derived.md",
       "pricing/doomed.md",
     ]);
+  });
+
+  it("applies today's ignore list to the historical tree (#646)", async () => {
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    writeFileSync(join(vault, ".daftari", "config.yaml"), "ignore:\n  - competitive-intel\n");
+    clearConfigCache();
+    try {
+      const r = await listTreeDocs(vault, v1);
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value).toEqual(["pricing/base.md", "pricing/derived.md", "pricing/doomed.md"]);
+    } finally {
+      rmSync(join(vault, ".daftari", "config.yaml"));
+      clearConfigCache();
+    }
   });
 
   it("batch-reads blobs and skips missing paths", async () => {
