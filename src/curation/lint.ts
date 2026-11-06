@@ -33,6 +33,7 @@ import {
   pendingLintItems,
   type StagedActionLintItem,
 } from "./staged-actions.js";
+import { supersedeChainFindings } from "./supersede-chains.js";
 
 export type { StagedActionLintItem } from "./staged-actions.js";
 
@@ -78,6 +79,7 @@ export const LINT_CHECKS = [
   "malformedPins",
   "verbatimQuoteOverrun",
   "unverifiableSourceRefs",
+  "supersedeChains",
 ] as const;
 export type LintCheckName = (typeof LINT_CHECKS)[number];
 
@@ -312,6 +314,7 @@ export async function runLint(
     malformedPins: [],
     verbatimQuoteOverrun: [],
     unverifiableSourceRefs: [],
+    supersedeChains: [],
   };
 
   // 12. Valid-time conflicts. The ONLY surface that reports a malformed or
@@ -337,6 +340,9 @@ export async function runLint(
   checks.lifecycleConflicts = t0.lifecycleConflicts;
   checks.schemaInvalid = t0.schemaInvalid;
   checks.domainLeaks = t0.domainLeaks;
+  // 15. superseded_by chains that loop, or end on a non-canonical document
+  // (#639). Over the caller-visible doc set, like the rest of lint.
+  checks.supersedeChains = supersedeChainFindings(docs);
   // runLint historically remains useful against partially configured vaults;
   // server startup is the surface that rejects malformed config. Authorized
   // repo verification treats an unavailable root as unconfigured. Distill
