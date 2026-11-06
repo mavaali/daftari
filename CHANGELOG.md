@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`vault_patch` and `vault_unsupersede`** (#640) — `vault_patch` changes named frontmatter fields and exact-match body spans without resending the document, through the same write path as `vault_write` (validation, hooks, tier guards, provenance, auto-commit, propose-only staging). Changing `ttl_days` on a 15 KB document now sends under 1 KB. Lifecycle and protected fields are refused with a pointer to the owning tool. `vault_unsupersede` reverses a supersession: it returns the document to `draft`, clears `superseded_by`, and logs an `unsupersede` provenance entry with who, when, and why. It needs the promote grant; propose-only roles stage the new `unsupersede` action for `vault_ratify`.
+- **`series` frontmatter field: dated snapshots stop going stale forever** (#645) — mark a run of write-once documents (weekly reviews, say) with a shared `series: <name>`. Staleness is judged on the newest member by `created`, so the TTL fires when no new snapshot has been written, not on each old one. Applies to `vault_lint`, `vault_status`, the board, `daftari sleep` and `daftari interview`; the per-document decay banner on `vault_read` and search does not read it yet. A vault that declared `series` as a schema extension must remove or rename it.
 
 ### Fixed
 
