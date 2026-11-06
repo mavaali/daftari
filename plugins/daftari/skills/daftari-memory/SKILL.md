@@ -21,7 +21,8 @@ conversation settles a decision, preference, or fact they will want later. Do
 not save small talk or one-off answers.
 
 1. Search first. If a document already covers the topic, update it with
-   `vault_append` instead of creating a duplicate.
+   `vault_append`, or correct a field or a few words with `vault_patch`,
+   instead of creating a duplicate.
 2. Create new documents with `vault_write`, `status: draft`, and `agent`
    naming the app you run in (`agent:claude`, `agent:chatgpt`). Put them in
    a plain collection such as `decisions`, `preferences`, `people`, or
@@ -35,6 +36,8 @@ not save small talk or one-off answers.
 
 - When something new **replaces** an old document, use `vault_supersede`. Do
   not overwrite the old text; its history is the point.
+- When a supersede was a mistake, reverse it with `vault_unsupersede` and a
+  reason. The document returns to draft.
 - When two documents **disagree** and neither replaces the other, tell the
   user and keep both. Do not merge them into a compromise.
 - Only use `vault_promote` to mark a document `canonical` after the user

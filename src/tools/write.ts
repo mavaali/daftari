@@ -1,4 +1,5 @@
-// Write-path tools: vault_write, vault_append, vault_promote, vault_deprecate.
+// Write-path tools: vault_write, vault_patch, vault_append, vault_promote,
+// vault_deprecate, vault_unsupersede.
 //
 // Every write follows the same shape: validate inputs, acquire a file-level
 // lock, mutate the markdown file on disk, refresh the search index, auto-commit
@@ -12,7 +13,13 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
 import matter from "gray-matter";
 import { acquireLock, mintLeaseHolder, openLockDb, releaseLock } from "../access/locks.js";
-import { type AccessContext, canPromote, canWrite, isProposeOnly } from "../access/rbac.js";
+import {
+  type AccessContext,
+  canPromote,
+  canRead,
+  canWrite,
+  isProposeOnly,
+} from "../access/rbac.js";
 import { mintConsumesEdges } from "../curation/consumes.js";
 import {
   leakLedgerPath,
@@ -324,10 +331,12 @@ export interface WriteResult {
   action:
     | "create"
     | "update"
+    | "patch"
     | "append"
     | "promote"
     | "deprecate"
     | "supersede"
+    | "unsupersede"
     | "merge"
     | "confidence-set"
     | "tier-set"
@@ -406,6 +415,34 @@ function shortHash(h: string): string {
   return h.length === 64 ? h.slice(0, 12) : h;
 }
 
+// Refuses a write whose base_version no longer matches the document: logs the
+// "rejected_stale" provenance entry and returns the error isStaleWriteError
+// classifies. The one place both shapes are defined, so the check inside
+// performWrite's lock and vault_patch's pre-edit check cannot drift apart.
+async function rejectStale(params: {
+  vaultRoot: string;
+  relPath: string;
+  tool: string;
+  agent: string;
+  baseVersion: string;
+  currentHash: string | null;
+  principal?: string;
+  runId?: string;
+}): Promise<Result<never, Error>> {
+  await recordProvenance(params.vaultRoot, {
+    tool: params.tool,
+    file: params.relPath,
+    agent: params.agent,
+    ...(params.principal ? { principal: params.principal } : {}),
+    ...(params.runId ? { run_id: params.runId } : {}),
+    action: "rejected_stale",
+    reason:
+      `stale: base_version ${shortHash(params.baseVersion)} != ` +
+      `current ${params.currentHash ? shortHash(params.currentHash) : "<absent>"}`,
+  });
+  return err(new Error(`${STALE_WRITE_PREFIX} ${params.relPath} changed since base_version`));
+}
+
 // Runs the durable part of a write under an exclusive file lock: write the
 // file, refresh the index, commit, log provenance. The lock is released in a
 // finally block so a failure mid-write never wedges the file.
@@ -451,6 +488,8 @@ async function performWrite(params: {
   // knows its own semantics: content writes compute it, frontmatter-only
   // lifecycle tools pass false.
   bodyChanged?: boolean;
+  // Caller-supplied rationale, recorded on the provenance entry (#640).
+  reason?: string;
   // Cross-vault leak gate (U3): the WRITE TARGET vault's own visibility and
   // leak_gate config, as loaded by the caller (mirrors how shadowMode/
   // autoCommit/gitDir are threaded from the caller's config, not re-loaded
@@ -512,20 +551,16 @@ async function performWrite(params: {
         const onDisk = await readFile(params.absPath);
         const currentHash = onDisk.ok ? sha256Hex(onDisk.value) : null;
         if (currentHash !== params.baseVersion) {
-          await recordProvenance(params.vaultRoot, {
+          return await rejectStale({
+            vaultRoot: params.vaultRoot,
+            relPath: params.relPath,
             tool: params.tool,
-            file: params.relPath,
             agent: params.agent,
+            baseVersion: params.baseVersion,
+            currentHash,
             ...(params.principal ? { principal: params.principal } : {}),
-            ...(params.runId ? { run_id: params.runId } : {}),
-            action: "rejected_stale",
-            reason:
-              `stale: base_version ${shortHash(params.baseVersion)} != ` +
-              `current ${currentHash ? shortHash(currentHash) : "<absent>"}`,
+            ...(params.runId ? { runId: params.runId } : {}),
           });
-          return err(
-            new Error(`${STALE_WRITE_PREFIX} ${params.relPath} changed since base_version`),
-          );
         }
       }
 
@@ -586,6 +621,12 @@ async function performWrite(params: {
         else commitError = committed.error;
       }
 
+      const provenanceReason = [
+        params.reason,
+        commitError ? `commit failed: ${commitError.message}` : undefined,
+      ]
+        .filter((part) => part !== undefined)
+        .join("; ");
       await recordProvenance(params.vaultRoot, {
         tool: params.tool,
         file: params.relPath,
@@ -595,7 +636,7 @@ async function performWrite(params: {
         ...(params.bodyChanged !== undefined ? { body_changed: params.bodyChanged } : {}),
         action: params.action,
         frontmatter_diff: frontmatterDiff(params.oldFrontmatter, params.newFrontmatter),
-        ...(commitError ? { reason: `commit failed: ${commitError.message}` } : {}),
+        ...(provenanceReason ? { reason: provenanceReason } : {}),
       });
 
       // #233: a run-correlated write compiles its input set — every path the
@@ -685,7 +726,7 @@ function denyIfProposeOnly(access: AccessContext | undefined, tool: string): Res
         `${tool}: role '${access.roleName}' is propose-only — direct writes are ` +
           `disabled. Propose the change instead: vault_write stages a 'write' ` +
           `proposal, and vault_stage_action stages lifecycle actions ` +
-          `(promote, deprecate, supersede, merge, confidence-up) for ratification.`,
+          `(promote, deprecate, supersede, unsupersede, merge, confidence-up) for ratification.`,
       ),
     );
   }
@@ -884,11 +925,16 @@ export interface TargetDocument {
   contentHash: string;
 }
 
+// A target as freshly loaded, with the exact bytes `contentHash` was taken over.
+export interface LoadedTarget extends TargetDocument {
+  text: string;
+}
+
 export async function loadTargetDocument(
   vaultRoot: string,
   rawPath: string,
   tool: string,
-): Promise<Result<TargetDocument, Error>> {
+): Promise<Result<LoadedTarget, Error>> {
   const resolved = resolveVaultPath(vaultRoot, rawPath);
   if (!resolved.ok) return resolved;
 
@@ -911,6 +957,7 @@ export async function loadTargetDocument(
     parsed: parsed.value,
     config: config.value,
     contentHash: sha256Hex(existing.value),
+    text: existing.value,
   });
 }
 
@@ -928,6 +975,7 @@ export function performFrontmatterWrite(opts: {
   baseVersion: string | undefined;
   access?: AccessContext;
   runId?: string;
+  reason?: string;
 }): Promise<Result<WriteResult, Error>> {
   const { target } = opts;
   return performWrite({
@@ -957,6 +1005,7 @@ export function performFrontmatterWrite(opts: {
     leakGate: target.config.leakGate,
     hasAccessContext: opts.access !== undefined,
     ...(opts.runId !== undefined ? { runId: opts.runId } : {}),
+    ...(opts.reason !== undefined ? { reason: opts.reason } : {}),
   });
 }
 
@@ -985,6 +1034,12 @@ export function performFrontmatterWrite(opts: {
 function sameBody(a: string, b: string): boolean {
   const norm = (s: string) => s.replace(/^\n+/, "").replace(/\s+$/, "");
   return norm(a) === norm(b);
+}
+
+// Frontmatter equality minus the server stamps, which every write moves.
+function sameFields(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const unstamped = ({ updated: _u, updated_by: _b, ...rest }: Record<string, unknown>) => rest;
+  return JSON.stringify(unstamped(a)) === JSON.stringify(unstamped(b));
 }
 
 function checkTierGuard(args: {
@@ -1086,22 +1141,45 @@ export async function vaultWrite(
   args: Record<string, unknown>,
   access?: AccessContext,
 ): Promise<Result<WriteResult, Error>> {
+  return writeDocument(vaultRoot, args, access);
+}
+
+// What vault_patch hands the write core: the load its edits were computed
+// from, so the merge runs against those same bytes rather than a second read,
+// and what the core reports differently for a patch.
+interface PatchContext {
+  loadedText: string;
+  reason: string;
+  bodyEdits: BodyEdit[];
+  patchesSources: boolean;
+}
+
+// The one path for a full-document write. vault_patch runs through it too, so
+// the merge, tier guards, hooks, pin minting, validation, foreign-position
+// check, propose-only coercion, and leak gate exist exactly once.
+async function writeDocument(
+  vaultRoot: string,
+  args: Record<string, unknown>,
+  access: AccessContext | undefined,
+  patch?: PatchContext,
+): Promise<Result<WriteResult, Error>> {
+  const tool = patch ? "vault_patch" : "vault_write";
   const ready = requireIndexReady();
   if (!ready.ok) return ready;
-  const path = requireString(args, "path", "vault_write");
+  const path = requireString(args, "path", tool);
   if (!path.ok) return path;
-  const agent = requireString(args, "agent", "vault_write");
+  const agent = requireString(args, "agent", tool);
   if (!agent.ok) return agent;
-  const baseVersion = readBaseVersion(args, "vault_write");
+  const baseVersion = readBaseVersion(args, tool);
   if (!baseVersion.ok) return baseVersion;
-  const runId = readRunId(args, "vault_write");
+  const runId = readRunId(args, tool);
   if (!runId.ok) return runId;
   const body = args.body;
   if (typeof body !== "string") {
-    return err(new Error("vault_write requires a string 'body' argument"));
+    return err(new Error(`${tool} requires a string 'body' argument`));
   }
   if (args.frontmatter === null || typeof args.frontmatter !== "object") {
-    return err(new Error("vault_write requires a 'frontmatter' object argument"));
+    return err(new Error(`${tool} requires a 'frontmatter' object argument`));
   }
   const rawFrontmatter = args.frontmatter as Record<string, unknown>;
 
@@ -1119,6 +1197,9 @@ export async function vaultWrite(
 
   const resolved = resolveVaultPath(vaultRoot, path.value);
   if (!resolved.ok) return resolved;
+  const absPath = resolved.value.absPath;
+  const readCurrent = async (): Promise<Result<string, Error>> =>
+    patch ? ok(patch.loadedText) : readFile(absPath);
 
   // #235: a propose-only role's write lands as a staged `write` proposal, not
   // a mutation. Coerced EARLY — before file I/O, tier guards, hooks, or
@@ -1142,7 +1223,7 @@ export async function vaultWrite(
     if (!proposeConfig.ok) return proposeConfig;
     let previewRaw: Record<string, unknown> = { ...rawFrontmatter };
     let existingPositions: Position[] | null = null;
-    const onDisk = await readFile(resolved.value.absPath);
+    const onDisk = await readCurrent();
     if (onDisk.ok) {
       const parsedExisting = parseDocument(onDisk.value);
       if (parsedExisting.ok) {
@@ -1175,7 +1256,7 @@ export async function vaultWrite(
       if (previewViolation) {
         return err(
           new Error(
-            `vault_write (stage preview): ${previewViolation} — another principal's ` +
+            `${tool} (stage preview): ${previewViolation} — another principal's ` +
               `position entries can only be superseded by their own new position ` +
               `(vault_assert) or edited by their holder`,
           ),
@@ -1191,7 +1272,13 @@ export async function vaultWrite(
         typeof args.reason === "string" && args.reason.trim().length > 0
           ? args.reason.trim()
           : `propose-only role '${access.roleName}': write staged for ratification`,
-      proposedDiff: { frontmatter: rawFrontmatter, body },
+      // body_edits is display-only for the ratifier, like repin's replacements;
+      // ratify dispatches the full computed body.
+      proposedDiff: {
+        frontmatter: rawFrontmatter,
+        body,
+        ...(patch ? { body_edits: patch.bodyEdits } : {}),
+      },
       // LD-13 ratify staleness guard (same one-line capture as vault_assert's
       // propose-only branch): anchor to the bytes `onDisk` was read from above,
       // so a ratify replay against a document that changed since staging fails
@@ -1219,7 +1306,7 @@ export async function vaultWrite(
     });
   }
 
-  const existing = await readFile(resolved.value.absPath);
+  const existing = await readCurrent();
   let oldFrontmatter: Frontmatter | null = null;
   let oldRaw: Record<string, unknown> | null = null;
   let oldContent = "";
@@ -1233,7 +1320,7 @@ export async function vaultWrite(
       // proceed.
       return err(
         new Error(
-          `vault_write: ${path.value} exists but its frontmatter could not be ` +
+          `${tool}: ${path.value} exists but its frontmatter could not be ` +
             `parsed (${parsed.error.message}); refusing to overwrite it. ` +
             `Fix or remove the file first.`,
         ),
@@ -1248,7 +1335,7 @@ export async function vaultWrite(
 
   if (isUpdate && oldFrontmatter) {
     const guard = checkTierGuard({
-      tool: "vault_write",
+      tool,
       path: path.value,
       tier: oldFrontmatter.tier,
       oldBody: oldContent,
@@ -1389,7 +1476,7 @@ export async function vaultWrite(
     if (rawFrontmatter.tier !== oldFrontmatter.tier) {
       return err(
         new Error(
-          `vault_write: ${path.value} is tier '${oldFrontmatter.tier}' — changing ` +
+          `${tool}: ${path.value} is tier '${oldFrontmatter.tier}' — changing ` +
             `its tier requires vault_set_tier (a reason is required` +
             `${oldFrontmatter.tier === "manual" ? ", and a human:* identity" : ""}).`,
         ),
@@ -1507,7 +1594,7 @@ export async function vaultWrite(
     );
     if (violation) {
       await recordProvenance(vaultRoot, {
-        tool: "vault_write",
+        tool,
         file: resolved.value.relPath,
         agent: agent.value,
         principal: access.user,
@@ -1517,12 +1604,18 @@ export async function vaultWrite(
       });
       return err(
         new Error(
-          `vault_write: ${violation} — another principal's position entries can ` +
+          `${tool}: ${violation} — another principal's position entries can ` +
             `only be superseded by their own new position (vault_assert) or ` +
             `edited by their holder`,
         ),
       );
     }
+  }
+
+  // Compared on the raw merged fields: the validated Frontmatter drops
+  // undeclared custom keys, and those are patchable too.
+  if (patch && oldRaw !== null && body === oldContent && sameFields(oldRaw, rawFrontmatter)) {
+    return err(new Error(`vault_patch: this patch changes nothing in ${path.value}`));
   }
 
   const stamped: Frontmatter = {
@@ -1540,8 +1633,8 @@ export async function vaultWrite(
     relPath: resolved.value.relPath,
     absPath: resolved.value.absPath,
     agent: agent.value,
-    tool: "vault_write",
-    action: isUpdate ? "update" : "create",
+    tool,
+    action: patch ? "patch" : isUpdate ? "update" : "create",
     fileText: serializeDocument(
       stamped,
       body,
@@ -1551,8 +1644,9 @@ export async function vaultWrite(
     newFrontmatter: stamped,
     oldFrontmatter,
     validation: mergedReport,
-    commitMessage:
-      `vault_write: ${isUpdate ? "update" : "create"} ${path.value} ` + `by ${agent.value}`,
+    commitMessage: patch
+      ? `vault_patch: ${path.value} by ${agent.value} — ${patch.reason}`
+      : `vault_write: ${isUpdate ? "update" : "create"} ${path.value} ` + `by ${agent.value}`,
     autoCommit: config.value.autoCommit,
     gitDir: config.value.gitDir,
     baseVersion: baseVersion.value,
@@ -1563,6 +1657,7 @@ export async function vaultWrite(
     visibility: config.value.visibility,
     leakGate: config.value.leakGate,
     hasAccessContext: access !== undefined,
+    ...(patch ? { reason: patch.reason } : {}),
   });
   // #169: an in-place overwrite destroys the prior version's lineage, and
   // daftari HAS the preserve-not-overwrite primitive — steer toward it at
@@ -1575,23 +1670,226 @@ export async function vaultWrite(
   // also suppressed under shadow: nothing landed on disk, so the minted sha
   // would point at a write that never happened (same logic as supersede_hint).
   if (!written.ok || written.value.shadow) return written;
+  // A patch warns only about what it added, for the reason vault_append does:
+  // re-warning on every unrelated field change would drown the signal.
   const warnings = generativeDomainRefs(
     vaultRoot,
     {
       domain: stamped.domain,
-      sources: stamped.sources ?? [],
-      body,
+      sources: patch && !patch.patchesSources ? [] : (stamped.sources ?? []),
+      body: patch ? patch.bodyEdits.map((e) => e.new).join("\n") : body,
       relPath: resolved.value.relPath,
     },
     access,
   );
-  if (!isUpdate && warnings === null && pinMintOutcome === undefined) return written;
+  // A frontmatter-only patch replaces no fact, so there is no lineage to steer.
+  const replacedContent = isUpdate && (!patch || patch.bodyEdits.length > 0);
+  if (!replacedContent && warnings === null && pinMintOutcome === undefined) return written;
   return ok({
     ...written.value,
-    ...(isUpdate ? { supersede_hint: SUPERSEDE_HINT } : {}),
+    ...(replacedContent ? { supersede_hint: SUPERSEDE_HINT } : {}),
     ...(warnings ? { domain_warnings: warnings } : {}),
     ...(pinMintOutcome !== undefined ? { pin_mint: pinMintOutcome } : {}),
   });
+}
+
+// ---------------------------------------------------------------------------
+// vault_patch (#640)
+// ---------------------------------------------------------------------------
+
+export interface BodyEdit {
+  old: string;
+  new: string;
+}
+
+const MAX_BODY_EDITS = 50;
+
+// Fields a patch refuses, each with where the change belongs. Lifecycle state
+// and write protection stay with the tools that gate them, so a cheap field
+// edit cannot become a promote, an unsupersede, or a tier demotion by another
+// name. `collection` picks the RBAC scope every lifecycle gate keys on, which
+// makes changing it a relocation rather than a correction.
+const PATCH_RESERVED_FIELDS = new Map<string, string>([
+  ["status", "use vault_promote, vault_deprecate, vault_supersede, or vault_unsupersede"],
+  ["superseded_by", "use vault_supersede, or vault_unsupersede to reverse one"],
+  ["tier", "use vault_set_tier"],
+  ["collection", "it is the document's access scope; use vault_write to relocate"],
+  ["positions", "use vault_assert"],
+  ["org_position", "use vault_assert or vault_consolidate"],
+  ["contested", "use vault_assert or vault_consolidate"],
+  ["created", "it is server-managed"],
+  ["updated", "it is server-managed"],
+  ["updated_by", "it is server-managed"],
+]);
+
+function readPatchFields(args: Record<string, unknown>): Result<Record<string, unknown>, Error> {
+  const v = args.frontmatter;
+  if (v === undefined || v === null) return ok({});
+  if (typeof v !== "object" || Array.isArray(v)) {
+    return err(new Error("vault_patch: 'frontmatter' must be an object of fields to change"));
+  }
+  const fields = v as Record<string, unknown>;
+  for (const key of Object.keys(fields)) {
+    const owner = PATCH_RESERVED_FIELDS.get(key);
+    if (owner !== undefined) {
+      return err(new Error(`vault_patch: '${key}' cannot be patched — ${owner}`));
+    }
+  }
+  return ok(fields);
+}
+
+function readBodyEdits(args: Record<string, unknown>): Result<BodyEdit[], Error> {
+  const v = args.body_edits;
+  if (v === undefined || v === null) return ok([]);
+  if (!Array.isArray(v)) return err(new Error("vault_patch: 'body_edits' must be an array"));
+  if (v.length > MAX_BODY_EDITS) {
+    return err(new Error(`vault_patch: 'body_edits' holds at most ${MAX_BODY_EDITS} edits`));
+  }
+  const edits: BodyEdit[] = [];
+  for (const [i, entry] of v.entries()) {
+    const edit = entry as Partial<BodyEdit> | null;
+    if (typeof edit?.old !== "string" || typeof edit.new !== "string") {
+      return err(new Error(`vault_patch: body_edits[${i}] needs string 'old' and 'new'`));
+    }
+    if (edit.old.length === 0) {
+      return err(new Error(`vault_patch: body_edits[${i}] has an empty 'old'`));
+    }
+    if (edit.old === edit.new) {
+      return err(new Error(`vault_patch: body_edits[${i}] has identical 'old' and 'new'`));
+    }
+    edits.push({ old: edit.old, new: edit.new });
+  }
+  return ok(edits);
+}
+
+// Applies each edit to the running body, all or nothing. Errors name only the
+// index and match count, never body text.
+function applyBodyEdits(body: string, edits: BodyEdit[]): Result<string, Error> {
+  let out = body;
+  for (const [i, edit] of edits.entries()) {
+    const matches = out.split(edit.old).length - 1;
+    if (matches !== 1) {
+      return err(
+        new Error(
+          `vault_patch: body_edits[${i}] matched ${matches} times; 'old' must match ` +
+            "exactly once. Re-read the document, or widen 'old' with surrounding text.",
+        ),
+      );
+    }
+    const at = out.indexOf(edit.old);
+    out = out.slice(0, at) + edit.new + out.slice(at + edit.old.length);
+  }
+  return ok(out);
+}
+
+// A patch is composed against content the caller read, so it needs read as
+// well as write. role.read and role.write are independent, and without this a
+// write-only role could use 'old' matching as a content oracle.
+function requirePatchAccess(
+  access: AccessContext | undefined,
+  collection: string,
+): Result<void, Error> {
+  const writable = requireWriteAccess(access, collection);
+  if (!writable.ok) return writable;
+  if (access && !canRead(access.role, collection)) {
+    return err(
+      new Error(`access denied: role '${access.roleName}' cannot read collection '${collection}'`),
+    );
+  }
+  return ok(undefined);
+}
+
+// Changes named frontmatter fields and exact-match body spans, leaving the rest
+// of the document as it is. Update-only: the target must already exist. The
+// caller sends the change, not the document; everything past the edit runs
+// through writeDocument.
+export async function vaultPatch(
+  vaultRoot: string,
+  args: Record<string, unknown>,
+  access?: AccessContext,
+): Promise<Result<WriteResult, Error>> {
+  const ready = requireIndexReady();
+  if (!ready.ok) return ready;
+  const path = requireString(args, "path", "vault_patch");
+  if (!path.ok) return path;
+  const agent = requireString(args, "agent", "vault_patch");
+  if (!agent.ok) return agent;
+  const reason = requireString(args, "reason", "vault_patch");
+  if (!reason.ok) return reason;
+  const baseVersion = readBaseVersion(args, "vault_patch");
+  if (!baseVersion.ok) return baseVersion;
+  const runId = readRunId(args, "vault_patch");
+  if (!runId.ok) return runId;
+  const fields = readPatchFields(args);
+  if (!fields.ok) return fields;
+  const edits = readBodyEdits(args);
+  if (!edits.ok) return edits;
+  if (Object.keys(fields.value).length === 0 && edits.value.length === 0) {
+    return err(new Error("vault_patch requires 'frontmatter' fields or 'body_edits' to change"));
+  }
+
+  // Path math only, so denial reveals nothing about the target. The declared
+  // collection is gated after load, the convention every read filter honors.
+  const physicalGate = requirePatchAccess(access, targetCollection(vaultRoot, path.value));
+  if (!physicalGate.ok) return physicalGate;
+
+  // The edits are anchored on content, not offsets: after a reload each one
+  // still matches exactly once or fails loudly, so the one transparent retry
+  // of an omitted base_version recomputes safely.
+  const attemptPatch = async (): Promise<Result<WriteResult, Error>> => {
+    const target = await loadTargetDocument(vaultRoot, path.value, "vault_patch");
+    if (!target.ok) return target;
+    const { parsed, relPath, contentHash, config, text } = target.value;
+
+    const declaredGate = requirePatchAccess(access, collectionOf(relPath, parsed.frontmatter));
+    if (!declaredGate.ok) return declaredGate;
+
+    // Checked before the edits: against moved content an 'old' may simply fail
+    // to match, which would hide the real cause. Shadow mode has no mutation
+    // to guard, same as performWrite.
+    if (
+      baseVersion.value !== undefined &&
+      baseVersion.value !== contentHash &&
+      !config.shadowMode
+    ) {
+      return rejectStale({
+        vaultRoot,
+        relPath,
+        tool: "vault_patch",
+        agent: agent.value,
+        baseVersion: baseVersion.value,
+        currentHash: contentHash,
+        ...(access ? { principal: access.user } : {}),
+        ...(runId.value !== undefined ? { runId: runId.value } : {}),
+      });
+    }
+
+    const body = applyBodyEdits(parsed.content, edits.value);
+    if (!body.ok) return body;
+
+    return writeDocument(
+      vaultRoot,
+      {
+        path: path.value,
+        agent: agent.value,
+        reason: reason.value,
+        // Copied per attempt: the core merges into this object in place.
+        frontmatter: { ...fields.value },
+        body: body.value,
+        base_version: baseVersion.value ?? contentHash,
+        ...(runId.value !== undefined ? { run_id: runId.value } : {}),
+      },
+      access,
+      {
+        loadedText: text,
+        reason: reason.value,
+        bodyEdits: edits.value,
+        patchesSources: "sources" in fields.value,
+      },
+    );
+  };
+
+  return retryOnStaleIfDefaulted(baseVersion.value, attemptPatch);
 }
 
 // ---------------------------------------------------------------------------
@@ -2274,6 +2572,104 @@ export async function vaultSupersede(
 }
 
 // ---------------------------------------------------------------------------
+// vault_unsupersede (#640)
+// ---------------------------------------------------------------------------
+
+// Reverses a supersession: clears superseded_by and returns the document to
+// draft, recorded as its own provenance action with a mandatory reason. Always
+// draft because the prior status is not stored on the document and the
+// provenance log is advisory; returning to canonical is a separate vault_promote
+// with that tool's preconditions. It rewires which document readers treat as
+// current, so it carries the promote grant, and propose-only roles go through
+// a staged `unsupersede`. The successor is never touched.
+export async function vaultUnsupersede(
+  vaultRoot: string,
+  args: Record<string, unknown>,
+  access?: AccessContext,
+): Promise<Result<WriteResult, Error>> {
+  const ready = requireIndexReady();
+  if (!ready.ok) return ready;
+  const proposeGate = denyIfProposeOnly(access, "vault_unsupersede");
+  if (!proposeGate.ok) return proposeGate;
+  const path = requireString(args, "path", "vault_unsupersede");
+  if (!path.ok) return path;
+  const agent = requireString(args, "agent", "vault_unsupersede");
+  if (!agent.ok) return agent;
+  const reason = requireString(args, "reason", "vault_unsupersede");
+  if (!reason.ok) return reason;
+  const runId = readRunId(args, "vault_unsupersede");
+  if (!runId.ok) return runId;
+  const baseVersion = readBaseVersion(args, "vault_unsupersede");
+  if (!baseVersion.ok) return baseVersion;
+
+  if (access && !canPromote(access.role)) {
+    return err(new Error(`access denied: role '${access.roleName}' cannot reverse a supersede`));
+  }
+
+  // Read-modify-write over the loaded frontmatter — see
+  // retryOnStaleIfDefaulted above.
+  const attemptUnsupersede = async (): Promise<Result<WriteResult, Error>> => {
+    const target = await loadTargetDocument(vaultRoot, path.value, "vault_unsupersede");
+    if (!target.ok) return target;
+
+    const oldFrontmatter = target.value.parsed.frontmatter;
+    const rbac = requireWriteAccess(access, collectionOf(path.value, oldFrontmatter));
+    if (!rbac.ok) return rbac;
+
+    if (oldFrontmatter.status !== "superseded") {
+      return err(
+        new Error(
+          `vault_unsupersede: only superseded documents can be reversed ` +
+            `(${path.value} is '${oldFrontmatter.status}')`,
+        ),
+      );
+    }
+
+    const written = await performFrontmatterWrite({
+      vaultRoot,
+      target: target.value,
+      agent: agent.value,
+      tool: "vault_unsupersede",
+      action: "unsupersede",
+      newFrontmatter: {
+        ...oldFrontmatter,
+        status: "draft",
+        superseded_by: null,
+        updated: todayISO(),
+        updated_by: agent.value,
+      },
+      commitMessage:
+        `vault_unsupersede: ${path.value} superseded→draft by ${agent.value} — ` +
+        `${reason.value}` +
+        (oldFrontmatter.superseded_by
+          ? ` (was superseded by ${oldFrontmatter.superseded_by})`
+          : ""),
+      baseVersion: baseVersion.value ?? target.value.contentHash,
+      access,
+      reason: reason.value,
+      ...(runId.value !== undefined ? { runId: runId.value } : {}),
+    });
+    if (!written.ok) return written;
+    // A reversed supersession does not prove the validity end wrong, and an
+    // authored window is never rewritten by a convenience path.
+    const validUntil = oldFrontmatter.valid_until ?? null;
+    if (validUntil === null) return written;
+    return ok({
+      ...written.value,
+      hint:
+        `valid_until ${validUntil} was left in place. If closing the window was part of ` +
+        "the mistake, clear it with vault_patch (frontmatter: { valid_until: null }).",
+    });
+  };
+
+  const written = await retryOnStaleIfDefaulted(baseVersion.value, attemptUnsupersede);
+  if (!written.ok) return written;
+  // Build the downstream dependents advisory (best-effort, never fails the write).
+  const dependents = await buildDependentsAdvisory(vaultRoot, written.value.path, access);
+  return ok({ ...written.value, dependents });
+}
+
+// ---------------------------------------------------------------------------
 // vault_merge (§11.4)
 // ---------------------------------------------------------------------------
 
@@ -2832,8 +3228,8 @@ const shadowNote =
   "shadow store but NOT applied; the result carries shadow: true.";
 
 // Appended to the description of every read-modify-write tool whose
-// base_version defaults internally (append, promote, deprecate,
-// set_confidence, set_tier): unlike vault_write, an omitted base_version here
+// base_version defaults internally (patch, append, promote, deprecate,
+// set_confidence, set_tier, unsupersede): unlike vault_write, an omitted base_version here
 // is NOT last-write-wins — it defaults to the version this call itself read,
 // and a race is retried once before failing loudly.
 const staleRetryNote =
@@ -3086,6 +3482,41 @@ const pinMintProperty = {
   required: ["minted", "unresolved"],
 };
 
+// The staged-proposal fields of a write a propose-only role is coerced into.
+const stagedResultProperties = {
+  staged_id: {
+    type: "string",
+    description:
+      "Staged-action id of the recorded proposal. Present only when " + "action is 'staged'.",
+  },
+  expires_at: {
+    type: "string",
+    description:
+      "ISO timestamp after which the staged proposal expires unratified. " +
+      "Present only when action is 'staged'.",
+  },
+  conflicts_with: {
+    type: "array",
+    items: { type: "string" },
+    description:
+      "Ids of other pending proposals contesting the same target. " +
+      "Present only when action is 'staged'; empty when uncontested.",
+  },
+  tension_id: {
+    type: ["string", "null"],
+    description:
+      "Id of the inter-proposal tension logged for the conflicting " +
+      "proposals, or null when none was needed. Present only when " +
+      "action is 'staged'.",
+  },
+  tension_error: {
+    type: "string",
+    description:
+      "Why the conflict tension could not be written. The proposal is " +
+      "still staged and conflicts_with still names the contenders.",
+  },
+};
+
 // The shared WriteResult shape. `actions` and `statuses` are the closed
 // vocabularies the specific tool can emit; `properties` adds the tool's own
 // optional fields.
@@ -3211,40 +3642,92 @@ export const writeTools: ToolDefinition[] = [
         },
         domain_warnings: domainWarningsProperty,
         pin_mint: pinMintProperty,
-        staged_id: {
-          type: "string",
-          description:
-            "Staged-action id of the recorded proposal. Present only when " + "action is 'staged'.",
-        },
-        expires_at: {
-          type: "string",
-          description:
-            "ISO timestamp after which the staged proposal expires unratified. " +
-            "Present only when action is 'staged'.",
-        },
-        conflicts_with: {
-          type: "array",
-          items: { type: "string" },
-          description:
-            "Ids of other pending proposals contesting the same target. " +
-            "Present only when action is 'staged'; empty when uncontested.",
-        },
-        tension_id: {
-          type: ["string", "null"],
-          description:
-            "Id of the inter-proposal tension logged for the conflicting " +
-            "proposals, or null when none was needed. Present only when " +
-            "action is 'staged'.",
-        },
-        tension_error: {
-          type: "string",
-          description:
-            "Why the conflict tension could not be written. The proposal is " +
-            "still staged and conflicts_with still names the contenders.",
-        },
+        ...stagedResultProperties,
       },
     }),
     handler: (vaultRoot, args, access) => vaultWrite(vaultRoot, args, access),
+  },
+  {
+    name: "vault_patch",
+    title: "Patch fields or text in a document",
+    annotations: { destructiveHint: true },
+    description:
+      "Change named frontmatter fields and exact-match body spans in an existing " +
+      "document without resending it. Same validation, hooks, tier guards, " +
+      "provenance log, and auto-commit as vault_write; the server stamps " +
+      "'updated' and 'updated_by'. Supply 'frontmatter', 'body_edits', or both. " +
+      "A field set to null is deleted; 'readers' and 'reader_lineage' union with " +
+      "the existing values as they do in vault_write. Lifecycle and protected " +
+      "fields (status, superseded_by, tier, collection, positions, org_position, " +
+      "contested, created, updated, updated_by) are refused with a pointer to " +
+      "the tool that owns them. Requires read as well as write access. If the " +
+      "caller's role is propose-only, nothing is written: the patch lands as a " +
+      "staged 'write' proposal awaiting vault_ratify." +
+      staleRetryNote +
+      shadowNote,
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Vault-relative path of the existing document to patch",
+        },
+        frontmatter: {
+          type: "object",
+          description:
+            "Fields to change, each replacing the whole field value; null deletes " +
+            "the field. Fields not named are left as they are.",
+          additionalProperties: true,
+        },
+        body_edits: {
+          type: "array",
+          maxItems: MAX_BODY_EDITS,
+          description:
+            "Exact-text replacements, applied in order to the running body, all " +
+            "or nothing. Each 'old' must match exactly once, so include enough " +
+            "surrounding text to be unique.",
+          items: {
+            type: "object",
+            properties: {
+              old: { type: "string", description: "Exact text to replace; must match once" },
+              new: { type: "string", description: "Replacement text; empty deletes the span" },
+            },
+            required: ["old", "new"],
+            additionalProperties: false,
+          },
+        },
+        reason: {
+          type: "string",
+          description: "Why this change is being made (recorded in the commit and provenance)",
+        },
+        agent: agentProperty,
+        base_version: baseVersionProperty,
+        run_id: runIdProperty,
+      },
+      required: ["path", "reason", "agent"],
+      additionalProperties: false,
+    },
+    outputSchema: writeResultSchema({
+      description:
+        "The applied patch, or — for a propose-only role — the staged proposal " +
+        "that was recorded instead ('staged', nothing written).",
+      actions: ["patch", "staged"],
+      // "pending" is the staged-proposal status, as on vault_write.
+      statuses: [...STATUSES, "pending"],
+      properties: {
+        supersede_hint: {
+          type: "string",
+          description:
+            "#169 advisory nudge, present only when this patch changed the body: " +
+            "vault_supersede preserves the prior version and its lineage " +
+            "instead. The write has already landed.",
+        },
+        domain_warnings: domainWarningsProperty,
+        pin_mint: pinMintProperty,
+        ...stagedResultProperties,
+      },
+    }),
+    handler: (vaultRoot, args, access) => vaultPatch(vaultRoot, args, access),
   },
   {
     name: "vault_append",
@@ -3483,6 +3966,52 @@ export const writeTools: ToolDefinition[] = [
       statuses: ["superseded"],
     }),
     handler: (vaultRoot, args, access) => vaultSupersede(vaultRoot, args, access),
+  },
+  {
+    name: "vault_unsupersede",
+    title: "Reverse a supersede",
+    annotations: { destructiveHint: true },
+    description:
+      "Reverse a supersession: clear superseded_by and return a superseded " +
+      "document to draft, logged as its own provenance action. A reason is " +
+      "required. Always lands on draft; use vault_promote afterwards to return " +
+      "it to canonical. Requires the promote grant; a propose-only role stages " +
+      "an 'unsupersede' action for vault_ratify. The successor is not modified, " +
+      "and an existing valid_until is left in place with a hint. Auto-commits." +
+      staleRetryNote +
+      shadowNote,
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Vault-relative path of the superseded document",
+        },
+        reason: {
+          type: "string",
+          description: "Why the supersession is being reversed (recorded in commit and provenance)",
+        },
+        agent: agentProperty,
+        run_id: runIdProperty,
+        base_version: baseVersionProperty,
+      },
+      required: ["path", "reason", "agent"],
+      additionalProperties: false,
+    },
+    outputSchema: writeResultSchema({
+      description: "The applied reversal. Status is always 'draft' on success.",
+      actions: ["unsupersede"],
+      statuses: ["draft"],
+      properties: {
+        hint: {
+          type: "string",
+          description:
+            "Present only when the document still declares a valid_until: how " +
+            "to clear it if closing the window was part of the mistake.",
+        },
+      },
+    }),
+    handler: (vaultRoot, args, access) => vaultUnsupersede(vaultRoot, args, access),
   },
   {
     name: "vault_merge",

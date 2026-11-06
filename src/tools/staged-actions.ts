@@ -41,6 +41,7 @@ import {
   vaultPromote,
   vaultSetConfidence,
   vaultSupersede,
+  vaultUnsupersede,
   vaultWrite,
   type WriteResult,
 } from "./write.js";
@@ -658,6 +659,14 @@ export async function vaultRatify(
       );
       break;
     }
+    case "unsupersede":
+      // proposed_diff carries nothing: the rationale is the reversal's reason.
+      dispatched = await vaultUnsupersede(
+        vaultRoot,
+        { path: action.targetPath, reason: action.rationale, agent: principal.value },
+        access,
+      );
+      break;
     case "confidence-up": {
       // proposed_diff = { confidence: "<low|medium|high>" }. The enum name is
       // confidence-up; the tool that applies it is vault_set_confidence.

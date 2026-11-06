@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`vault_patch` and `vault_unsupersede`** (#640) — `vault_patch` changes named frontmatter fields and exact-match body spans without resending the document, through the same write path as `vault_write` (validation, hooks, tier guards, provenance, auto-commit, propose-only staging). Changing `ttl_days` on a 15 KB document now sends under 1 KB. Lifecycle and protected fields are refused with a pointer to the owning tool. `vault_unsupersede` reverses a supersession: it returns the document to `draft`, clears `superseded_by`, and logs an `unsupersede` provenance entry with who, when, and why. It needs the promote grant; propose-only roles stage the new `unsupersede` action for `vault_ratify`.
+
 ### Fixed
 
 - **Release metadata drift; MCP registry publishing** (slrf) — `server.json` (1.32.0) and `manifest.json` (3.13.1, no tools) had drifted from npm. New `npm run sync:release` syncs both to `package.json` and lists every registered tool in the MCPB manifest; `test/release-metadata.test.ts` fails CI on drift. A tag push now also publishes `server.json` to the official MCP registry via GitHub OIDC (pinned, checksummed `mcp-publisher`).

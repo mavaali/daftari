@@ -33,10 +33,12 @@ export const FEDERATED_TOOLS: ReadonlySet<string> = new Set([
 // despite the read-sounding name.
 export const WRITE_SHAPED_TOOLS: ReadonlySet<string> = new Set([
   "vault_write",
+  "vault_patch",
   "vault_append",
   "vault_promote",
   "vault_deprecate",
   "vault_supersede",
+  "vault_unsupersede",
   "vault_merge",
   "vault_set_confidence",
   "vault_set_tier",

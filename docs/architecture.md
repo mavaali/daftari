@@ -7,7 +7,7 @@ date, after two notes have started to contradict each other and nobody noticed.
 
 Most of this document is about the hard job. The easy job fits in a paragraph:
 Daftari is a single MCP server, holding one writable vault under one process
-lock, running as one access identity for its lifetime, serving 42 tools over
+lock, running as one access identity for its lifetime, serving 44 tools over
 stdio. (Federation, #297, lets that process additionally mount other vaults
 read-only — the invariant is one *writable* vault, one lock, one identity, not
 one directory; mounts expose documents, never vault state, and nothing is ever
@@ -104,7 +104,7 @@ consumer's own frontmatter.
 
 ```
                       ┌─────────────────────────────┐
-   MCP client  ──────▶ │  MCP server (stdio, 42 tools)│
+   MCP client  ──────▶ │  MCP server (stdio, 44 tools)│
    (agent)             └──────────────┬──────────────┘
                                       │  every call
                        ┌──────────────▼──────────────┐
@@ -353,7 +353,7 @@ cluster, distinct from the silhouette score used to pick k.
 #### Reactive indexing
 
 The index is kept in sync with the markdown files at write time, not just at
-startup. The write-path tools (`vault_write`, `vault_append`,
+startup. The write-path tools (`vault_write`, `vault_patch`, `vault_append`,
 `vault_promote`, `vault_deprecate`) call `indexDocument()` in-process after
 each successful write, and a `chokidar` watcher runs over the vault root for
 **out-of-band** edits — an editor save, a sync engine pull, a scripted
@@ -658,8 +658,8 @@ bill of materials.
 
 **Optimistic concurrency** closes that gap. `vault_read` returns a `version`
 token — the SHA-256 of the file as read, frontmatter included. Every write
-tool (`vault_write`, `vault_append`, `vault_promote`, `vault_deprecate`)
-accepts an optional `base_version`. When supplied, the server re-hashes the
+tool (`vault_write`, `vault_patch`, `vault_append`, `vault_promote`,
+`vault_deprecate`) accepts an optional `base_version`. When supplied, the server re-hashes the
 file *inside the write lock* and, if the hash no longer matches, rejects the
 write with a `stale write:` error — nothing is written, committed, or
 indexed, and a `rejected_stale` entry is appended to the provenance log.
@@ -798,7 +798,7 @@ proposed diff, and a TTL (default 14 days). `vault_ratify` is the consumer: a
 human `approve`s or `reject`s one pending action. On approve it dispatches to the
 matching write tool, which auto-commits — `promote` → `vault_promote`,
 `deprecate` → `vault_deprecate`, `supersede` → `vault_supersede`,
-`confidence-up` → `vault_set_confidence`, `merge` → `vault_merge` (the §11.4
+`unsupersede` → `vault_unsupersede`, `confidence-up` → `vault_set_confidence`, `merge` → `vault_merge` (the §11.4
 write tools). A dispatch failure, including a malformed proposed diff, leaves the
 action pending so it can be retried. (The legacy `ratified-pending-tool` status,
 from before §11.4 wired up the last three tools, is no longer produced.)
@@ -1147,8 +1147,9 @@ quietly settled. That is the entire product, in one fact's lifetime.
      successor snippet is read verbatim from indexed content, never
      synthesized.
 
-A **write** (`vault_write`, `vault_append`, `vault_promote`,
-`vault_deprecate`, `vault_supersede`, `vault_merge`, `vault_set_confidence`):
+A **write** (`vault_write`, `vault_patch`, `vault_append`, `vault_promote`,
+`vault_deprecate`, `vault_supersede`, `vault_unsupersede`, `vault_merge`,
+`vault_set_confidence`):
 
 1. The server receives the tool call.
 2. **Layer 2** checks the role's `write` permission (and `promote` for

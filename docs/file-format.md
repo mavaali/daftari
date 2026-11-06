@@ -96,7 +96,7 @@ document had before the field existed.
 
 | Value | Meaning |
 |-------|---------|
-| `source` | Raw ingested material. The body is immutable to **every** writer; `vault_write` and `vault_merge` refuse body changes. `vault_append` still works. |
+| `source` | Raw ingested material. The body is immutable to **every** writer; `vault_write`, `vault_patch`, and `vault_merge` refuse body changes. `vault_append` still works. |
 | `compiled` | Agent-maintained synthesis. No enforcement — named so a compilation pass can assert what it is allowed to regenerate. |
 | `manual` | Human-authored canon. Body rewrites require a `human:*` identity; agents can still `vault_append`. |
 
@@ -109,8 +109,8 @@ provenance log and `vault_lint` surfaces every demotion off `source` under
   `manual` is a consent boundary only a human may lift. Moving away from
   `source` is open to any identity, loudly.
 - On a document currently tiered `source` or `manual`, the tier can only be
-  changed via `vault_set_tier` — `vault_write` refuses frontmatter payloads
-  that touch it, so the reason requirement cannot be dodged.
+  changed via `vault_set_tier` — `vault_write` and `vault_patch` refuse
+  frontmatter payloads that touch it, so the reason requirement cannot be dodged.
 
 `tier` is orthogonal to `provenance`: provenance describes how content was
 obtained (self-reported, advisory); tier controls who may rewrite it
