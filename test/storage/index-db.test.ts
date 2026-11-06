@@ -275,7 +275,7 @@ describe("index-db", () => {
     expect(getMeta(db, "vault_manifest")).toBeNull();
   });
 
-  it("schema 12 → 13 rebuild: replaces the kind-less doc_links table", () => {
+  it("schema 13 → 14 rebuild: replaces the kind-less doc_links table", () => {
     db.exec(`
       DROP TABLE doc_links;
       CREATE TABLE doc_links (
