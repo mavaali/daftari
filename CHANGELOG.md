@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`series` frontmatter field: dated snapshots stop going stale forever** (#645) — mark a run of write-once documents (weekly reviews, say) with a shared `series: <name>`. Staleness is judged on the newest member by `created`, so the TTL fires when no new snapshot has been written, not on each old one. Applies to `vault_lint`, `vault_status`, the board, `daftari sleep` and `daftari interview`; the per-document decay banner on `vault_read` and search does not read it yet. A vault that declared `series` as a schema extension must remove or rename it.
+
 ### Fixed
 
 - **Release metadata drift; MCP registry publishing** (slrf) — `server.json` (1.32.0) and `manifest.json` (3.13.1, no tools) had drifted from npm. New `npm run sync:release` syncs both to `package.json` and lists every registered tool in the MCPB manifest; `test/release-metadata.test.ts` fails CI on drift. A tag push now also publishes `server.json` to the official MCP registry via GitHub OIDC (pinned, checksummed `mcp-publisher`).

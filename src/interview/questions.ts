@@ -18,7 +18,7 @@
 // on this surface can spend. This module is operator-only and takes no access
 // context — the court convention; see the 2026-07-25 design spec.
 
-import { computeStaleness } from "../curation/staleness.js";
+import { computeStaleness, olderSeriesMembers } from "../curation/staleness.js";
 import { agingTier, listTensions, type TensionEntry } from "../curation/tension.js";
 import { computeValidity } from "../curation/validity.js";
 import { type LoadedDoc, loadDocuments } from "../curation/vault-docs.js";
@@ -95,6 +95,7 @@ interface StaleCandidate {
 function staleQuestions(docs: LoadedDoc[], now: Date): InterviewQuestion[] {
   const candidates: StaleCandidate[] = [];
   const today = now.toISOString().slice(0, 10);
+  const olderMembers = olderSeriesMembers(docs);
   for (const doc of docs) {
     const fm = doc.frontmatter;
     // Sleep's domain split: generative docs going stale is expected — never
@@ -117,7 +118,10 @@ function staleQuestions(docs: LoadedDoc[], now: Date): InterviewQuestion[] {
       continue;
     }
 
-    const staleness = computeStaleness({ updated: fm.updated, ttl_days: fm.ttl_days }, now);
+    const staleness = computeStaleness(
+      { updated: fm.updated, ttl_days: olderMembers.has(doc.path) ? null : fm.ttl_days },
+      now,
+    );
     if (!staleness.expired || staleness.ttlDays === null) continue;
     candidates.push({
       doc,
