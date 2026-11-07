@@ -133,6 +133,10 @@
       "description": "Create a new vault document or overwrite an existing one."
     },
     {
+      "name": "vault_patch",
+      "description": "Change named frontmatter fields and exact-match body spans in an existing document without resending it."
+    },
+    {
       "name": "vault_append",
       "description": "Append a markdown section to an existing vault document."
     },
@@ -155,6 +159,10 @@
     {
       "name": "vault_supersede",
       "description": "Mark a document superseded by a named successor."
+    },
+    {
+      "name": "vault_unsupersede",
+      "description": "Reverse a supersession: clear superseded_by and return a superseded document to draft, logged as its own provenance action."
     },
     {
       "name": "vault_merge",

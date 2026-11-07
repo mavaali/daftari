@@ -9,8 +9,8 @@
 // vault_ratify is the human's approve/reject gate. On approve it dispatches to
 // the matching write tool for the action type. Every action type now applies on
 // ratify: promote → vault_promote, deprecate → vault_deprecate, supersede →
-// vault_supersede, confidence-up → vault_set_confidence, merge → vault_merge
-// (the §11.4 write tools). A dispatch failure (including a malformed
+// vault_supersede, unsupersede → vault_unsupersede, confidence-up →
+// vault_set_confidence, merge → vault_merge. A dispatch failure (including a malformed
 // proposed_diff) leaves the action pending so it can be retried.
 
 import { type AccessContext, canRatify, canRead, canWrite, isProposeOnly } from "../access/rbac.js";
@@ -41,6 +41,7 @@ import {
   vaultPromote,
   vaultSetConfidence,
   vaultSupersede,
+  vaultUnsupersede,
   vaultWrite,
   type WriteResult,
 } from "./write.js";
@@ -658,6 +659,14 @@ export async function vaultRatify(
       );
       break;
     }
+    case "unsupersede":
+      // proposed_diff carries nothing: the rationale is the reversal's reason.
+      dispatched = await vaultUnsupersede(
+        vaultRoot,
+        { path: action.targetPath, reason: action.rationale, agent: principal.value },
+        access,
+      );
+      break;
     case "confidence-up": {
       // proposed_diff = { confidence: "<low|medium|high>" }. The enum name is
       // confidence-up; the tool that applies it is vault_set_confidence.
@@ -899,10 +908,12 @@ export const stagedActionTools: ToolDefinition[] = [
       "vault_ratify. The action waits in a pending queue and auto-expires after " +
       "ttl_days (default 14). This is the producer side of the staged-action " +
       "queue — normally called by the curation loop or an agent, not by a human " +
-      "directly. Action types: promote, deprecate, supersede, merge, " +
+      "directly. Action types: promote, deprecate, supersede, unsupersede, merge, " +
       "confidence-up, write, repin. proposed_diff carries the per-action payload " +
-      "replayed on ratification: supersede → {superseded_by}, confidence-up → " +
-      "{confidence}, merge → {merge_from: [path_a, path_b], body, frontmatter?}, " +
+      "replayed on ratification: supersede → {superseded_by}, unsupersede → {} " +
+      "(the rationale becomes the reversal's reason; the document returns to " +
+      "draft), confidence-up → {confidence}, merge → " +
+      "{merge_from: [path_a, path_b], body, frontmatter?}, " +
       "write → {frontmatter, body} (full content; the target may be a new " +
       "document), repin → {} or {replacements: [{old, new}]} (advisory; " +
       "stage time runs computeRepin and stamps in the computed old→new pairs; " +
@@ -963,8 +974,8 @@ export const stagedActionTools: ToolDefinition[] = [
     description:
       "Approve or reject a single pending staged action. On approve, dispatches " +
       "to the matching write tool (promote → vault_promote, deprecate → " +
-      "vault_deprecate, supersede → vault_supersede, confidence-up → " +
-      "vault_set_confidence, merge → vault_merge, write → vault_write, " +
+      "vault_deprecate, supersede → vault_supersede, unsupersede → " +
+      "vault_unsupersede, confidence-up → vault_set_confidence, merge → vault_merge, write → vault_write, " +
       "repin → recomputes pins fresh and lands via vault_write) and " +
       "auto-commits. On reject, " +
       "records the rejection and applies nothing. A dispatch failure leaves the " +

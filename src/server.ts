@@ -104,10 +104,12 @@ export const CORE_TOOLS: readonly string[] = [
 
 export const STANDARD_TOOLS: readonly string[] = [
   ...CORE_TOOLS,
+  "vault_patch",
   "vault_append",
   "vault_promote",
   "vault_deprecate",
   "vault_supersede",
+  "vault_unsupersede",
   "vault_merge",
   "vault_set_confidence",
   "vault_set_tier",
