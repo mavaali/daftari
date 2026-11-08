@@ -160,6 +160,59 @@ Daftari resolves the bearer on every request. A missing or invalid credential
 is a 401; a valid JWT whose subject is not mapped is a 403. Neither falls back
 to guest.
 
+#### OAuth discovery for remote MCP clients
+
+ChatGPT, claude.ai, Claude Desktop, Claude mobile, Cowork and Claude Code find
+your identity provider through OAuth discovery: a 401 whose
+`WWW-Authenticate` header points at an RFC 9728 protected-resource document,
+or the document itself at `/.well-known/oauth-protected-resource`. Daftari
+publishes both once `server.public_base_url` is set alongside the `oauth`
+block:
+
+```yaml
+server:
+  transport_security: external
+  public_base_url: https://vault.example.com      # or https://host/daftari
+  auth:
+    oauth:
+      issuer: https://idp.example.com
+      jwks_uri: https://idp.example.com/.well-known/jwks.json
+      subjects:
+        "alice@example.com":
+          user: human:alice
+          role: analyst
+```
+
+With that config daftari serves
+
+- `GET /.well-known/oauth-protected-resource` and
+  `GET /.well-known/oauth-protected-resource/mcp` (the second carries the
+  `public_base_url` path prefix when there is one, e.g.
+  `/.well-known/oauth-protected-resource/daftari/mcp`), returning
+  `{"resource": "<public_base_url>/mcp", "authorization_servers": ["<issuer>"],
+  "bearer_methods_supported": ["header"]}`;
+- `WWW-Authenticate: Bearer resource_metadata="…"` on every bearer 401
+  (`error="invalid_token"` is added when a bearer was presented). The 403 for
+  an unmapped subject carries no challenge: no re-authentication fixes a
+  missing `subjects` entry.
+
+Users enter exactly `<public_base_url>/mcp` in their client — no trailing
+slash, no explicit `:443`. Both `resource` and the token audience are exact
+string matches, so a variant spelling fails sign-in.
+
+`audience` may then be omitted: daftari verifies `aud` against the resource
+URL `<public_base_url>/mcp`, which is the value these clients hand the IdP as
+the RFC 8707 `resource` parameter. Set `audience` explicitly if your IdP mints
+a fixed API identifier instead; daftari warns at startup when it differs from
+the published resource. With neither `audience` nor `public_base_url`, serve
+refuses to start. Without `public_base_url` but with an explicit `audience`,
+serve runs as before and warns that no discovery is published.
+
+Two things stay the operator's: the identity provider must support PKCE
+(S256) and either dynamic client registration or client ID metadata
+documents, and the reverse proxy must route `/.well-known/oauth-protected-resource*`
+to daftari as well as the MCP path. Daftari never issues tokens.
+
 `transport_security: external` means TLS terminates in Caddy, nginx, a load
 balancer, or another upstream component. Daftari does not terminate TLS.
 

@@ -63,6 +63,7 @@ import { type DaftariConfig, loadConfig } from "../utils/config.js";
 import { ensureVaultGitignore } from "../utils/vault-gitignore.js";
 import { renderBoardPage } from "../view/board-page.js";
 import { type AuthEvent, appendAuthEvent, tokenHint } from "./auth-log.js";
+import { challengeHeader, discoveryEndpoints } from "./discovery.js";
 import {
   type Bucket,
   chargePenalty,
@@ -258,6 +259,17 @@ export function validateServeStartup(
             `(plain http is allowed only for loopback test IdPs)`,
         };
       }
+    }
+    // Discovery: `audience` may be omitted only when `public_base_url` gives
+    // the resource URL to default it to. Without either, jwtVerify would run
+    // with no audience check at all — refuse rather than silently weaken.
+    if (oauth.audience === undefined && config.server.publicBaseUrl === undefined) {
+      return {
+        ok: false,
+        error:
+          "server.auth.oauth.audience is required unless server.public_base_url " +
+          "is set (the audience then defaults to the resource URL <public_base_url>/mcp)",
+      };
     }
     for (const [subject, entry] of Object.entries(oauth.subjects)) {
       if (!(entry.role in config.roles)) {
@@ -631,7 +643,7 @@ export interface StartHttpServerOptions {
   integrationRuntime?: IntegrationRuntime;
 }
 
-export function startHttpServer(
+export async function startHttpServer(
   vaultRoot: string,
   config: DaftariConfig,
   tokens: ResolvedToken[],
@@ -643,6 +655,18 @@ export function startHttpServer(
   const session = opts.session ?? null;
   const sessionAud = sessionAudience(vaultRoot);
   const authConfigured = tokens.length > 0 || oauth !== undefined || session !== null;
+  // OAuth discovery (RFC 9728 + RFC 6750): null unless oauth AND a public
+  // base URL are configured. Config-static, so the document is serialized
+  // once. The effective audience defaults to the resource URL; the startup
+  // gate guarantees one of the two exists, and the direct-call path (tests)
+  // gets the same refusal here.
+  const discovery = discoveryEndpoints(config.server);
+  const oauthAudience = oauth?.audience ?? discovery?.resource;
+  if (oauth !== undefined && oauthAudience === undefined) {
+    throw new Error("server.auth.oauth.audience is required unless server.public_base_url is set");
+  }
+  const discoveryBody = discovery === null ? null : JSON.stringify(discovery.document);
+  const mcpPaths = discovery?.mcpPaths ?? ["/mcp"];
 
   // The ops floor (multi-user item 6). Process-local in-memory state is
   // correct by construction: one serve process per vault is the invariant
@@ -727,7 +751,7 @@ export function startHttpServer(
           jwks ??= createRemoteJWKSet(new URL(oauth.jwksUri));
           const verified = await jwtVerify(presented, jwks, {
             issuer: oauth.issuer,
-            audience: oauth.audience,
+            audience: oauthAudience,
           });
           const subject = verified.payload.sub;
           // Own-property lookup only: `subjects` is a plain object, and a
@@ -804,6 +828,17 @@ export function startHttpServer(
       writeRedirect(res, htmlRedirectTo, []);
       return null;
     }
+    // The RFC 6750 challenge rides EVERY Bearer 401 this function writes
+    // (/mcp, the board API, integration authorize) — one writer, one
+    // invariant — but only when there is something to discover. The 403
+    // above stays header-less on purpose: no re-auth fixes an absent
+    // subjects entry, and advertising insufficient_scope invites a loop.
+    if (discovery !== null) {
+      res.setHeader(
+        "WWW-Authenticate",
+        challengeHeader(discovery.metadataUrl, bearerFrom(req) !== null),
+      );
+    }
     writeJson(res, 401, {
       error: "unauthorized",
       message: "a valid bearer token is required",
@@ -868,6 +903,33 @@ export function startHttpServer(
     }
 
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+
+    // OAuth discovery document — pre-auth by definition, and deliberately
+    // outside every ops-floor gate: the normal flow is a 401 (which charges
+    // the penalty box) followed by this fetch, so gating it would lock a
+    // client out of sign-in; no principal exists yet for the per-principal
+    // bucket; and a precomputed string does no vault work worth a slot. Not
+    // audited either — AuthOutcome is allow/deny/throttle, and anonymous
+    // probes of a public document are a log-flood vector with no forensic
+    // value (the remote is already on the 401 that preceded it).
+    if (
+      discovery !== null &&
+      discoveryBody !== null &&
+      discovery.wellKnownPaths.includes(url.pathname)
+    ) {
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        res.setHeader("Allow", "GET, HEAD");
+        writeJson(res, 405, { error: "method_not_allowed" });
+        return;
+      }
+      res.writeHead(200, {
+        "content-type": "application/json",
+        "cache-control": "no-store",
+        "content-length": Buffer.byteLength(discoveryBody),
+      });
+      res.end(req.method === "HEAD" ? undefined : discoveryBody);
+      return;
+    }
 
     if (opts.integrationRuntime !== undefined) {
       const handled = await opts.integrationRuntime.handle(req, res, url, {
@@ -1313,7 +1375,10 @@ export function startHttpServer(
       return;
     }
 
-    if (url.pathname !== "/mcp") {
+    // Bare `/mcp` always; plus `<prefix>/mcp` when public_base_url carries a
+    // path prefix that the proxy preserves on the wire — the URL discovery
+    // publishes as `resource` must reach this handler, not a 404.
+    if (!mcpPaths.includes(url.pathname)) {
       writeJson(res, 404, { error: "not_found" });
       return;
     }
@@ -1327,7 +1392,7 @@ export function startHttpServer(
     const penalty = penaltyAllows(penaltyBox, remote, Date.now());
     if (!penalty.allowed) {
       res.setHeader("Retry-After", String(penalty.retryAfterSeconds));
-      audit({ outcome: "rate-limited", remote, method: req.method ?? "", path: "/mcp" });
+      audit({ outcome: "rate-limited", remote, method: req.method ?? "", path: url.pathname });
       writeJson(res, 429, {
         error: "rate_limited",
         message: "too many failed authentication attempts",
@@ -1335,7 +1400,9 @@ export function startHttpServer(
       return;
     }
 
-    const access = await authenticate(req, res, "/mcp");
+    // The real pathname (bare or prefixed MCP route) so audit lines say
+    // which one the request used.
+    const access = await authenticate(req, res, url.pathname);
     if (access === null) return;
 
     // Layer B — the per-principal bucket, keyed on the VERIFIED identity.
@@ -1352,7 +1419,7 @@ export function startHttpServer(
         principal: access.user,
         remote,
         method: req.method ?? "",
-        path: "/mcp",
+        path: url.pathname,
       });
       writeJson(res, 429, { error: "rate_limited", message: "per-principal rate limit reached" });
       return;
@@ -1368,7 +1435,7 @@ export function startHttpServer(
         principal: access.user,
         remote,
         method: req.method ?? "",
-        path: "/mcp",
+        path: url.pathname,
       });
       writeJson(res, 503, { error: "over_capacity", message: "server is at its request ceiling" });
       return;
@@ -1381,7 +1448,7 @@ export function startHttpServer(
       principal: access.user,
       remote,
       method: req.method ?? "",
-      path: "/mcp",
+      path: url.pathname,
     });
 
     try {
@@ -1660,9 +1727,33 @@ export async function runServe(argv: string[]): Promise<number> {
     return 3;
   }
 
+  // Discovery posture, in the same warning register as unknown tool names:
+  // oauth without a public base URL serves no metadata (remote MCP clients
+  // cannot start sign-in), and an explicit audience that differs from the
+  // published resource is legal (IdPs that mint a fixed API identifier) but
+  // worth one line, since clients send the resource URL as RFC 8707 resource.
+  const startupDiscovery = discoveryEndpoints(config.value.server);
+  const oauthCfg = config.value.server.oauth;
+  if (oauthCfg !== undefined && startupDiscovery === null) {
+    process.stderr.write(
+      "daftari: warning: server.auth.oauth is set without server.public_base_url — " +
+        "no OAuth discovery metadata is served, so remote MCP clients cannot start sign-in\n",
+    );
+  } else if (
+    oauthCfg?.audience !== undefined &&
+    startupDiscovery !== null &&
+    oauthCfg.audience !== startupDiscovery.resource
+  ) {
+    process.stderr.write(
+      `daftari: warning: server.auth.oauth.audience (${oauthCfg.audience}) differs from the ` +
+        `published resource URL (${startupDiscovery.resource}); make sure the IdP mints that audience\n`,
+    );
+  }
+
   const authParts = [
     ...(gate.tokens.length > 0 ? [`${gate.tokens.length} token(s)`] : []),
     ...(config.value.server.oauth !== undefined ? ["oauth"] : []),
+    ...(startupDiscovery !== null ? ["discovery"] : []),
   ];
   process.stderr.write(
     `daftari: serving vault at ${vaultRoot} — http://${bind}:${handle.port}/mcp ` +
