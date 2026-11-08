@@ -227,6 +227,21 @@ describe("vault_write scoped addressing", () => {
     expect(r.ok, r.ok ? "" : r.error.message).toBe(true);
   });
 
+  it("stages a propose-only role's scoped write at the derived path with scope/key in the payload", async () => {
+    const proposer: AccessContext = {
+      user: "u",
+      roleName: "proposer",
+      role: { read: ["*"], write: ["scopes"], promote: false, ratify: false, proposeOnly: true },
+    };
+    const r = await vaultWrite(vault, scoped(), proposer);
+    expect(r.ok, r.ok ? "" : r.error.message).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.action).toBe("staged");
+    expect(r.value.path).toBe(PATH);
+    expect(r.value.validation.valid).toBe(true);
+    expect(existsSync(join(vault, PATH))).toBe(false);
+  });
+
   it("keeps non-scoped writes last-write-wins without base_version", async () => {
     const args = {
       path: "pricing/plain.md",
