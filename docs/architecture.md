@@ -7,7 +7,7 @@ date, after two notes have started to contradict each other and nobody noticed.
 
 Most of this document is about the hard job. The easy job fits in a paragraph:
 Daftari is a single MCP server, holding one writable vault under one process
-lock, running as one access identity for its lifetime, serving 42 tools over
+lock, running as one access identity for its lifetime, serving 46 tools over
 stdio. (Federation, #297, lets that process additionally mount other vaults
 read-only — the invariant is one *writable* vault, one lock, one identity, not
 one directory; mounts expose documents, never vault state, and nothing is ever
@@ -104,7 +104,7 @@ consumer's own frontmatter.
 
 ```
                       ┌─────────────────────────────┐
-   MCP client  ──────▶ │  MCP server (stdio, 42 tools)│
+   MCP client  ──────▶ │  MCP server (stdio, 46 tools)│
    (agent)             └──────────────┬──────────────┘
                                       │  every call
                        ┌──────────────▼──────────────┐
@@ -301,6 +301,20 @@ Three things sit alongside the markdown:
 - **SQLite lock store** (`.daftari/locks.db`). Holds active write locks. Also
   ephemeral.
 
+#### Open-question candidates (`vault_question_candidates`)
+
+A question closes only on an exact (normalized) copy of its text in some
+document's `questions_answered`. This read-only tool proposes where a reworded
+answer may live: per open question, the documents with `updated` on or after
+its earliest raising, ranked by the best cosine between the question and each
+document's title and `questions_answered` entries. `questions_answered` is
+frontmatter and never reaches the FTS or chunk tables, so the corpus is
+embedded in memory through the active provider, with no index change and no
+writes to the embeddings cache, instead of going through `hybridSearch`.
+Openness and candidates both compute from the caller's vantage; hidden
+documents are omitted with no count. Accepting a candidate stays a curator's
+edit.
+
 #### Thematic clustering (`vault_themes`)
 
 `vault_themes` reads the existing `chunks` / `embeddings` tables — no new
@@ -353,7 +367,7 @@ cluster, distinct from the silhouette score used to pick k.
 #### Reactive indexing
 
 The index is kept in sync with the markdown files at write time, not just at
-startup. The write-path tools (`vault_write`, `vault_append`,
+startup. The write-path tools (`vault_write`, `vault_patch`, `vault_append`,
 `vault_promote`, `vault_deprecate`) call `indexDocument()` in-process after
 each successful write, and a `chokidar` watcher runs over the vault root for
 **out-of-band** edits — an editor save, a sync engine pull, a scripted
@@ -665,8 +679,8 @@ bill of materials.
 
 **Optimistic concurrency** closes that gap. `vault_read` returns a `version`
 token — the SHA-256 of the file as read, frontmatter included. Every write
-tool (`vault_write`, `vault_append`, `vault_promote`, `vault_deprecate`)
-accepts an optional `base_version`. When supplied, the server re-hashes the
+tool (`vault_write`, `vault_patch`, `vault_append`, `vault_promote`,
+`vault_deprecate`) accepts an optional `base_version`. When supplied, the server re-hashes the
 file *inside the write lock* and, if the hash no longer matches, rejects the
 write with a `stale write:` error — nothing is written, committed, or
 indexed, and a `rejected_stale` entry is appended to the provenance log.
@@ -806,7 +820,7 @@ proposed diff, and a TTL (default 14 days). `vault_ratify` is the consumer: a
 human `approve`s or `reject`s one pending action. On approve it dispatches to the
 matching write tool, which auto-commits — `promote` → `vault_promote`,
 `deprecate` → `vault_deprecate`, `supersede` → `vault_supersede`,
-`confidence-up` → `vault_set_confidence`, `merge` → `vault_merge` (the §11.4
+`unsupersede` → `vault_unsupersede`, `confidence-up` → `vault_set_confidence`, `merge` → `vault_merge` (the §11.4
 write tools). A dispatch failure, including a malformed proposed diff, leaves the
 action pending so it can be retried. (The legacy `ratified-pending-tool` status,
 from before §11.4 wired up the last three tools, is no longer produced.)
@@ -1154,9 +1168,18 @@ quietly settled. That is the entire product, in one fact's lifetime.
      leaking neither path nor title. daftari authors the relation; the
      successor snippet is read verbatim from indexed content, never
      synthesized.
+   - **Amendment foregrounding.** A document that stays true as written
+     but has a later document declaring `amends` on it gains `amendedBy`:
+     direct amenders only, each with its status. The relation is declared
+     on the later document and inverted by the `doc_amends` index table, so
+     the earlier file is never written. Unreadable amenders are omitted
+     with no marker: unlike a superseded document, an amended one carries
+     no mark of its own for a marker to restate. It is never an input to
+     ranking or to the suppression pass.
 
-A **write** (`vault_write`, `vault_append`, `vault_promote`,
-`vault_deprecate`, `vault_supersede`, `vault_merge`, `vault_set_confidence`):
+A **write** (`vault_write`, `vault_patch`, `vault_append`, `vault_promote`,
+`vault_deprecate`, `vault_supersede`, `vault_unsupersede`, `vault_merge`,
+`vault_set_confidence`):
 
 1. The server receives the tool call.
 2. **Layer 2** checks the role's `write` permission (and `promote` for

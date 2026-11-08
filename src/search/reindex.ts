@@ -48,6 +48,7 @@ import {
   insertEmbeddingVec,
   openIndexDb,
   pruneStaleVecRows,
+  replaceDocAmends,
   replaceDocLinks,
   replaceDocumentFields,
   setMeta,
@@ -324,6 +325,7 @@ interface StagedDocument {
   doc: IndexedDocument;
   sources: string[];
   fields: IndexedFieldValue[];
+  amends: string[];
   chunks: string[];
   hashes: string[];
 }
@@ -452,6 +454,7 @@ async function stageOne(
       },
       sources: fm.sources,
       fields: projection.fields,
+      amends: fm.amends ?? [],
       chunks,
       hashes,
     },
@@ -513,10 +516,11 @@ function writeChunkRows(db: IndexDb, staged: StagedDocument[]): number {
   const linkIndexes = buildPathIndexes(staged.map(({ doc }) => ({ path: doc.path })));
   const write = db.transaction(() => {
     clearIndex(db);
-    for (const { doc, sources, fields, chunks, hashes } of staged) {
+    for (const { doc, sources, fields, amends, chunks, hashes } of staged) {
       insertDocument(db, doc);
       replaceDocumentFields(db, doc.path, fields);
       replaceDocLinks(db, doc.path, outgoingEdges(doc.content, sources, doc.path, linkIndexes));
+      replaceDocAmends(db, doc.path, amends);
       chunks.forEach((text, chunkIndex) => {
         const row: ChunkRowInput = {
           path: doc.path,
@@ -762,7 +766,7 @@ export async function indexDocument(
     db.close();
     return err(new Error(`cannot index document: ${relPath} (${outcome.reason})`));
   }
-  const { doc, sources, fields, chunks, hashes } = outcome.staged;
+  const { doc, sources, fields, amends, chunks, hashes } = outcome.staged;
 
   const createdAt = new Date().toISOString();
 
@@ -832,6 +836,7 @@ export async function indexDocument(
       insertDocument(db, doc);
       replaceDocumentFields(db, doc.path, fields);
       replaceDocLinks(db, doc.path, edges);
+      replaceDocAmends(db, doc.path, amends);
       chunks.forEach((text, chunkIndex) => {
         insertChunkRow(db, {
           path: doc.path,

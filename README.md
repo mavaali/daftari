@@ -154,9 +154,9 @@ model.
 | Outcome | Main surfaces | What they provide |
 |---|---|---|
 | Find relevant knowledge | `vault_search`, `vault_search_related`, `vault_themes` | Hybrid lexical/vector retrieval, related documents, and thematic clusters |
-| Read with context | `vault_read`, `vault_backlinks`, `vault_consumes` | Document content, inbound references, and compiled dependencies |
-| Write and maintain documents | `vault_write`, `vault_append`, `vault_merge`, `vault_supersede` | Structured writes with locking, provenance, indexing, and Git history |
-| Control lifecycle and confidence | `vault_promote`, `vault_deprecate`, `vault_set_confidence`, `vault_set_tier` | Explicit gates between draft, canonical, source, and retired knowledge |
+| Read with context | `vault_read`, `vault_backlinks`, `vault_chains`, `vault_consumes` | Document content, inbound references, the current entry of every supersede chain, and compiled dependencies |
+| Write and maintain documents | `vault_write`, `vault_patch`, `vault_append`, `vault_merge`, `vault_supersede` | Structured writes with locking, provenance, indexing, and Git history |
+| Control lifecycle and confidence | `vault_promote`, `vault_deprecate`, `vault_unsupersede`, `vault_set_confidence`, `vault_set_tier` | Explicit gates between draft, canonical, source, and retired knowledge |
 | Keep contradictions visible | `vault_tension_log`, `vault_tension_triage`, `vault_positions`, `vault_canon` | Open tensions, attributed positions, and settled-versus-contested belief |
 | Require human judgment | `vault_stage_action`, `vault_ratify`, `vault_consolidate` | Proposed actions and ratified organizational positions |
 | Inspect trust and history | `vault_receipt`, `vault_provenance`, `vault_witness`, `daftari asof` | Evidence receipts, write history, principal track records, and past belief state |

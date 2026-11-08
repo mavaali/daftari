@@ -43,6 +43,7 @@ import * as sqliteVec from "sqlite-vec";
 import { indexDirFor } from "../federation/index-location.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { normalizeIsoDate } from "../utils/dates.js";
+import { canonicalRel } from "../utils/paths.js";
 
 export type IndexDb = Database.Database;
 
@@ -74,10 +75,11 @@ export type IndexDb = Database.Database;
 // 12 adds document_fields, the rebuildable typed projection for explicitly
 // indexed schema-extension values (#512).
 // 13 rebuilds rows whose `collection` was a root file's own name (#646).
-// 14 adds doc_links.kind so `sources` citations join the inbound graph without
+// 14 adds doc_amends, the materialized inverse of `amends` frontmatter (#643).
+// 15 adds doc_links.kind so `sources` citations join the inbound graph without
 // feeding the link-only retired-still-linked signal (#641). doc_links joins the
 // drop list below: CREATE IF NOT EXISTS would keep the kind-less table.
-const SCHEMA_VERSION = "14";
+const SCHEMA_VERSION = "15";
 
 // Meta key that records the dim at which `embeddings_vec` was created. Used
 // on every open to decide whether to rebuild the virtual table (provider
@@ -201,6 +203,12 @@ CREATE TABLE IF NOT EXISTS doc_links (
   PRIMARY KEY (source_path, target_path, kind)
 );
 CREATE INDEX IF NOT EXISTS idx_doc_links_target ON doc_links(target_path);
+CREATE TABLE IF NOT EXISTS doc_amends (
+  amending_path TEXT NOT NULL,
+  amended_path  TEXT NOT NULL,
+  PRIMARY KEY (amending_path, amended_path)
+);
+CREATE INDEX IF NOT EXISTS idx_doc_amends_amended ON doc_amends(amended_path);
 CREATE TABLE IF NOT EXISTS staged_actions (
   id                  TEXT PRIMARY KEY,
   action_type         TEXT NOT NULL,
@@ -560,7 +568,7 @@ export function openIndexDb(vaultRoot: string, expectedVecDim: number): Result<I
 // only the orphaned ones, preserving the cache across reindexes.
 export function clearIndex(db: IndexDb): void {
   db.exec(
-    "DELETE FROM document_fields; DELETE FROM documents; DELETE FROM chunks; DELETE FROM doc_links;",
+    "DELETE FROM document_fields; DELETE FROM documents; DELETE FROM chunks; DELETE FROM doc_links; DELETE FROM doc_amends;",
   );
 }
 
@@ -575,6 +583,9 @@ export function deleteDocument(db: IndexDb, path: string): void {
   // (their sources still link here on disk); inboundLinkers joins documents
   // on source_path, so a deleted source can never surface as a linker.
   db.prepare("DELETE FROM doc_links WHERE source_path = ?").run(path);
+  // Same for declared amendments: rows die with the amending doc, and rows
+  // pointing AT a deleted doc are lint's dangling case, not a query hazard.
+  db.prepare("DELETE FROM doc_amends WHERE amending_path = ?").run(path);
 }
 
 export function replaceDocumentFields(
@@ -647,6 +658,46 @@ export function inboundLinkers(
         ORDER BY d.path, l.kind`,
     )
     .all(targetPath) as { path: string; status: string; kind: DocEdgeKind }[];
+}
+
+// --- declared amendments (#643) ---------------------------------------------
+//
+// doc_amends inverts `amends` frontmatter so "what amends this document?" is
+// one indexed query. Kept apart from doc_links on purpose: inboundLinkers feeds
+// the orphan check, and an amendment is not a citation. Derived and
+// rebuildable, like doc_links.
+
+// Replaces the rows for one amending document. Targets are stored canonical,
+// so an aliased declaration joins its target's indexed path (#127/#128 class).
+export function replaceDocAmends(db: IndexDb, amendingPath: string, targets: string[]): void {
+  db.prepare("DELETE FROM doc_amends WHERE amending_path = ?").run(amendingPath);
+  const insert = db.prepare(
+    "INSERT OR IGNORE INTO doc_amends (amending_path, amended_path) VALUES (?, ?)",
+  );
+  for (const raw of targets) {
+    const target = canonicalRel(raw);
+    if (target.length === 0 || target === amendingPath) continue;
+    insert.run(amendingPath, target);
+  }
+}
+
+// The documents declaring that they amend `amendedPath`, without their bodies:
+// this runs per search hit, and the RBAC filter has to see every amender before
+// the caller can cap the list. Joined to `documents` so an amender deleted after
+// its rows were written can never surface.
+export function amendersOf(
+  db: IndexDb,
+  amendedPath: string,
+): { path: string; title: string; status: string; collection: string }[] {
+  return db
+    .prepare(
+      `SELECT d.path, d.title, d.status, d.collection
+         FROM doc_amends AS a
+         JOIN documents AS d ON d.path = a.amending_path
+        WHERE a.amended_path = ?
+        ORDER BY d.path`,
+    )
+    .all(amendedPath) as { path: string; title: string; status: string; collection: string }[];
 }
 
 // Every indexed document path — the known-path universe outgoing-link
@@ -979,6 +1030,21 @@ export function supersessionPredecessors(db: IndexDb, path: string): IndexedDocu
 export function getAllDocuments(db: IndexDb): IndexedDocument[] {
   const rows = db.prepare("SELECT * FROM documents ORDER BY path").all() as DocumentRow[];
   return rows.map(rowToDocument);
+}
+
+export type SupersessionNode = Pick<
+  IndexedDocument,
+  "path" | "collection" | "status" | "updated" | "supersededBy"
+>;
+
+// The whole supersede graph, without loading or parsing any document's content.
+export function getSupersessionGraph(db: IndexDb): SupersessionNode[] {
+  return db
+    .prepare(
+      `SELECT path, collection, status, updated, superseded_by AS supersededBy
+         FROM documents ORDER BY path`,
+    )
+    .all() as SupersessionNode[];
 }
 
 // Documents whose `created` date falls within [start, end] inclusive, ordered

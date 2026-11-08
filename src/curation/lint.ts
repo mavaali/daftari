@@ -9,6 +9,7 @@
 
 import { ok, type Result } from "../frontmatter/types.js";
 import { DISTILL_NUMERIC_DEFAULTS, loadConfig } from "../utils/config.js";
+import { canonicalRel } from "../utils/paths.js";
 import {
   type CompiledEdgeCoverageSummary,
   compiledEdgeCoverageSummary,
@@ -74,6 +75,7 @@ export const LINT_CHECKS = [
   "verbatimQuoteOverrun",
   "unverifiableSourceRefs",
   "supersedeChains",
+  "danglingAmends",
 ] as const;
 export type LintCheckName = (typeof LINT_CHECKS)[number];
 
@@ -307,6 +309,23 @@ function orphanDetail(mentionedBy: Set<string> | undefined): string {
   );
 }
 
+// #643: `amends` entries that surface on nothing. Declared on the later doc, so
+// a mistyped target never shows up on the document it meant to reach.
+function danglingAmends(docs: LoadedDoc[]): LintFinding[] {
+  const paths = new Set(docs.map((d) => d.path));
+  const findings: LintFinding[] = [];
+  for (const doc of docs) {
+    const broken = (doc.frontmatter.amends ?? []).filter((raw) => {
+      const target = canonicalRel(raw);
+      return target === doc.path || !paths.has(target);
+    });
+    if (broken.length > 0) {
+      findings.push({ path: doc.path, detail: `unresolvable amends: ${broken.join(", ")}` });
+    }
+  }
+  return findings;
+}
+
 // Runs every lint check across the vault and returns a grouped report.
 export async function runLint(
   vaultRoot: string,
@@ -355,6 +374,7 @@ export async function runLint(
     verbatimQuoteOverrun: [],
     unverifiableSourceRefs: [],
     supersedeChains: [],
+    danglingAmends: [],
   };
 
   // 12. Valid-time conflicts. The ONLY surface that reports a malformed or
@@ -383,6 +403,10 @@ export async function runLint(
   // 15. superseded_by chains that loop, or end on a non-canonical document
   // (#639). Over the caller-visible doc set, like the rest of lint.
   checks.supersedeChains = supersedeChainFindings(docs);
+  // Over the caller-visible set too, so a hidden target reads as absent.
+  // Deliberately not a tier-0 check: amends is advisory, and tier-0 findings
+  // gate ratification.
+  checks.danglingAmends = danglingAmends(docs);
   // runLint historically remains useful against partially configured vaults;
   // server startup is the surface that rejects malformed config. Authorized
   // repo verification treats an unavailable root as unconfigured. Distill

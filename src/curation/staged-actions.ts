@@ -42,14 +42,16 @@ import { addTension } from "./tension.js";
 
 // The action verbs the queue understands. Each dispatches to a write tool on
 // ratify (§11.4 completed the set): promote → vault_promote, deprecate →
-// vault_deprecate, supersede → vault_supersede, confidence-up →
-// vault_set_confidence, merge → vault_merge. `write` (#235) carries full
+// vault_deprecate, supersede → vault_supersede, unsupersede →
+// vault_unsupersede, confidence-up → vault_set_confidence, merge →
+// vault_merge. `write` (#235) carries full
 // content — proposed_diff = { frontmatter, body } — and dispatches to
 // vault_write; unlike the lifecycle verbs its target may be a new document.
 export const STAGED_ACTION_TYPES = [
   "promote",
   "deprecate",
   "supersede",
+  "unsupersede",
   "merge",
   "confidence-up",
   "write",

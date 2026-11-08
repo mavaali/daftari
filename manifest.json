@@ -101,6 +101,10 @@
       "description": "Compute settled vs contested belief over a depth-bounded topic graph seeded at `seed`."
     },
     {
+      "name": "vault_chains",
+      "description": "List the end of every supersede chain: per chain, the current entry with its status and date, and the entries it replaced."
+    },
+    {
       "name": "vault_witness",
       "description": "Per-principal track records aggregated from the vault's own ledgers (provenance log, tension log, staged actions), priced by the wager schedule: writing a claim at a confidence level stakes points (low 0 / medium 1 / high 3, provisional); a claim later corrected or retired burns the stake; a claim maintained through a full TTL cycle earns credit."
     },
@@ -121,8 +125,16 @@
       "description": "Surface thematic clusters across the vault using k-means over CHUNK embeddings, with per-document theme distributions."
     },
     {
+      "name": "vault_question_candidates",
+      "description": "For each open question (a questions_raised entry whose exact text is in no document's questions_answered), list the documents touched since it was raised whose title or questions_answered read closest in meaning."
+    },
+    {
       "name": "vault_write",
       "description": "Create a new vault document or overwrite an existing one."
+    },
+    {
+      "name": "vault_patch",
+      "description": "Change named frontmatter fields and exact-match body spans in an existing document without resending it."
     },
     {
       "name": "vault_append",
@@ -147,6 +159,10 @@
     {
       "name": "vault_supersede",
       "description": "Mark a document superseded by a named successor."
+    },
+    {
+      "name": "vault_unsupersede",
+      "description": "Reverse a supersession: clear superseded_by and return a superseded document to draft, logged as its own provenance action."
     },
     {
       "name": "vault_merge",
