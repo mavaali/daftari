@@ -80,6 +80,12 @@ export interface BuiltinFrontmatter {
   title: string;
   domain: Domain;
   collection: string;
+  // Scoped addressing (2026-11-08 spec): a stable "<level>::<value>" scope
+  // plus a slug key. Both or neither; together they derive the document's
+  // path (src/frontmatter/scope.ts). Optional so hand-built Frontmatter
+  // literals stay valid; absent = an ordinary path-addressed document.
+  scope?: string | null;
+  key?: string | null;
   status: Status;
   confidence: Confidence;
   created: string; // YYYY-MM-DD
@@ -159,6 +165,8 @@ export const BUILTIN_FRONTMATTER_FIELDS = [
   "title",
   "domain",
   "collection",
+  "scope",
+  "key",
   "status",
   "confidence",
   "created",

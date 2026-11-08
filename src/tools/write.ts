@@ -9,6 +9,7 @@
 // Git is the version-control layer: the auto-commit *is* the document history.
 // The provenance log is a separate advisory audit trail.
 
+import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
 import matter from "gray-matter";
@@ -54,6 +55,7 @@ import {
 } from "../distill/reader-fingerprint.js";
 import { type ParsedDocument, parseDocument } from "../frontmatter/parser.js";
 import { validateFrontmatter } from "../frontmatter/schema.js";
+import { deriveScopedPath, SCOPES_COLLECTION, scopedPathMismatch } from "../frontmatter/scope.js";
 import { parseSourceRef } from "../frontmatter/source-ref.js";
 import {
   CONFIDENCES,
@@ -277,6 +279,10 @@ export function serializeDocument(
     title: fm.title,
     domain: fm.domain,
     collection: fm.collection,
+    // Emitted only when set (the series convention) so unscoped documents
+    // stay byte-stable.
+    ...(fm.scope != null ? { scope: fm.scope } : {}),
+    ...(fm.key != null ? { key: fm.key } : {}),
     status: fm.status,
     confidence: fm.confidence,
     created: fm.created,
@@ -504,6 +510,10 @@ async function performWrite(params: {
   autoCommit: boolean;
   gitDir?: string;
   baseVersion?: string;
+  // Scoped writes (D4): with no baseVersion, refuse if the file exists by the
+  // time the lock is held — closes the create-vs-create race the caller's
+  // pre-lock existence check cannot.
+  requireBaseVersionIfExists?: boolean;
   shadowMode?: boolean;
   // The authenticated identity the server runs as (access.user), when an
   // AccessContext is present (§11.6). Recorded on provenance and shadow
@@ -597,6 +607,8 @@ async function performWrite(params: {
             ...(params.runId ? { runId: params.runId } : {}),
           });
         }
+      } else if (params.requireBaseVersionIfExists && existsSync(params.absPath)) {
+        return err(scopedBaseVersionRequired(params.tool, params.relPath));
       }
 
       // Cross-vault leak gate (U3): the write-time refusal. Runs AFTER the
@@ -1201,6 +1213,46 @@ const SUPERSEDE_HINT =
   "superseded_by edge instead of erasing lineage. Advisory only — this write " +
   "has already landed.";
 
+// Scoped addressing (2026-11-08 spec): vault_write names its target by
+// exactly one of `path`, or `scope` + `key` — from which the server derives the
+// path itself (src/frontmatter/scope.ts). Pure argument parsing; no disk I/O,
+// so a bad address is refused before RBAC or any read.
+interface WriteAddress {
+  path: string;
+  scoped: { scope: string; key: string } | null;
+}
+
+function readWriteAddress(
+  args: Record<string, unknown>,
+  tool: string,
+  allowScoped: boolean,
+): Result<WriteAddress, Error> {
+  const hasScope = args.scope !== undefined && args.scope !== null;
+  const hasKey = args.key !== undefined && args.key !== null;
+  if (!allowScoped || (!hasScope && !hasKey)) {
+    const path = requireString(args, "path", tool);
+    return path.ok ? ok({ path: path.value, scoped: null }) : path;
+  }
+  if (args.path !== undefined && args.path !== null) {
+    return err(new Error(`${tool}: pass exactly one of 'path' or 'scope' + 'key', not both`));
+  }
+  if (!hasScope) return err(new Error(`${tool}: 'key' requires 'scope'`));
+  if (!hasKey) return err(new Error(`${tool}: 'scope' requires 'key'`));
+  const derived = deriveScopedPath(args.scope, args.key);
+  if (!derived.ok) return err(new Error(`${tool}: ${derived.error.message}`));
+  return ok({
+    path: derived.value,
+    scoped: { scope: args.scope as string, key: args.key as string },
+  });
+}
+
+function scopedBaseVersionRequired(tool: string, relPath: string): Error {
+  return new Error(
+    `${tool}: scoped note ${relPath} already exists — 'base_version' is required to ` +
+      `update it. Call vault_read on ${relPath} and pass its 'version' as base_version.`,
+  );
+}
+
 export async function vaultWrite(
   vaultRoot: string,
   args: Record<string, unknown>,
@@ -1232,8 +1284,10 @@ async function writeDocument(
   const tool = patch ? "vault_patch" : "vault_write";
   const ready = requireIndexReady();
   if (!ready.ok) return ready;
-  const path = requireString(args, "path", tool);
-  if (!path.ok) return path;
+  const address = readWriteAddress(args, tool, !patch);
+  if (!address.ok) return address;
+  const path = { value: address.value.path };
+  const scoped = address.value.scoped;
   const agent = requireString(args, "agent", tool);
   if (!agent.ok) return agent;
   const baseVersion = readBaseVersion(args, tool);
@@ -1248,6 +1302,16 @@ async function writeDocument(
     return err(new Error(`${tool} requires a 'frontmatter' object argument`));
   }
   const rawFrontmatter = args.frontmatter as Record<string, unknown>;
+  // A scoped write states its own address in frontmatter, and its collection
+  // defaults to `scopes` (D6). A caller-declared different collection is left
+  // in place so the placement check below refuses it loudly.
+  if (scoped) {
+    rawFrontmatter.scope = scoped.scope;
+    rawFrontmatter.key = scoped.key;
+    if (rawFrontmatter.collection === undefined || rawFrontmatter.collection === null) {
+      rawFrontmatter.collection = SCOPES_COLLECTION;
+    }
+  }
 
   // RBAC is checked before any file I/O or frontmatter validation: an
   // unauthorized caller is denied without learning anything about the target.
@@ -1405,6 +1469,24 @@ async function writeDocument(
   }
   const isUpdate = oldFrontmatter !== null;
   const hookOperation: HookOperation = isUpdate ? "update" : "create";
+
+  if (scoped && oldRaw !== null) {
+    // Path sanitization is many-to-one (`a@b` and `a-b` share a file), and a
+    // case-insensitive filesystem folds case: the file at the derived path must
+    // already hold THIS address, or the write would silently take it over.
+    if (oldRaw.scope !== scoped.scope || oldRaw.key !== scoped.key) {
+      return err(
+        new Error(
+          `${tool}: ${resolved.value.relPath} already holds scope ` +
+            `${JSON.stringify(oldRaw.scope ?? null)} + key ${JSON.stringify(oldRaw.key ?? null)}; ` +
+            `scope ${JSON.stringify(scoped.scope)} + key ${JSON.stringify(scoped.key)} ` +
+            `derives to the same path — choose a distinct scope or key`,
+        ),
+      );
+    }
+    // D4: updating an existing scoped note requires base_version.
+    if (!baseVersion.value) return err(scopedBaseVersionRequired(tool, resolved.value.relPath));
+  }
 
   if (isUpdate && oldFrontmatter) {
     const guard = checkTierGuard({
@@ -1655,6 +1737,12 @@ async function writeDocument(
     return err(new Error(`invalid frontmatter: ${summary}`));
   }
 
+  // D3: scope/key <-> path is a bijection by construction. Checked on the
+  // final merged/transformed frontmatter, for path- and scope-addressed writes
+  // alike, so neither a hand-picked path nor a hook can break it.
+  const misplaced = scopedPathMismatch(resolved.value.relPath, rawFrontmatter);
+  if (misplaced) return err(new Error(`${tool}: ${misplaced}`));
+
   // R-12/LD-13: no principal rewrites another's positions through the
   // generic write path. Checked after validation so both sides are typed
   // Position[] (raw YAML dates already normalized). Operator servers
@@ -1723,6 +1811,7 @@ async function writeDocument(
     autoCommit: config.value.autoCommit,
     gitDir: config.value.gitDir,
     baseVersion: baseVersion.value,
+    ...(scoped ? { requireBaseVersionIfExists: true } : {}),
     shadowMode: config.value.shadowMode,
     principal: access?.user,
     ...(runId.value !== undefined ? { runId: runId.value } : {}),
@@ -3824,14 +3913,37 @@ export const writeTools: ToolDefinition[] = [
       "when the write records a changed fact, vault_supersede preserves the " +
       "prior version and its lineage instead. An accumulation-domain write " +
       "that cites or links generative-domain docs returns advisory " +
-      "domain_warnings naming them; the write still lands." +
+      "domain_warnings naming them; the write still lands. " +
+      "Address the target with exactly one of 'path', or 'scope' + 'key' " +
+      "(scoped addressing): the server derives the path " +
+      "scopes/<level>/<value>/<key>.md, sets scope/key in frontmatter, and " +
+      "defaults collection to 'scopes', so every writer naming the same " +
+      "address updates the same note. Creating a scoped note needs no " +
+      "base_version; updating an existing one requires base_version (the " +
+      "'version' from vault_read), and a stale one is rejected. Roles need " +
+      "'scopes' in their write list." +
       shadowNote,
     inputSchema: {
       type: "object",
       properties: {
         path: {
           type: "string",
-          description: "Vault-relative path of the markdown file to write",
+          description:
+            "Vault-relative path of the markdown file to write. Omit when " +
+            "addressing by scope + key.",
+        },
+        scope: {
+          type: "string",
+          description:
+            "Scoped address, '<level>::<value>' (e.g. 'repo::github.com/acme/checkout'). " +
+            "Level matches ^[a-z][a-z0-9-]*$; value is non-empty with no whitespace. " +
+            "Requires 'key'; mutually exclusive with 'path'.",
+        },
+        key: {
+          type: "string",
+          description:
+            "Slug naming the note within its scope (^[a-z0-9][a-z0-9._-]{0,127}$, " +
+            "e.g. 'tests-need-local-postgres'). Requires 'scope'.",
         },
         body: { type: "string", description: "Markdown body (no frontmatter)" },
         frontmatter: frontmatterProperty,
@@ -3845,7 +3957,7 @@ export const writeTools: ToolDefinition[] = [
             "propose-only role's write is staged for ratification.",
         },
       },
-      required: ["path", "body", "frontmatter", "agent"],
+      required: ["body", "frontmatter", "agent"],
       additionalProperties: false,
     },
     outputSchema: writeResultSchema({

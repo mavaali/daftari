@@ -8,6 +8,7 @@
 
 import type { SchemaExtension } from "../utils/config.js";
 import { normalizeIsoDate } from "../utils/dates.js";
+import { scopeKeyIssues } from "./scope.js";
 import {
   CONFIDENCES,
   type Confidence,
@@ -395,10 +396,21 @@ export function validateFrontmatter(
     };
   };
 
+  // Scoped addressing: type-check each, then the both-or-neither and format
+  // rules. A malformed scope/key flags (blocking writes), like any built-in.
+  const scope = optionalString("scope");
+  const key = optionalString("key");
+  if (!issues.some((i) => i.field === "scope" || i.field === "key")) {
+    issues.push(...scopeKeyIssues(data));
+  }
+
   const frontmatter: Frontmatter = {
     title: requireString("title"),
     domain: requireEnum<Domain>("domain", DOMAINS, "accumulation"),
     collection: requireString("collection"),
+    // Present only when set, so unscoped documents' typed shape is unchanged.
+    ...(scope != null ? { scope } : {}),
+    ...(key != null ? { key } : {}),
     status: requireEnum<Status>("status", STATUSES, "draft"),
     confidence: requireEnum<Confidence>("confidence", CONFIDENCES, "low"),
     created: requireDate("created"),
