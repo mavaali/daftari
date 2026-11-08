@@ -53,8 +53,10 @@ const SLASH_DATE_RE = /\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/g;
 
 // Trailing boundary is a lookahead rather than \b: \b fails right after a
 // non-word char like "%" (e.g. "3.5%." — \b can't sit between "%" and "."),
-// which would silently drop the "%" from the match.
-const NUMBER_RE = /\b\d[\d,]*(?:\.\d+)?%?(?:st|nd|rd|th)?(?![0-9A-Za-z])/g;
+// which would silently drop the "%" from the match. Commas count only as
+// internal separators (followed by a digit), so the sentence comma in "50, not
+// final" stays out of the cited value.
+const NUMBER_RE = /\b\d+(?:,\d+)*(?:\.\d+)?%?(?:st|nd|rd|th)?(?![0-9A-Za-z])/g;
 
 // Replace a matched span with same-length spaces so later passes over the
 // same working string neither re-match it nor shift subsequent indices.
@@ -116,16 +118,29 @@ function containsAlnumBounded(source: string, value: string): boolean {
   return re.test(source);
 }
 
+// Numbers additionally must be a whole numeric token: a "." or "," joining the
+// match to another digit means it is a fragment of a larger literal. Without
+// this a cited "5" would pass against "3.5", and "50" against "1,050".
+function containsWholeNumber(source: string, value: string): boolean {
+  const re = new RegExp(
+    `(?<![0-9A-Za-z])(?<!\\d[.,])${escapeRegExp(value)}(?![0-9A-Za-z])(?![.,]\\d)`,
+  );
+  return re.test(source);
+}
+
 /**
  * Deterministically assert that every number/date/quote cited in `statement`
  * exists verbatim in `sourceText`. Numbers and dates use an alnum-boundary
- * check (so "50" is not "verified" by a source containing "150"); quotes use
- * a plain verbatim substring check.
+ * check (so "50" is not "verified" by a source containing "150"), and a
+ * number must also be a whole numeric token (not "5" inside "3.5"); quotes
+ * use a plain verbatim substring check.
  */
 export function checkCitationIntegrity(statement: string, sourceText: string): CitationCheckResult {
   const citations = extractCitations(statement);
-  const violations = citations.filter((c) =>
-    c.type === "quote" ? !sourceText.includes(c.value) : !containsAlnumBounded(sourceText, c.value),
-  );
+  const violations = citations.filter((c) => {
+    if (c.type === "quote") return !sourceText.includes(c.value);
+    if (c.type === "number") return !containsWholeNumber(sourceText, c.value);
+    return !containsAlnumBounded(sourceText, c.value);
+  });
   return { ok: violations.length === 0, citations, violations };
 }

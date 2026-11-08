@@ -106,6 +106,37 @@ describe("checkCitationIntegrity", () => {
     expect(result.violations).toEqual([{ type: "quote", value: "we should ship on Friday" }]);
   });
 
+  it("keeps a trailing sentence comma out of a cited number", () => {
+    const result = checkCitationIntegrity(
+      "The estimate is 50, not final.",
+      "The estimate is 50 hours.",
+    );
+    expect(result.citations).toEqual([{ type: "number", value: "50" }]);
+    expect(result.ok).toBe(true);
+  });
+
+  it("still extracts a comma-grouped number whole", () => {
+    expect(extractCitations("It cost 1,050 dollars.")).toEqual([
+      { type: "number", value: "1,050" },
+    ]);
+  });
+
+  it("does not verify a cited number that is only a fragment of a larger decimal or grouped number", () => {
+    expect(checkCitationIntegrity("The rate is 5.", "The rate is 3.5.").violations).toEqual([
+      { type: "number", value: "5" },
+    ]);
+    expect(checkCitationIntegrity("The rate is 3.", "The rate is 3.5.").violations).toEqual([
+      { type: "number", value: "3" },
+    ]);
+    expect(
+      checkCitationIntegrity("The cost is 50 dollars.", "The cost is 1,050 dollars.").violations,
+    ).toEqual([{ type: "number", value: "50" }]);
+  });
+
+  it("verifies a number at the end of a source sentence", () => {
+    expect(checkCitationIntegrity("We need 40 seats.", "Headcount is 40. Done.").ok).toBe(true);
+  });
+
   it("passes with empty citations when the statement cites nothing verifiable", () => {
     const result = checkCitationIntegrity("The team agreed to use Postgres.", "irrelevant source");
     expect(result.ok).toBe(true);
