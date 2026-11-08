@@ -137,6 +137,33 @@ describe("checkCitationIntegrity", () => {
     expect(checkCitationIntegrity("We need 40 seats.", "Headcount is 40. Done.").ok).toBe(true);
   });
 
+  it("keeps the sign of a negative number in both directions", () => {
+    expect(checkCitationIntegrity("Balance is -50.", "Balance is 50.").violations).toEqual([
+      { type: "number", value: "-50" },
+    ]);
+    expect(checkCitationIntegrity("Balance is 50.", "Balance is -50.").violations).toEqual([
+      { type: "number", value: "50" },
+    ]);
+    expect(checkCitationIntegrity("Balance is -50.", "Balance is -50.").ok).toBe(true);
+  });
+
+  it("treats a hyphenated range as two unsigned numbers", () => {
+    const result = checkCitationIntegrity("Seats 10-20 are free.", "Seats 10-20 are free.");
+    expect(result.citations).toEqual([
+      { type: "number", value: "10" },
+      { type: "number", value: "20" },
+    ]);
+    expect(result.ok).toBe(true);
+  });
+
+  it("checks spans in typographic double quotes", () => {
+    const result = checkCitationIntegrity(
+      "Alice said \u201cship it Friday\u201d.",
+      "Alice: ship it Monday",
+    );
+    expect(result.violations).toEqual([{ type: "quote", value: "ship it Friday" }]);
+  });
+
   it("passes with empty citations when the statement cites nothing verifiable", () => {
     const result = checkCitationIntegrity("The team agreed to use Postgres.", "irrelevant source");
     expect(result.ok).toBe(true);

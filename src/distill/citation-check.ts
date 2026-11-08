@@ -39,7 +39,8 @@ export interface CitationCheckResult {
 // Extraction
 // ---------------------------------------------------------------------------
 
-const QUOTE_RE = /"([^"]+)"/g;
+// ASCII or typographic double quotes; the span is in group 1 or group 2.
+const QUOTE_RE = /"([^"]+)"|\u201c([^\u201d]+)\u201d/g;
 
 const MONTH_NAMES =
   "January|February|March|April|May|June|July|August|September|October|November|December|" +
@@ -55,8 +56,11 @@ const SLASH_DATE_RE = /\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/g;
 // non-word char like "%" (e.g. "3.5%." — \b can't sit between "%" and "."),
 // which would silently drop the "%" from the match. Commas count only as
 // internal separators (followed by a digit), so the sentence comma in "50, not
-// final" stays out of the cited value.
-const NUMBER_RE = /\b\d+(?:,\d+)*(?:\.\d+)?%?(?:st|nd|rd|th)?(?![0-9A-Za-z])/g;
+// final" stays out of the cited value. A leading "-" is kept as a sign only
+// when it is not joined to a preceding word or number, so "-50" is cited as
+// "-50" but the range "10-20" yields "10" and "20".
+const NUMBER_RE =
+  /(?:(?<![0-9A-Za-z])-)?\b\d+(?:,\d+)*(?:\.\d+)?%?(?:st|nd|rd|th)?(?![0-9A-Za-z])/g;
 
 // Replace a matched span with same-length spaces so later passes over the
 // same working string neither re-match it nor shift subsequent indices.
@@ -70,16 +74,15 @@ function extractAndMask(
   type: CitationType,
   citations: Citation[],
 ): string {
-  let m: RegExpExecArray | null;
-  re.lastIndex = 0;
-  // biome-ignore lint/suspicious/noAssignInExpressions: standard exec-loop idiom
-  while ((m = re.exec(working)) !== null) {
-    const value = type === "quote" ? m[1] : m[0];
-    citations.push({ type, value });
-    working = mask(working, m.index, m.index + m[0].length);
-    re.lastIndex = m.index + m[0].length;
+  // Match the whole pass against the unmasked string, then mask: masking
+  // mid-pass would turn the "10" of "10-20" into spaces and make the "-" of
+  // "-20" look like a sign to the lookbehind.
+  let masked = working;
+  for (const m of working.matchAll(re)) {
+    citations.push({ type, value: type === "quote" ? (m[1] ?? m[2]) : m[0] });
+    masked = mask(masked, m.index, m.index + m[0].length);
   }
-  return working;
+  return masked;
 }
 
 /**
@@ -120,10 +123,11 @@ function containsAlnumBounded(source: string, value: string): boolean {
 
 // Numbers additionally must be a whole numeric token: a "." or "," joining the
 // match to another digit means it is a fragment of a larger literal. Without
-// this a cited "5" would pass against "3.5", and "50" against "1,050".
+// this a cited "5" would pass against "3.5", and "50" against "1,050". An
+// unsigned value must also not carry a sign in the source ("50" vs "-50").
 function containsWholeNumber(source: string, value: string): boolean {
   const re = new RegExp(
-    `(?<![0-9A-Za-z])(?<!\\d[.,])${escapeRegExp(value)}(?![0-9A-Za-z])(?![.,]\\d)`,
+    `(?<![0-9A-Za-z])(?<!\\d[.,])(?<!(?:^|[^0-9A-Za-z])-)${escapeRegExp(value)}(?![0-9A-Za-z])(?![.,]\\d)`,
   );
   return re.test(source);
 }
