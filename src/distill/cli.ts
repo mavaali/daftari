@@ -26,7 +26,7 @@ import { extractClaims, resolveMaxClaims } from "./extract.js";
 import { ADAPTER_REGISTRY, DISTILL_NOT_CONFIGURED_MSG, resolveDistillClient } from "./index.js";
 import { makeOverlapHinter } from "./propose.js";
 import { appendDistillReceipt } from "./receipt-store.js";
-import { distillUpsert, recordLandedClaim } from "./state.js";
+import { distillUpsert, pendingChunkRetry, recordLandedClaim } from "./state.js";
 
 // ---------------------------------------------------------------------------
 // CLI front door — U7
@@ -561,13 +561,25 @@ export async function runDistill(argv: string[]): Promise<number> {
   const budgetedClient = withCallBudget(clientRes.value.client, config.maxLlmCalls);
 
   const runId = makeRunId();
+  const scope = senderFlag !== undefined ? `sender:${senderFlag}` : undefined;
+
+  // kphd: an unchanged source whose last run left failed chunks re-extracts
+  // only those chunks (anchors are content-derived, so they match).
+  const retryAnchors = new Set(pendingChunkRetry(vaultRoot, { sourceId, sourceContent, scope }));
+  const extractChunks =
+    retryAnchors.size > 0 ? chunks.filter((c) => retryAnchors.has(c.anchor)) : chunks;
+  if (retryAnchors.size > 0) {
+    process.stderr.write(
+      `daftari distill: re-extracting ${extractChunks.length} previously failed chunk(s)\n`,
+    );
+  }
 
   process.stderr.write(
     `daftari distill: extracting claims from ${sourceId} ` +
-      `(${chunks.length} chunks, max ${config.maxLlmCalls} LLM calls)...\n`,
+      `(${extractChunks.length} chunks, max ${config.maxLlmCalls} LLM calls)...\n`,
   );
 
-  const outcome = await extractClaims(chunks, budgetedClient, {
+  const outcome = await extractClaims(extractChunks, budgetedClient, {
     model: config.model,
     maxClaims: runConfig.maxClaims,
     inCallInputCap: config.inCallInputCap,
@@ -584,8 +596,15 @@ export async function runDistill(argv: string[]): Promise<number> {
   // there is nothing to stage, and calling distillUpsert would record this
   // source as distilled. Persist the receipt (the calls were still spent) and
   // fail loudly instead of printing a "complete" summary with claims: 0.
+  // A retry is exempt: the source's hash is already recorded from a partial
+  // run, so a retry that fails again is still a partial run (exit 0) and its
+  // chunks stay pending.
   const attemptedChunks = outcome.llmCalls - (outcome.budget_exhausted ? 1 : 0);
-  if (attemptedChunks > 0 && outcome.chunkErrors.length === attemptedChunks) {
+  if (
+    retryAnchors.size === 0 &&
+    attemptedChunks > 0 &&
+    outcome.chunkErrors.length === attemptedChunks
+  ) {
     const failedReceipt = buildReceipt({
       outcome,
       config: runConfig,
@@ -621,7 +640,8 @@ export async function runDistill(argv: string[]): Promise<number> {
     runId,
     overlapSearch: hinter,
     extractionErrors: outcome.chunkErrors.length,
-    ...(senderFlag !== undefined ? { scope: `sender:${senderFlag}` } : {}),
+    failedChunkAnchors: outcome.chunkErrors.map((ce) => ce.anchor),
+    ...(scope !== undefined ? { scope } : {}),
   });
 
   if (!upsertRes.ok) {
@@ -685,6 +705,13 @@ export async function runDistill(argv: string[]): Promise<number> {
       `daftari distill: source ${sourceId} is unchanged since its last recorded distill — ` +
         `${outcome.claims.length} extracted claim(s) were not staged. To re-stage, remove ` +
         `sources["${sourceId}"] from .daftari/distill-state.json and re-run.\n`,
+    );
+  }
+
+  const pendingRetry = upsert.pendingRetryAnchors ?? [];
+  if (pendingRetry.length > 0) {
+    process.stderr.write(
+      `daftari distill: ${pendingRetry.length} chunk(s) pending retry on the next run\n`,
     );
   }
 
