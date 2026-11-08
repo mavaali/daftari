@@ -140,6 +140,49 @@ describe("distill --propose — partial chunk failure is retried next run (bead 
     expect(stagedCount()).toBe(2);
   });
 
+  it("a retry cut short by the call budget keeps the chunks it never reached", async () => {
+    // 61 messages ⇒ three chunks; chunk 2 holds "Point number 30.", chunk 3 "Point number 60.".
+    const three = Array.from({ length: 61 }, (_, i) => {
+      const h = 9 + Math.floor(i / 60);
+      const m = String(i % 60).padStart(2, "0");
+      return `[1/2/26, ${h}:${m}:00 AM] Alice: Point number ${i}.`;
+    }).join("\n");
+    writeFileSync(source, three);
+    fake.completeJson = async (opts) => {
+      prompts.push(opts.user);
+      if (!opts.user.includes("Point number 0.")) {
+        return err({ kind: "llm", message: "unparseable JSON", retryable: false });
+      }
+      return ok({
+        text: "{}",
+        parsed: { claims: [{ statement: "Alice listed points." }] },
+        input_tokens: 1,
+        output_tokens: 1,
+        stop_reason: "end_turn",
+      });
+    };
+    expect(await runDistill(["--vault", vault, "--propose", source])).toBe(0);
+    expect(readDistillState(vault).sources.chat?.failed_chunk_anchors).toHaveLength(2);
+
+    // Retry with room for one call: chunk 2 succeeds, chunk 3 is never reached.
+    reset();
+    client(false);
+    expect(await runDistill(["--vault", vault, "--propose", "--max-llm-calls", "1", source])).toBe(
+      0,
+    );
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain(CHUNK2_MARKER);
+    expect(readDistillState(vault).sources.chat?.failed_chunk_anchors).toHaveLength(1);
+    expect(errOut.join("")).toMatch(/1 chunk\(s\) pending retry on the next run/);
+
+    // Next run picks up the unreached chunk only.
+    reset();
+    expect(await runDistill(["--vault", vault, "--propose", source])).toBe(0);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain("Point number 60.");
+    expect(readDistillState(vault).sources.chat?.failed_chunk_anchors).toBeUndefined();
+  });
+
   it("a retry whose chunk fails again keeps it pending and still exits 0", async () => {
     client(true);
     expect(await runDistill(["--vault", vault, "--propose", source])).toBe(0);

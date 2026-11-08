@@ -640,7 +640,14 @@ export async function runDistill(argv: string[]): Promise<number> {
     runId,
     overlapSearch: hinter,
     extractionErrors: outcome.chunkErrors.length,
-    failedChunkAnchors: outcome.chunkErrors.map((ce) => ce.anchor),
+    failedChunkAnchors: [
+      ...outcome.chunkErrors.map((ce) => ce.anchor),
+      // A retry cut short (call budget, claim cap) keeps the pending chunks it
+      // never reached; extraction walks chunks in order, so they are the tail.
+      ...(retryAnchors.size > 0
+        ? extractChunks.slice(Math.max(attemptedChunks, 0)).map((c) => c.anchor)
+        : []),
+    ],
     ...(scope !== undefined ? { scope } : {}),
   });
 
