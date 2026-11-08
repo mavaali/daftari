@@ -121,13 +121,17 @@ is complete, and a confidence level has been explicitly set — and unless the
 loop's role has `promote: true`. A refusal is informative: it tells you exactly
 what is missing. Fix that, then re-promote.
 
-### 2e. `orphanFiles` — no inbound links
+### 2e. `orphanFiles` — no inbound links or `sources` citations
 
-A document no other document links to is disconnected knowledge. For each
-orphan:
+A document no other document links to or cites in `sources` is disconnected
+knowledge. A backticked path doesn't count; the finding lists documents that
+name the orphan that way, which are the first places to look. `orphanSummary`
+counts what is left: `nothingRefers` is the documents with no reference of any
+kind. For each orphan:
 
 - **Still relevant?** Link it in. Add a wikilink to it from a related hub
-  document (`vault_append` a "See also" line, or weave the link into prose).
+  document (`vault_append` a "See also" line, or weave the link into prose), or
+  list it in the `sources` of a document built from it.
   `vault_search_related` against the orphan's path finds good homes for the
   link.
 - **No longer relevant?** Retire it — `vault_deprecate` it, or `vault_write` it
@@ -135,7 +139,7 @@ orphan:
   live knowledge.
 
 > v1 does not track per-document read counts, so orphan triage is driven purely
-> by the inbound-link graph. "Nobody links to it" is the available signal.
+> by the inbound graph. "Nothing links to or cites it" is the available signal.
 
 ### 2f. `unansweredQuestions` — open questions nothing answers
 
