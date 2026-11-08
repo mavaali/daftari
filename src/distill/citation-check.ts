@@ -124,10 +124,12 @@ function containsAlnumBounded(source: string, value: string): boolean {
 // Numbers additionally must be a whole numeric token: a "." or "," joining the
 // match to another digit means it is a fragment of a larger literal. Without
 // this a cited "5" would pass against "3.5", and "50" against "1,050". An
-// unsigned value must also not carry a sign in the source ("50" vs "-50").
+// unsigned value must also not carry a sign in the source ("50" vs "-50"),
+// and a bare value must not match a percentage ("50" vs "50%").
 function containsWholeNumber(source: string, value: string): boolean {
+  const notPercent = value.endsWith("%") ? "" : "(?!%)";
   const re = new RegExp(
-    `(?<![0-9A-Za-z])(?<!\\d[.,])(?<!(?:^|[^0-9A-Za-z])-)${escapeRegExp(value)}(?![0-9A-Za-z])(?![.,]\\d)`,
+    `(?<![0-9A-Za-z])(?<!\\d[.,])(?<!(?:^|[^0-9A-Za-z])-)${escapeRegExp(value)}(?![0-9A-Za-z])(?![.,]\\d)${notPercent}`,
   );
   return re.test(source);
 }

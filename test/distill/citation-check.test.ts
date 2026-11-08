@@ -133,6 +133,13 @@ describe("checkCitationIntegrity", () => {
     ).toEqual([{ type: "number", value: "50" }]);
   });
 
+  it("does not verify a bare number against a percentage in the source", () => {
+    expect(checkCitationIntegrity("Growth was 50.", "Growth was 50%.").violations).toEqual([
+      { type: "number", value: "50" },
+    ]);
+    expect(checkCitationIntegrity("Growth was 50%.", "Growth was 50%.").ok).toBe(true);
+  });
+
   it("verifies a number at the end of a source sentence", () => {
     expect(checkCitationIntegrity("We need 40 seats.", "Headcount is 40. Done.").ok).toBe(true);
   });
