@@ -275,7 +275,7 @@ describe("index-db", () => {
     expect(getMeta(db, "vault_manifest")).toBeNull();
   });
 
-  it("schema 13 → 14 rebuild: an index built by #646 is dropped so doc_amends gets populated", () => {
+  it("schema 13 rebuild: an index built by #646 is dropped so doc_amends gets populated", () => {
     // #646 and #643 both bumped to "13". An index stamped "13" by the #646 build
     // must still rebuild, or doc_amends stays empty until a manual reindex.
     setMeta(db, "schema_version", "13");
