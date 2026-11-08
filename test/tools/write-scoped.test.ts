@@ -197,6 +197,19 @@ describe("vault_write scoped addressing", () => {
     expect(r.ok, r.ok ? "" : r.error.message).toBe(true);
   });
 
+  it("rejects a path-addressed update of an existing scoped note without base_version", async () => {
+    const c = await vaultWrite(vault, scoped());
+    expect(c.ok, c.ok ? "" : c.error.message).toBe(true);
+    const r = await vaultWrite(vault, {
+      path: PATH,
+      body: "overwrite\n",
+      frontmatter: fm({ collection: "scopes", scope: SCOPE, key: KEY }),
+      agent: AGENT,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.message).toMatch(/base_version/);
+  });
+
   it("refuses a scoped write whose frontmatter names a different collection", async () => {
     const r = await vaultWrite(vault, scoped({ frontmatter: fm({ collection: "pricing" }) }));
     expect(r.ok).toBe(false);

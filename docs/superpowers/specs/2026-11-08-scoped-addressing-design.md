@@ -106,7 +106,7 @@ address. Uniqueness is always enforced by refusal, never by silent merging.
 
 ### D4 — updating an existing scoped note requires `base_version`
 
-When a `scope` + `key` write targets an existing note, it must carry
+When a write targets an existing scoped note, it must carry
 `base_version`. That is the `version` field returned by `vault_read`, the
 SHA-256 of the file. Without it, the write fails with:
 
@@ -124,7 +124,11 @@ The existence check runs twice:
    no file and the first one creates it. Without this check, the second would
    then overwrite it.
 
-Path-addressed writes are unchanged: `base_version` stays optional and the
+The rule applies however the note is addressed: by `scope` + `key`, or by an
+explicit `path` under `scopes/` (every file there is scoped, per D3). Without
+that, an explicit-path write would be a way around the check.
+
+Writes outside `scopes/` are unchanged: `base_version` stays optional and the
 last write wins. The global default does not change.
 
 ### D5 — querying by scope

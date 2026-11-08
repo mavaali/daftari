@@ -1484,8 +1484,13 @@ async function writeDocument(
         ),
       );
     }
-    // D4: updating an existing scoped note requires base_version.
-    if (!baseVersion.value) return err(scopedBaseVersionRequired(tool, resolved.value.relPath));
+  }
+  // D4: updating an existing scoped note requires base_version, however the
+  // write addresses it — scope+key or an explicit path into scopes/ (every
+  // file there is scoped), or the path form would bypass the check.
+  const scopedTarget = scoped !== null || resolved.value.relPath.startsWith("scopes/");
+  if (scopedTarget && oldRaw !== null && !baseVersion.value) {
+    return err(scopedBaseVersionRequired(tool, resolved.value.relPath));
   }
 
   if (isUpdate && oldFrontmatter) {
@@ -1811,7 +1816,7 @@ async function writeDocument(
     autoCommit: config.value.autoCommit,
     gitDir: config.value.gitDir,
     baseVersion: baseVersion.value,
-    ...(scoped ? { requireBaseVersionIfExists: true } : {}),
+    ...(scopedTarget ? { requireBaseVersionIfExists: true } : {}),
     shadowMode: config.value.shadowMode,
     principal: access?.user,
     ...(runId.value !== undefined ? { runId: runId.value } : {}),
