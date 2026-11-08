@@ -46,6 +46,7 @@ import {
   type CompiledFieldFilter,
   matchingFieldFilterPaths,
   parseFieldFilters,
+  parseScopeFilters,
 } from "../search/field-filters.js";
 import {
   applyGraphExpansion,
@@ -629,6 +630,11 @@ export async function vaultSearch(
   const scope = resolveVaultScope(args.vaults, registry, "vault_search");
   if (!scope.ok) return scope;
   const { includeLocal, mounts } = scope.value;
+  // Built-in scoped-addressing filters (2026-11-08 spec, D5): validated before
+  // any index opens, then ANDed onto every selected vault's predicates. Scope
+  // is always indexed, so no per-vault declaration check applies.
+  const scopeFilters = parseScopeFilters(args, "vault_search");
+  if (!scopeFilters.ok) return scopeFilters;
 
   // Each selected vault interprets the raw predicates against its own
   // declarations. Validate the entire federation scope before opening or
@@ -675,13 +681,18 @@ export async function vaultSearch(
         }
       }
     }
-    mountFilters.set(mount.alias, parsed.value);
+    mountFilters.set(mount.alias, [...parsed.value, ...scopeFilters.value]);
   }
+  localFilters = [...localFilters, ...scopeFilters.value];
   const filterCount = includeLocal
     ? localFilters.length
     : (mountFilters.values().next().value?.length ?? 0);
   if (query.length === 0 && filterCount === 0) {
-    return err(new Error("vault_search requires a non-empty 'query' or 'filters' argument"));
+    return err(
+      new Error(
+        "vault_search requires a non-empty 'query' or a 'filters', 'scope', or 'scope_prefix' argument",
+      ),
+    );
   }
 
   let localResult: HybridSearchResult | null = null;
@@ -1606,7 +1617,22 @@ export const searchTools: ToolDefinition[] = [
       properties: {
         query: {
           type: "string",
-          description: "Free-text search query. Optional when filters is non-empty.",
+          description:
+            "Free-text search query. Optional when filters, scope, or scope_prefix is given.",
+        },
+        scope: {
+          type: "string",
+          description:
+            "Scoped addressing: only documents whose frontmatter scope equals this exactly " +
+            "(e.g. 'repo::github.com/acme/checkout'). Always indexed; no config needed. " +
+            "May be used without query.",
+        },
+        scope_prefix: {
+          type: "string",
+          description:
+            "Only documents whose scope starts with this string (plain prefix, no wildcards), " +
+            "e.g. 'repo::github.com/acme/' for everything under that org. ANDs with scope " +
+            "and filters. May be used without query.",
         },
         filters: {
           type: "array",

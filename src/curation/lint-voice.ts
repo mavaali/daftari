@@ -44,6 +44,7 @@ const LEDGER_CLAUSE: Record<LintCheckName, string> = {
   unverifiableSourceRefs: "cites evidence the ledger cannot presently verify",
   supersedeChains: "follows a line of succession that never reaches a current entry",
   danglingAmends: "claims to amend what cannot be found",
+  scopedPathMismatch: "is filed under an address it does not claim",
 };
 
 // "1 matter" / "3 matters" — a small deterministic pluralizer for the copy.

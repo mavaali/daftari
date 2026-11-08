@@ -96,6 +96,7 @@ const SUGGESTED_ACTIONS: Record<LintCheckName, string> = {
     "Restore or correct repository evidence, or re-present a discarded distill source",
   supersedeChains: "Point the superseded_by chain at a canonical current entry",
   danglingAmends: "Fix or remove the unresolvable amends[] reference(s)",
+  scopedPathMismatch: "Move the note to the path its scope/key derive to, or fix scope/key",
 };
 
 // ---------------------------------------------------------------------------

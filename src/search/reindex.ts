@@ -68,6 +68,7 @@ import {
 import { normalizeIsoDate } from "../utils/dates.js";
 import { sha256Hex } from "../utils/hash.js";
 import { tokenize } from "./bm25.js";
+import { BUILTIN_INDEXED_FIELDS } from "./field-filters.js";
 import { chunkText, embed, getProvider } from "./vector.js";
 
 // Opens the index DB with the active embedding provider's dim, so the
@@ -411,7 +412,11 @@ async function stageOne(
   // repair path; vault_write rejects the same frontmatter at the write boundary.
   const validated = validateFrontmatter(parsed.value.raw, config.schemaExtensions);
   const invalidFields = new Set(validated.report.issues.map((issue) => issue.field));
-  const projection = projectIndexedFields(parsed.value.raw, config.indexedFields, invalidFields);
+  const projection = projectIndexedFields(
+    parsed.value.raw,
+    [...BUILTIN_INDEXED_FIELDS, ...config.indexedFields],
+    invalidFields,
+  );
   const issues = [...validated.report.issues, ...projection.extraIssues];
   let invalidReason: string | null = null;
   if (issues.length > 0) {

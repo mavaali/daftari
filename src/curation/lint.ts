@@ -7,6 +7,7 @@
 // triage. The three tier-0 checks (#232, tier0.ts) are certain rather than
 // advisory judgments, but the posture is the same: report only.
 
+import { scopedPathMismatch } from "../frontmatter/scope.js";
 import { ok, type Result } from "../frontmatter/types.js";
 import { DISTILL_NUMERIC_DEFAULTS, loadConfig } from "../utils/config.js";
 import { canonicalRel } from "../utils/paths.js";
@@ -82,6 +83,7 @@ export const LINT_CHECKS = [
   "unverifiableSourceRefs",
   "supersedeChains",
   "danglingAmends",
+  "scopedPathMismatch",
 ] as const;
 export type LintCheckName = (typeof LINT_CHECKS)[number];
 
@@ -286,6 +288,17 @@ function danglingAmends(docs: LoadedDoc[]): LintFinding[] {
   return findings;
 }
 
+// Docs whose scope/key do not derive to their path (or that sit unscoped
+// under scopes/). Read off `raw` so the check sees exactly what the file says.
+function scopedPathMismatches(docs: LoadedDoc[]): LintFinding[] {
+  const findings: LintFinding[] = [];
+  for (const doc of docs) {
+    const detail = scopedPathMismatch(doc.path, doc.raw ?? doc.frontmatter);
+    if (detail) findings.push({ path: doc.path, detail });
+  }
+  return findings;
+}
+
 // Runs every lint check across the vault and returns a grouped report.
 export async function runLint(
   vaultRoot: string,
@@ -335,6 +348,7 @@ export async function runLint(
     unverifiableSourceRefs: [],
     supersedeChains: [],
     danglingAmends: [],
+    scopedPathMismatch: [],
   };
 
   // 12. Valid-time conflicts. The ONLY surface that reports a malformed or
@@ -367,6 +381,9 @@ export async function runLint(
   // Deliberately not a tier-0 check: amends is advisory, and tier-0 findings
   // gate ratification.
   checks.danglingAmends = danglingAmends(docs);
+  // Scoped addressing (2026-11-08 spec, D3): the write path refuses a scoped
+  // note off its derived path, so a finding here means a hand edit or rename.
+  checks.scopedPathMismatch = scopedPathMismatches(docs);
   // runLint historically remains useful against partially configured vaults;
   // server startup is the surface that rejects malformed config. Authorized
   // repo verification treats an unavailable root as unconfigured. Distill

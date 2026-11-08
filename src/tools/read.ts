@@ -759,6 +759,10 @@ export interface VaultIndexFilters {
   // When set, keep only documents that have (true) or do not have (false)
   // open questions in `questions_raised`.
   hasUnanswered?: boolean;
+  // Scoped addressing (2026-11-08 spec, D5): exact scope, and a plain string
+  // prefix over scope. Documents without a scope never match either.
+  scope?: string;
+  scopePrefix?: string;
 }
 
 export interface VaultIndexEntry {
@@ -776,6 +780,9 @@ export interface VaultIndexEntry {
   questionsAnswered: string[];
   questionsRaised: string[];
   valid: boolean;
+  // Scoped addressing: present only on scoped notes.
+  scope?: string;
+  key?: string;
 }
 
 export interface VaultIndexResult {
@@ -837,6 +844,8 @@ function toIndexEntry(doc: ScannedDoc): VaultIndexEntry {
     questionsAnswered: fm.questions_answered,
     questionsRaised: fm.questions_raised,
     valid: doc.valid,
+    ...(fm.scope != null ? { scope: fm.scope } : {}),
+    ...(fm.key != null ? { key: fm.key } : {}),
   };
 }
 
@@ -850,6 +859,10 @@ function matchesIndexFilters(doc: ScannedDoc, filters: VaultIndexFilters): boole
   }
   if (filters.hasUnanswered !== undefined) {
     if (fm.questions_raised.length > 0 !== filters.hasUnanswered) return false;
+  }
+  if (filters.scope !== undefined && fm.scope !== filters.scope) return false;
+  if (filters.scopePrefix !== undefined && !(fm.scope ?? "").startsWith(filters.scopePrefix)) {
+    return false;
   }
   return true;
 }
@@ -1293,6 +1306,8 @@ const INDEX_ENTRY_SCHEMA: Record<string, unknown> = {
     questionsAnswered: { type: "array", items: { type: "string" } },
     questionsRaised: { type: "array", items: { type: "string" } },
     valid: { type: "boolean", description: "Whether the document's frontmatter validates" },
+    scope: { type: "string", description: "Scoped address, present only on scoped notes" },
+    key: { type: "string", description: "Scoped key, present only on scoped notes" },
   },
   required: [
     "path",
@@ -1645,7 +1660,8 @@ export const readTools: ToolDefinition[] = [
     description:
       "List vault documents with their metadata, including each document's " +
       "questions_answered / questions_raised. Optionally filter by collection, " +
-      "status, domain, tags (conjunctive), or has_unanswered.",
+      "status, domain, tags (conjunctive), has_unanswered, or scoped address " +
+      "(scope exact, scope_prefix string prefix).",
     inputSchema: {
       type: "object",
       properties: {
@@ -1670,6 +1686,18 @@ export const readTools: ToolDefinition[] = [
           description:
             "true: only documents with open questions in questions_raised; " +
             "false: only documents with none",
+        },
+        scope: {
+          type: "string",
+          description:
+            "Only scoped notes whose scope equals this exactly " +
+            "(e.g. 'repo::github.com/acme/checkout')",
+        },
+        scope_prefix: {
+          type: "string",
+          description:
+            "Only scoped notes whose scope starts with this string (plain prefix), " +
+            "e.g. 'repo::github.com/acme/' for everything under that org",
         },
         // Named `mount`, not `vault`: the multi-vault router package reserves
         // a `vault` input property on every routed tool for its own dispatch.
@@ -1701,6 +1729,8 @@ export const readTools: ToolDefinition[] = [
         domain: asString(args.domain),
         tags: asStringArray(args.tags),
         hasUnanswered: typeof args.has_unanswered === "boolean" ? args.has_unanswered : undefined,
+        scope: asString(args.scope),
+        scopePrefix: asString(args.scope_prefix),
       };
       if (args.mount !== undefined && args.mount !== "local") {
         if (typeof args.mount !== "string") {

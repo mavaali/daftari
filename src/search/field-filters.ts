@@ -9,7 +9,16 @@ import { normalizeIsoDate } from "../utils/dates.js";
 
 export const MAX_FIELD_FILTERS = 16;
 
-export type FieldFilterOperator = "eq" | "gt" | "gte" | "lt" | "lte";
+// `prefix` is internal: only the built-in scope_prefix argument produces it.
+// The public `filters` grammar (OPERATORS below) never accepts it.
+export type FieldFilterOperator = "eq" | "gt" | "gte" | "lt" | "lte" | "prefix";
+
+// Built-in fields projected into document_fields for every vault, with no
+// indexed_fields config (2026-11-08 scoped-addressing spec, D5). Built-ins
+// cannot be redeclared as schema extensions, so no name can collide.
+export const BUILTIN_INDEXED_FIELDS: IndexedFieldDeclaration[] = [
+  { field: "scope", type: "string" },
+];
 
 export interface CompiledFieldFilter {
   field: string;
@@ -24,6 +33,33 @@ export interface FieldFilterSql {
 }
 
 const OPERATORS: readonly FieldFilterOperator[] = ["eq", "gt", "gte", "lt", "lte"];
+
+// Compiles the built-in `scope` (exact) and `scope_prefix` (string prefix)
+// arguments shared by vault_search into typed filters over the always-indexed
+// scope field. Each is optional; both together AND.
+export function parseScopeFilters(
+  args: Record<string, unknown>,
+  tool: string,
+): Result<CompiledFieldFilter[], Error> {
+  const out: CompiledFieldFilter[] = [];
+  for (const [arg, op] of [
+    ["scope", "eq"],
+    ["scope_prefix", "prefix"],
+  ] as const) {
+    const v = args[arg];
+    if (v === undefined || v === null) continue;
+    if (typeof v !== "string" || v.length === 0) {
+      return err(new Error(`${tool} '${arg}' must be a non-empty string`));
+    }
+    if (Buffer.byteLength(v, "utf8") > MAX_INDEXED_FIELD_TEXT_BYTES) {
+      return err(
+        new Error(`${tool} '${arg}' must be at most ${MAX_INDEXED_FIELD_TEXT_BYTES} UTF-8 bytes`),
+      );
+    }
+    out.push({ field: "scope", type: "string", op, value: v });
+  }
+  return ok(out);
+}
 const RANGE_OPERATORS: readonly FieldFilterOperator[] = ["gt", "gte", "lt", "lte"];
 
 function filterError(message: string): Result<CompiledFieldFilter[], Error> {
@@ -113,13 +149,28 @@ export function parseFieldFilters(
   return ok(filters);
 }
 
-const SQL_OPERATOR: Record<FieldFilterOperator, string> = {
+const SQL_OPERATOR: Record<Exclude<FieldFilterOperator, "prefix">, string> = {
   eq: "=",
   gt: ">",
   gte: ">=",
   lt: "<",
   lte: "<=",
 };
+
+// One typed comparison against `<alias>.<column>`, with its bound params.
+// `prefix` compares a leading substring rather than using LIKE/GLOB, so no
+// character in the caller's value is a wildcard.
+function comparison(
+  alias: string,
+  column: string,
+  op: FieldFilterOperator,
+  value: string | number,
+): { sql: string; params: Array<string | number> } {
+  if (op === "prefix") {
+    return { sql: `substr(${alias}.${column}, 1, length(?)) = ?`, params: [value, value] };
+  }
+  return { sql: `${alias}.${column} ${SQL_OPERATOR[op]} ?`, params: [value] };
+}
 
 export function compileFieldFilterSql(
   filters: CompiledFieldFilter[],
@@ -148,11 +199,12 @@ function compileCorrelatedFilters(
   const clauses = filters.map((filter, index) => {
     const alias = `df${index + aliasOffset}`;
     const { column, value } = filterStorage(filter);
-    params.push(filter.field, filter.type, value);
+    const cmp = comparison(alias, column, filter.op, value);
+    params.push(filter.field, filter.type, ...cmp.params);
     return (
       `EXISTS (SELECT 1 FROM document_fields AS ${alias} ` +
       `WHERE ${alias}.path = ${pathExpression} AND ${alias}.field = ? ` +
-      `AND ${alias}.kind = ? AND ${alias}.${column} ${SQL_OPERATOR[filter.op]} ?)`
+      `AND ${alias}.kind = ? AND ${cmp.sql})`
     );
   });
   return { sql: clauses.join(" AND "), params };
@@ -162,14 +214,15 @@ export function compileFieldFilterCandidateSql(filters: CompiledFieldFilter[]): 
   const [first, ...rest] = filters;
   if (!first) return { sql: "SELECT NULL AS path WHERE 0", params: [] };
   const { column, value } = filterStorage(first);
+  const cmp = comparison("df0", column, first.op, value);
   const trailing = compileCorrelatedFilters(rest, "df0.path", 1);
   const trailingSql = trailing.sql.length > 0 ? ` AND ${trailing.sql}` : "";
   return {
     sql:
       `SELECT df0.path AS path FROM document_fields AS df0 ` +
       `WHERE df0.field = ? AND df0.kind = ? ` +
-      `AND df0.${column} ${SQL_OPERATOR[first.op]} ?${trailingSql}`,
-    params: [first.field, first.type, value, ...trailing.params],
+      `AND ${cmp.sql}${trailingSql}`,
+    params: [first.field, first.type, ...cmp.params, ...trailing.params],
   };
 }
 

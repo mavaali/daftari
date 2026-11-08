@@ -270,7 +270,7 @@ describe("index-db", () => {
     expect(documentCount(db)).toBe(0);
     expect(embeddingCount(db)).toBe(1);
     expect(db.prepare("SELECT COUNT(*) AS n FROM document_fields").get()).toEqual({ n: 0 });
-    expect(getMeta(db, "schema_version")).toBe("14");
+    expect(getMeta(db, "schema_version")).toBe("15");
     expect(getMeta(db, "vault_manifest")).toBeNull();
   });
 
@@ -287,7 +287,7 @@ describe("index-db", () => {
     db = reopened.value;
 
     expect(documentCount(db)).toBe(0);
-    expect(getMeta(db, "schema_version")).toBe("14");
+    expect(getMeta(db, "schema_version")).toBe("15");
     expect(getMeta(db, "vault_manifest")).toBeNull();
   });
 
@@ -310,7 +310,7 @@ describe("index-db", () => {
     db = reopened.value;
 
     expect(documentCount(db)).toBe(0);
-    expect(getMeta(db, "schema_version")).toBe("14");
+    expect(getMeta(db, "schema_version")).toBe("15");
     // The fresh index includes the document-fields projection in addition to
     // the document/chunk/cache/meta tables and both virtual search tables.
     const tables = db

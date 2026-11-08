@@ -76,7 +76,9 @@ export type IndexDb = Database.Database;
 // indexed schema-extension values (#512).
 // 13 rebuilds rows whose `collection` was a root file's own name (#646).
 // 14 adds doc_amends, the materialized inverse of `amends` frontmatter (#643).
-const SCHEMA_VERSION = "14";
+// 15 projects the built-in `scope` field into document_fields for every vault
+// (scoped addressing, 2026-11-08 spec) so existing indexes rebuild with it.
+const SCHEMA_VERSION = "15";
 
 // Meta key that records the dim at which `embeddings_vec` was created. Used
 // on every open to decide whether to rebuild the virtual table (provider
