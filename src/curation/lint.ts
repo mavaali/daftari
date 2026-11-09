@@ -28,7 +28,7 @@ import {
 import { readProvenanceLog } from "./provenance.js";
 import { type ReviewThroughputSummary, reviewThroughputSummary } from "./review-throughput.js";
 import { listShadowActions, type ShadowLintSummary, shadowLintSummaryOf } from "./shadow.js";
-import { unverifiableSourceFindings } from "./source-refs.js";
+import { backtickedVaultPaths, outgoingEdges, unverifiableSourceFindings } from "./source-refs.js";
 import {
   listStagedActions,
   pendingLintItems,
@@ -53,13 +53,7 @@ import { buildReverseLinkMap, buildReverseSourceMap, computeBlast } from "./tens
 import { computeTensionClusters } from "./tension-clusters.js";
 import { tier0Findings } from "./tier0.js";
 import { validityConflicts } from "./validity.js";
-import {
-  buildPathIndexes,
-  extractLinks,
-  type LoadedDoc,
-  loadDocuments,
-  resolveLink,
-} from "./vault-docs.js";
+import { buildPathIndexes, type LoadedDoc, loadDocuments } from "./vault-docs.js";
 
 export const LINT_CHECKS = [
   "staleFiles",
@@ -179,6 +173,14 @@ export interface TensionHealth {
   blastRadiusOfStaleTensions: number;
 }
 
+export interface OrphanSummary {
+  // No wikilink or markdown link points here: orphanFiles before `sources`
+  // counted, so one run shows what the citations are worth.
+  noInboundLink: number;
+  // Orphaned and not named by a backticked path either.
+  nothingRefers: number;
+}
+
 export interface LintReport {
   generatedAt: string;
   checks: Record<LintCheckName, LintFinding[]>;
@@ -200,6 +202,9 @@ export interface LintReport {
   // #420: coverage of mechanically observed compiled dependencies, separate
   // from freshness. Computed over the same visibility-scoped docs as checks.
   compiledEdgeCoverage: CompiledEdgeCoverageSummary;
+  // #641: the two ends of what checks.orphanFiles sits between. Over the same
+  // visibility-scoped docs as checks.
+  orphanSummary: OrphanSummary;
   // #235's headline measurement (quick win 2 of #236): proposal arrival rate
   // vs. review throughput over the staged-actions log. Vault-global counts by
   // design, like tensionHealth — no paths or principals cross here.
@@ -253,20 +258,55 @@ function normalizeQuestion(q: string): string {
 
 // --- check orchestration --------------------------------------------------
 
-// Maps each document to the set of documents that link to it.
-function buildInboundMap(docs: LoadedDoc[]): Map<string, Set<string>> {
-  const { byPath, byBasename } = buildPathIndexes(docs);
-
-  const inbound = new Map<string, Set<string>>();
+// Maps each document to the documents that refer to it: `cited` through any
+// edge kind, `linked` through body links only (see outgoingEdges). `mentioned`
+// holds backticked paths, which are never edges.
+function buildInboundMaps(docs: LoadedDoc[]): {
+  linked: Map<string, Set<string>>;
+  cited: Map<string, Set<string>>;
+  mentioned: Map<string, Set<string>>;
+} {
+  const indexes = buildPathIndexes(docs);
+  const linked = new Map<string, Set<string>>();
+  const cited = new Map<string, Set<string>>();
+  const mentioned = new Map<string, Set<string>>();
+  const add = (map: Map<string, Set<string>>, target: string, from: string) => {
+    if (!map.has(target)) map.set(target, new Set());
+    (map.get(target) as Set<string>).add(from);
+  };
   for (const d of docs) {
-    for (const raw of extractLinks(d.content)) {
-      const target = resolveLink(raw, d.path, byPath, byBasename);
-      if (!target || target === d.path) continue;
-      if (!inbound.has(target)) inbound.set(target, new Set());
-      (inbound.get(target) as Set<string>).add(d.path);
+    for (const { target, kind } of outgoingEdges(
+      d.content,
+      d.frontmatter.sources,
+      d.path,
+      indexes,
+    )) {
+      add(cited, target, d.path);
+      if (kind === "link") add(linked, target, d.path);
+    }
+    for (const target of backtickedVaultPaths(d.content, indexes.byPath)) {
+      if (target !== d.path) add(mentioned, target, d.path);
     }
   }
-  return inbound;
+  return { linked, cited, mentioned };
+}
+
+// How many backticked mentions an orphan finding names before summarizing.
+const ORPHAN_MENTIONS_SHOWN = 3;
+
+// #641: a backticked path is not an edge, but an orphan that other documents
+// name that way is probably missing a reference, so the finding says so. Lint
+// reports; converting the mention stays the curator's call.
+function orphanDetail(mentionedBy: Set<string> | undefined): string {
+  const base = "no inbound links or sources citations from any vault document";
+  if (!mentionedBy) return base;
+  const sorted = [...mentionedBy].sort();
+  const shown = sorted.slice(0, ORPHAN_MENTIONS_SHOWN).join(", ");
+  const rest = sorted.length - ORPHAN_MENTIONS_SHOWN;
+  return (
+    `${base}; named by backticked path in ${shown}${rest > 0 ? ` (+${rest} more)` : ""}, ` +
+    "which is not an edge: add a wikilink or a sources entry there"
+  );
 }
 
 // #643: `amends` entries that surface on nothing. Declared on the later doc, so
@@ -302,7 +342,7 @@ export async function runLint(
   const draftMaxDays = opts.draftMaxDays ?? DRAFT_MAX_DAYS;
   const lowConfidenceMaxDays = opts.lowConfidenceMaxDays ?? LOW_CONFIDENCE_MAX_DAYS;
   const maxVerbatimChars = opts.maxVerbatimChars ?? DISTILL_NUMERIC_DEFAULTS.maxVerbatimChars;
-  const inbound = buildInboundMap(docs);
+  const { linked, cited, mentioned } = buildInboundMaps(docs);
   const byPath = new Map(docs.map((d) => [d.path, d]));
 
   // The set of every question answered anywhere in the vault, normalized. A
@@ -417,11 +457,11 @@ export async function runLint(
       });
     }
 
-    // 2. Orphan: no other document links to it.
-    if (!inbound.has(doc.path)) {
+    // 2. Orphan: no other document links to it or cites it in `sources`.
+    if (!cited.has(doc.path)) {
       checks.orphanFiles.push({
         path: doc.path,
-        detail: "no inbound links from any vault document",
+        detail: orphanDetail(mentioned.get(doc.path)),
       });
     }
 
@@ -451,7 +491,7 @@ export async function runLint(
 
     // 5. Retired (deprecated or superseded) but still linked from a canonical document.
     if (fm.status === "deprecated" || fm.status === "superseded") {
-      const linkers = [...(inbound.get(doc.path) ?? [])].filter(
+      const linkers = [...(linked.get(doc.path) ?? [])].filter(
         (from) => byPath.get(from)?.frontmatter.status === "canonical",
       );
       if (linkers.length > 0) {
@@ -709,6 +749,10 @@ export async function runLint(
       docs.map((doc) => doc.path),
       consumesRes.value,
     ),
+    orphanSummary: {
+      noInboundLink: docs.filter((d) => !linked.has(d.path)).length,
+      nothingRefers: checks.orphanFiles.filter((f) => !mentioned.has(f.path)).length,
+    },
     reviewThroughput: reviewThroughputSummary(stagedRes.value, now),
   });
 }
