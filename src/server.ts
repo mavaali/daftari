@@ -24,11 +24,13 @@ import { docUri, listResources, readResource, resourceTemplates } from "./resour
 import { backlinksTools } from "./tools/backlinks.js";
 import { boardTools } from "./tools/board.js";
 import { canonTools } from "./tools/canon.js";
+import { chainsTools } from "./tools/chains.js";
 import { consumesTools } from "./tools/consumes.js";
 import { curationTools } from "./tools/curation.js";
 import { edgeStalenessTools } from "./tools/edge-staleness.js";
 import { edgeTools } from "./tools/edges.js";
 import { positionsTools } from "./tools/positions.js";
+import { questionCandidatesTools } from "./tools/question-candidates.js";
 import { readTools, type ToolDefinition } from "./tools/read.js";
 import { receiptTools } from "./tools/receipt.js";
 import { searchTools } from "./tools/search.js";
@@ -51,9 +53,11 @@ const allTools: ToolDefinition[] = [
   ...readTools,
   ...receiptTools,
   ...canonTools,
+  ...chainsTools,
   ...witnessTools,
   ...searchTools,
   ...themesTools,
+  ...questionCandidatesTools,
   ...writeTools,
   ...positionsTools,
   ...curationTools,
@@ -100,10 +104,12 @@ export const CORE_TOOLS: readonly string[] = [
 
 export const STANDARD_TOOLS: readonly string[] = [
   ...CORE_TOOLS,
+  "vault_patch",
   "vault_append",
   "vault_promote",
   "vault_deprecate",
   "vault_supersede",
+  "vault_unsupersede",
   "vault_merge",
   "vault_set_confidence",
   "vault_set_tier",

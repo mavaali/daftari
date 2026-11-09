@@ -9,7 +9,7 @@
 // stubbed; the search index is real.
 
 import { describe, it, expect } from "vitest";
-import { stat, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm as realRm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ok } from "../../../dist/frontmatter/types.js";
@@ -24,6 +24,7 @@ import {
   isUnderTmpdir,
   resolveAnswererClient,
   projectedConsolidateCalls,
+  rmVaultWithRetry,
 } from "./adapter.js";
 import { parseConfig } from "./config.js";
 
@@ -172,6 +173,83 @@ describe("teardown without setup", () => {
   it("is a safe no-op (nothing to remove)", async () => {
     const adapter = await createDaftariAdapter({ answererModel: "stub" });
     await expect(adapter.teardown()).resolves.toBeUndefined();
+  });
+});
+
+// --- teardown wiring (bead gw2n, iteration 2) ---
+//
+// Pins that the REAL teardown() call path routes its rm through the bounded
+// retry helper, not just that the helper works in isolation. If teardown's
+// call-site is reverted to a bare `rm(...)`, the injected deps.rm is never
+// called (fakeRm call count 0) and the ENOTEMPTY is never absorbed, so this
+// test goes RED. That is the point: iteration 1 (PR #573) only tested the
+// helper with an injected rmFn, and reverting the call-site left it green.
+function fsError(code: string, message: string): NodeJS.ErrnoException {
+  const e = new Error(message) as NodeJS.ErrnoException;
+  e.code = code;
+  return e;
+}
+
+describe("teardown routes through the bounded rm retry (wiring)", () => {
+  it("absorbs a transient ENOTEMPTY from the real teardown() and removes the vault", async () => {
+    let calls = 0;
+    const fakeRm: typeof realRm = async (path, opts) => {
+      calls += 1;
+      if (calls === 1) {
+        throw fsError("ENOTEMPTY", `ENOTEMPTY: directory not empty, rmdir '${path}/.git/objects/pack'`);
+      }
+      return realRm(path, opts);
+    };
+    const adapter = await createDaftariAdapter(
+      { answererModel: "stub", compile: "raw" },
+      { llm: stubLlm, rm: fakeRm },
+    );
+    const vaultRoot = await adapter.setup();
+    await writeFile(join(vaultRoot, "marker.md"), "x", "utf8");
+
+    await expect(adapter.teardown()).resolves.toBeUndefined();
+    expect(calls).toBeGreaterThanOrEqual(2);
+    await expect(stat(vaultRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+});
+
+describe("rmVaultWithRetry (helper)", () => {
+  it("retries a transient EPERM like ENOTEMPTY and then succeeds", async () => {
+    let calls = 0;
+    const rmFn = (async () => {
+      calls += 1;
+      if (calls < 3) throw fsError(calls === 1 ? "ENOTEMPTY" : "EPERM", "transient");
+    }) as unknown as typeof realRm;
+    await expect(rmVaultWithRetry("/tmp/rb-x", { retryDelayMs: 1 }, rmFn)).resolves.toBeUndefined();
+    expect(calls).toBe(3);
+  });
+
+  it("rethrows an unrelated error on the first attempt (non-swallowing)", async () => {
+    let calls = 0;
+    const rmFn = (async () => {
+      calls += 1;
+      throw fsError("EACCES", "EACCES: permission denied");
+    }) as unknown as typeof realRm;
+    await expect(rmVaultWithRetry("/tmp/rb-x", { retryDelayMs: 1 }, rmFn)).rejects.toThrow(/EACCES/);
+    expect(calls).toBe(1);
+  });
+
+  it("gives up after maxAttempts and lists surviving entries", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rb-retry-"));
+    await writeFile(join(dir, "survivor.md"), "x", "utf8");
+    let calls = 0;
+    const rmFn = (async () => {
+      calls += 1;
+      throw fsError("ENOTEMPTY", "ENOTEMPTY: directory not empty");
+    }) as unknown as typeof realRm;
+    try {
+      await expect(
+        rmVaultWithRetry(dir, { maxAttempts: 3, retryDelayMs: 1 }, rmFn),
+      ).rejects.toThrow(/still failing after 3 attempts.*survivor\.md/);
+      expect(calls).toBe(3);
+    } finally {
+      await realRm(dir, { recursive: true, force: true });
+    }
   });
 });
 

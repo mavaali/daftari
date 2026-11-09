@@ -43,6 +43,7 @@ import * as sqliteVec from "sqlite-vec";
 import { indexDirFor } from "../federation/index-location.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { normalizeIsoDate } from "../utils/dates.js";
+import { canonicalRel } from "../utils/paths.js";
 
 export type IndexDb = Database.Database;
 
@@ -74,7 +75,11 @@ export type IndexDb = Database.Database;
 // 12 adds document_fields, the rebuildable typed projection for explicitly
 // indexed schema-extension values (#512).
 // 13 rebuilds rows whose `collection` was a root file's own name (#646).
-const SCHEMA_VERSION = "13";
+// 14 adds doc_amends, the materialized inverse of `amends` frontmatter (#643).
+// 15 adds doc_links.kind so `sources` citations join the inbound graph without
+// feeding the link-only retired-still-linked signal (#641). doc_links joins the
+// drop list below: CREATE IF NOT EXISTS would keep the kind-less table.
+const SCHEMA_VERSION = "15";
 
 // Meta key that records the dim at which `embeddings_vec` was created. Used
 // on every open to decide whether to rebuild the virtual table (provider
@@ -194,9 +199,16 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE TABLE IF NOT EXISTS doc_links (
   source_path TEXT NOT NULL,
   target_path TEXT NOT NULL,
-  PRIMARY KEY (source_path, target_path)
+  kind        TEXT NOT NULL CHECK (kind IN ('link', 'source')),
+  PRIMARY KEY (source_path, target_path, kind)
 );
 CREATE INDEX IF NOT EXISTS idx_doc_links_target ON doc_links(target_path);
+CREATE TABLE IF NOT EXISTS doc_amends (
+  amending_path TEXT NOT NULL,
+  amended_path  TEXT NOT NULL,
+  PRIMARY KEY (amending_path, amended_path)
+);
+CREATE INDEX IF NOT EXISTS idx_doc_amends_amended ON doc_amends(amended_path);
 CREATE TABLE IF NOT EXISTS staged_actions (
   id                  TEXT PRIMARY KEY,
   action_type         TEXT NOT NULL,
@@ -512,6 +524,7 @@ export function openIndexDb(vaultRoot: string, expectedVecDim: number): Result<I
           "DROP TABLE IF EXISTS documents_fts;" +
           "DROP TABLE IF EXISTS embeddings_vec;" +
           "DROP TABLE IF EXISTS document_fields;" +
+          "DROP TABLE IF EXISTS doc_links;" +
           "DROP TABLE IF EXISTS documents;" +
           "DROP TRIGGER IF EXISTS chunks_ai;" +
           "DROP TRIGGER IF EXISTS chunks_ad;" +
@@ -555,7 +568,7 @@ export function openIndexDb(vaultRoot: string, expectedVecDim: number): Result<I
 // only the orphaned ones, preserving the cache across reindexes.
 export function clearIndex(db: IndexDb): void {
   db.exec(
-    "DELETE FROM document_fields; DELETE FROM documents; DELETE FROM chunks; DELETE FROM doc_links;",
+    "DELETE FROM document_fields; DELETE FROM documents; DELETE FROM chunks; DELETE FROM doc_links; DELETE FROM doc_amends;",
   );
 }
 
@@ -570,6 +583,9 @@ export function deleteDocument(db: IndexDb, path: string): void {
   // (their sources still link here on disk); inboundLinkers joins documents
   // on source_path, so a deleted source can never surface as a linker.
   db.prepare("DELETE FROM doc_links WHERE source_path = ?").run(path);
+  // Same for declared amendments: rows die with the amending doc, and rows
+  // pointing AT a deleted doc are lint's dangling case, not a query hazard.
+  db.prepare("DELETE FROM doc_amends WHERE amending_path = ?").run(path);
 }
 
 export function replaceDocumentFields(
@@ -599,41 +615,89 @@ export function replaceDocumentFields(
 
 // --- inbound-link graph (#8) ------------------------------------------------
 //
-// doc_links materializes the body-link graph at (re)index time so the read
-// and search paths can answer "who links here?" with one indexed query
-// instead of loading the whole vault (the exact cost #8 designs out). Rows
-// are derived and rebuildable — same ephemerality contract as everything
-// else in this file.
+// doc_links materializes the inbound-reference graph at (re)index time so the
+// read and search paths can answer "who refers to this?" with one indexed
+// query instead of loading the whole vault (the exact cost #8 designs out).
+// `kind` keeps body links apart from `sources` citations (#641). Rows are
+// derived and rebuildable — same ephemerality contract as everything else in
+// this file.
 
-// Replaces the outgoing link rows for one source document.
-export function replaceDocLinks(db: IndexDb, sourcePath: string, targets: string[]): void {
+export type DocEdgeKind = "link" | "source";
+
+export interface DocEdge {
+  target: string;
+  kind: DocEdgeKind;
+}
+
+// Replaces the outgoing edge rows for one source document.
+export function replaceDocLinks(db: IndexDb, sourcePath: string, edges: DocEdge[]): void {
   db.prepare("DELETE FROM doc_links WHERE source_path = ?").run(sourcePath);
   const insert = db.prepare(
-    "INSERT OR IGNORE INTO doc_links (source_path, target_path) VALUES (?, ?)",
+    "INSERT OR IGNORE INTO doc_links (source_path, target_path, kind) VALUES (?, ?, ?)",
   );
-  for (const t of targets) {
-    if (t === sourcePath) continue; // a self-link is not an inbound edge
-    insert.run(sourcePath, t);
+  for (const { target, kind } of edges) {
+    if (target === sourcePath) continue; // a self-reference is not an inbound edge
+    insert.run(sourcePath, target, kind);
   }
 }
 
-// The documents whose bodies link to `targetPath`, with each linker's
-// lifecycle status (the deprecated-still-linked check needs it). Joined to
-// `documents` so a source deleted after its links were written can never
-// surface as a phantom linker.
+// The documents that link to or cite `targetPath`, with each one's lifecycle
+// status (the deprecated-still-linked check needs it). A document with both
+// kinds of edge yields one row per kind. Joined to `documents` so a source
+// deleted after its links were written can never surface as a phantom linker.
 export function inboundLinkers(
   db: IndexDb,
   targetPath: string,
-): { path: string; status: string }[] {
+): { path: string; status: string; kind: DocEdgeKind }[] {
   return db
     .prepare(
-      `SELECT d.path AS path, d.status AS status
+      `SELECT d.path AS path, d.status AS status, l.kind AS kind
          FROM doc_links AS l
          JOIN documents AS d ON d.path = l.source_path
         WHERE l.target_path = ?
+        ORDER BY d.path, l.kind`,
+    )
+    .all(targetPath) as { path: string; status: string; kind: DocEdgeKind }[];
+}
+
+// --- declared amendments (#643) ---------------------------------------------
+//
+// doc_amends inverts `amends` frontmatter so "what amends this document?" is
+// one indexed query. Kept apart from doc_links on purpose: inboundLinkers feeds
+// the orphan check, and an amendment is not a citation. Derived and
+// rebuildable, like doc_links.
+
+// Replaces the rows for one amending document. Targets are stored canonical,
+// so an aliased declaration joins its target's indexed path (#127/#128 class).
+export function replaceDocAmends(db: IndexDb, amendingPath: string, targets: string[]): void {
+  db.prepare("DELETE FROM doc_amends WHERE amending_path = ?").run(amendingPath);
+  const insert = db.prepare(
+    "INSERT OR IGNORE INTO doc_amends (amending_path, amended_path) VALUES (?, ?)",
+  );
+  for (const raw of targets) {
+    const target = canonicalRel(raw);
+    if (target.length === 0 || target === amendingPath) continue;
+    insert.run(amendingPath, target);
+  }
+}
+
+// The documents declaring that they amend `amendedPath`, without their bodies:
+// this runs per search hit, and the RBAC filter has to see every amender before
+// the caller can cap the list. Joined to `documents` so an amender deleted after
+// its rows were written can never surface.
+export function amendersOf(
+  db: IndexDb,
+  amendedPath: string,
+): { path: string; title: string; status: string; collection: string }[] {
+  return db
+    .prepare(
+      `SELECT d.path, d.title, d.status, d.collection
+         FROM doc_amends AS a
+         JOIN documents AS d ON d.path = a.amending_path
+        WHERE a.amended_path = ?
         ORDER BY d.path`,
     )
-    .all(targetPath) as { path: string; status: string }[];
+    .all(amendedPath) as { path: string; title: string; status: string; collection: string }[];
 }
 
 // Every indexed document path — the known-path universe outgoing-link
@@ -966,6 +1030,21 @@ export function supersessionPredecessors(db: IndexDb, path: string): IndexedDocu
 export function getAllDocuments(db: IndexDb): IndexedDocument[] {
   const rows = db.prepare("SELECT * FROM documents ORDER BY path").all() as DocumentRow[];
   return rows.map(rowToDocument);
+}
+
+export type SupersessionNode = Pick<
+  IndexedDocument,
+  "path" | "collection" | "status" | "updated" | "supersededBy"
+>;
+
+// The whole supersede graph, without loading or parsing any document's content.
+export function getSupersessionGraph(db: IndexDb): SupersessionNode[] {
+  return db
+    .prepare(
+      `SELECT path, collection, status, updated, superseded_by AS supersededBy
+         FROM documents ORDER BY path`,
+    )
+    .all() as SupersessionNode[];
 }
 
 // Documents whose `created` date falls within [start, end] inclusive, ordered

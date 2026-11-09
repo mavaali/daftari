@@ -56,6 +56,13 @@ import {
   TIERS,
   type ValidationReport,
 } from "../frontmatter/types.js";
+import {
+  type AmendedBy,
+  type AmendedByEntry,
+  amendedByCountSchema,
+  amendedByFor,
+  amendedBySchema,
+} from "../search/amended-by.js";
 import { type ContestedTension, contestedFor } from "../search/contested.js";
 import { getProvider } from "../search/vector.js";
 import { countDimMismatches, getMeta, openIndexDb } from "../storage/index-db.js";
@@ -160,6 +167,10 @@ export interface VaultReadResult {
   // the materialized inbound-link graph, computed from the caller's vantage.
   // Null when there is nothing to say (same contract as `decay`).
   structural: StructuralDecay | null;
+  // #643: visible documents declaring they amend this one, the same shape
+  // (and RBAC omission) as search hits' amendedBy. Absent when none.
+  amendedBy?: AmendedByEntry[];
+  amendedByCount?: number;
   // #8: unresolved tensions involving this document, the same shape (and
   // RBAC omission rules) as search hits' contested annotations. Absent when
   // none are visible.
@@ -432,6 +443,7 @@ export async function vaultRead(
   let upstream: UpstreamReadStaleness | null = null;
   let structural: StructuralDecay | null = null;
   let contestedResult: { contested: ContestedTension[]; contestedCount: number } | null = null;
+  let amended: AmendedBy | null = null;
   try {
     // Reader-facing surface: visible edges by omission, hidden pending edges
     // coarsened (#217 — an exact count over unreadable units is a small-cell
@@ -494,6 +506,7 @@ export async function vaultRead(
       access,
     });
     if (db) contestedResult = contestedFor(vaultRoot, db, resolved.value.relPath, access);
+    if (db) amended = amendedByFor(db, resolved.value.relPath, access);
   } finally {
     db?.close();
   }
@@ -649,6 +662,7 @@ export async function vaultRead(
     upstream_staleness: upstream,
     ...(sourceVerifiability.length > 0 ? { source_verifiability: sourceVerifiability } : {}),
     structural,
+    ...(amended ?? {}),
     ...(contestedResult
       ? { contested: contestedResult.contested, contestedCount: contestedResult.contestedCount }
       : {}),
@@ -1165,6 +1179,11 @@ export const FRONTMATTER_SCHEMA: Record<string, unknown> = {
     ttl_days: { type: ["number", "null"] },
     tags: { type: "array", items: { type: "string" } },
     describes: { type: "array", items: { type: "string" } },
+    amends: {
+      type: "array",
+      items: { type: "string" },
+      description: "Vault-relative paths of earlier documents this one amends or fulfils",
+    },
     questions_answered: { type: "array", items: { type: "string" } },
     questions_raised: { type: "array", items: { type: "string" } },
     subjects: { type: "array", items: { type: "string" } },
@@ -1380,7 +1399,7 @@ export const readTools: ToolDefinition[] = [
       "changed since this document was compiled and what tier 1 says about " +
       "the pending change: current / pending-compatible / pending-broken; " +
       "null when there is nothing to report), a structural report (#8 — " +
-      "orphan: nothing you can read links here; retired_still_linked: " +
+      "orphan: nothing you can read links here or cites this in sources; retired_still_linked: " +
       "canonical docs still lean on this retired (deprecated/superseded) one; null when healthy), " +
       "any unresolved tensions involving the document (contested, same " +
       "shape as search hits), a contested_positions block when principals " +
@@ -1488,7 +1507,7 @@ export const readTools: ToolDefinition[] = [
           properties: {
             orphan: {
               type: "boolean",
-              description: "No document the caller can read links here",
+              description: "No document the caller can read links here or cites this in sources",
             },
             retired_still_linked: {
               type: ["object", "null"],
@@ -1501,6 +1520,9 @@ export const readTools: ToolDefinition[] = [
           },
           required: ["orphan", "retired_still_linked", "banner"],
         },
+        // Absent (both fields) when no visible document amends this one.
+        amendedBy: amendedBySchema,
+        amendedByCount: amendedByCountSchema,
         // Absent (both fields) when no visible unresolved tension touches the
         // document. `contested` is capped; `contestedCount` is the true total.
         contested: {
