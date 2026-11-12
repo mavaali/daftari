@@ -127,6 +127,25 @@ describe("writeTranscript", () => {
     expect(existsSync(join(vault, r.value.relPath))).toBe(true);
   });
 
+  it("refuses a transcript the vault ignores, writing and committing nothing", async () => {
+    execSync("git init -q", { cwd: vault });
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    writeFileSync(
+      join(vault, ".daftari", "config.yaml"),
+      "version: 1\nignore:\n  - interviews\n",
+      "utf-8",
+    );
+
+    const r = await writeTranscript(vault, [{ question: question(), answer: "X stands." }], META);
+
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toBe(
+      `interviews/${TODAY}-interview.md is excluded by the vault's 'ignore' config`,
+    );
+    expect(existsSync(join(vault, "interviews"))).toBe(false);
+  });
+
   it("refuses an empty interview", async () => {
     const r = await writeTranscript(vault, [], META);
     expect(r.ok).toBe(false);

@@ -24,7 +24,8 @@ import matter from "gray-matter";
 import { parseDocument } from "../frontmatter/parser.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { resolveVaultPath } from "../storage/local.js";
-import { loadConfig } from "../utils/config.js";
+import { refuseIgnoredPath } from "../tools/write.js";
+import { type DaftariConfig, loadConfig } from "../utils/config.js";
 import { commit } from "../utils/git.js";
 import type { InterviewQuestion } from "./questions.js";
 
@@ -120,6 +121,22 @@ export function transcriptRelPath(vaultRoot: string, collection: string, date: s
   return rel;
 }
 
+// The config a transcript at relPath is written under, or the refusal to write
+// it. An ignored path is not a vault document (#646): a transcript there would
+// be missing from every later sheet, which would re-ask what it answered. There
+// is one target, so unlike the batch importers there is nothing to skip to.
+// `daftari interview ask` runs this before the first question as well, because
+// a refusal after the session would discard the testimony.
+export function loadTranscriptConfig(
+  vaultRoot: string,
+  relPath: string,
+): Result<DaftariConfig, Error> {
+  const config = loadConfig(vaultRoot);
+  if (!config.ok) return config;
+  const ignored = refuseIgnoredPath(relPath, config.value.ignore);
+  return ignored.ok ? config : ignored;
+}
+
 export interface WriteTranscriptResult {
   relPath: string;
   commitHash: string | null; // null when auto_commit is off or commit failed
@@ -170,6 +187,8 @@ export async function writeTranscript(
   );
   if (!resolved.ok) return resolved;
   const relPath = resolved.value.relPath;
+  const config = loadTranscriptConfig(vaultRoot, relPath);
+  if (!config.ok) return config;
 
   try {
     await mkdir(dirname(resolved.value.absPath), { recursive: true });
@@ -179,11 +198,7 @@ export async function writeTranscript(
     return err(new Error(`cannot write transcript: ${reason}`));
   }
 
-  const config = loadConfig(vaultRoot);
-  const autoCommit = config.ok ? config.value.autoCommit : true;
-  const gitDir = config.ok ? config.value.gitDir : undefined;
-
-  if (!autoCommit) {
+  if (!config.value.autoCommit) {
     return ok({ relPath, commitHash: null });
   }
 
@@ -192,7 +207,7 @@ export async function writeTranscript(
     [relPath],
     `Record interview ${meta.date} (${answers.length} answer${answers.length === 1 ? "" : "s"})`,
     meta.by,
-    { gitDir },
+    { gitDir: config.value.gitDir },
   );
   if (!committed.ok) {
     return ok({

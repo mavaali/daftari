@@ -25,6 +25,8 @@ import {
   DEFAULT_INTERVIEW_COLLECTION,
   type InterviewAnswer,
   isValidCollectionName,
+  loadTranscriptConfig,
+  transcriptRelPath,
   writeTranscript,
 } from "./transcript.js";
 
@@ -220,6 +222,12 @@ export async function runInterview(argv: string[], io?: InterviewIo): Promise<nu
         "daftari interview: --collection must be a single path segment " +
           "(letters, digits, '-', '_') and not a reserved name like node_modules\n",
       );
+      return 2;
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const target = loadTranscriptConfig(vaultRoot, transcriptRelPath(vaultRoot, collection, today));
+    if (!target.ok) {
+      process.stderr.write(`daftari interview: ${target.error.message}\n`);
       return 2;
     }
     if (questions.length === 0) {

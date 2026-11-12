@@ -378,7 +378,9 @@ environments.
 `ignore` in `.daftari/config.yaml` lists paths or globs that are not vault
 documents. `listFiles` applies it, so status, lint, search and every other
 walker inherit it; the watcher skips those paths and write tools refuse them.
-Reading one by exact path still works, under RBAC. Adding an entry changes the
+`daftari interview ask` refuses too, before the first question. `okf import`
+and `import langgraph-store` skip ignored targets and report them, so the rest
+of the batch still lands. Reading one by exact path still works, under RBAC. Adding an entry changes the
 startup manifest, so already-indexed files drop out at the next start or
 `vault_reindex`. Sync backends are unaffected: they copy the working tree.
 
