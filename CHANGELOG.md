@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.18.0] - 2026-11-11
+
 ### Added
 
 - **Citation-integrity check on distilled claims** (#565) — at extraction time, every number, date and quoted span a claim cites is checked verbatim against the chunk it came from. Proposals for claims that cite something carry a `### Citation check` Provenance subsection with the count checked and any violations; uncited claims are unchanged. Advisory only: literal match, does not catch paraphrase, and nothing blocks on a violation.
