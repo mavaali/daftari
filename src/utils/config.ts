@@ -190,7 +190,12 @@ export interface OAuthSubjectConfig {
 
 export interface OAuthConfig {
   issuer: string;
-  audience: string;
+  // Optional since OAuth discovery: when omitted, serve verifies `aud`
+  // against the resource URL `<public_base_url>/mcp` — the value remote MCP
+  // clients hand the IdP as RFC 8707 `resource`. Startup refuses the block
+  // when neither this nor `server.public_base_url` is set (nothing to check
+  // `aud` against is a real weakening, not a missing convenience).
+  audience?: string;
   jwksUri: string;
   subjects: Record<string, OAuthSubjectConfig>;
 }
@@ -1635,10 +1640,18 @@ function validateOAuth(raw: unknown): Result<OAuthConfig, Error> {
   const obj = mapping.value;
   const known = rejectUnknownKeys(obj, RECOGNISED_OAUTH_KEYS, "server.auth.oauth");
   if (!known.ok) return known;
-  for (const field of ["issuer", "audience", "jwks_uri"] as const) {
+  for (const field of ["issuer", "jwks_uri"] as const) {
     if (typeof obj[field] !== "string" || (obj[field] as string).trim().length === 0) {
       return err(new Error(`'server.auth.oauth.${field}' must be a non-empty string`));
     }
+  }
+  // Optional, but a declared audience must still be a real string — an empty
+  // value is a typo, not "default it".
+  if (
+    obj.audience !== undefined &&
+    (typeof obj.audience !== "string" || obj.audience.trim().length === 0)
+  ) {
+    return err(new Error("'server.auth.oauth.audience' must be a non-empty string"));
   }
   // Null prototype: bracket-assigning a subject literally named "__proto__"
   // on a plain object would invoke the inherited setter and silently drop
@@ -1673,7 +1686,7 @@ function validateOAuth(raw: unknown): Result<OAuthConfig, Error> {
   }
   return ok({
     issuer: (obj.issuer as string).trim(),
-    audience: (obj.audience as string).trim(),
+    ...(obj.audience === undefined ? {} : { audience: (obj.audience as string).trim() }),
     jwksUri: (obj.jwks_uri as string).trim(),
     subjects,
   });
