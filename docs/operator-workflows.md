@@ -245,6 +245,21 @@ complete current flag set.
 an answer: standing, confidence, provenance, freshness, content hashes,
 supersession resolution, open tensions, and the vault Git head.
 
+It also checks each cited document's own `sources`, one hop up. A source that
+nothing can check (a `distill:` breadcrumb, a web link, a legacy string that
+names no document) raises `cites-unverifiable-source`; one that is gone (a
+deleted vault document, a missing `repo:` file) raises `cites-broken-source`;
+a vault source that has been superseded, deprecated or archived, or is party to
+an open tension, raises `cites-superseded-upstream`, `cites-retracted-upstream`
+or `cites-contested-upstream`; a compiled input that changed incompatibly
+raises `cites-pending-broken-upstream`. A source the caller cannot read raises
+only `cites-unreadable-source`, and for a caller who cannot read every
+collection a deleted source looks the same, so the receipt never reveals
+whether a hidden document exists or what state it is in. `repo:` sources are
+checked for existence, not content. Empty flags therefore mean the cited
+documents and their direct sources are current, uncontested, checkable and
+present; they say nothing about sources two hops away.
+
 When a receipt must leave the running vault as a signed artifact, use the
 attestation CLI:
 

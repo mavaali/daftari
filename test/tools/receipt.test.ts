@@ -15,6 +15,7 @@ const TODAY = new Date().toISOString().slice(0, 10);
 function doc(
   relPath: string,
   overrides: Record<string, string | null> = {},
+  sources: string[] = [],
 ): { relPath: string; body: string } {
   const fm: Record<string, string | null> = {
     title: `Doc ${relPath}`,
@@ -37,12 +38,17 @@ function doc(
   });
   return {
     relPath,
-    body: `---\n${lines.join("\n")}\nsources: []\ntags: []\n---\n\nBody of ${relPath}.\n`,
+    body: `---\n${lines.join("\n")}\nsources: ${JSON.stringify(sources)}\ntags: []\n---\n\nBody of ${relPath}.\n`,
   };
 }
 
-function writeDoc(vault: string, relPath: string, overrides: Record<string, string | null> = {}) {
-  const d = doc(relPath, overrides);
+function writeDoc(
+  vault: string,
+  relPath: string,
+  overrides: Record<string, string | null> = {},
+  sources: string[] = [],
+) {
+  const d = doc(relPath, overrides, sources);
   mkdirSync(join(vault, relPath.split("/")[0] ?? ""), { recursive: true });
   writeFileSync(join(vault, relPath), d.body, "utf-8");
 }
@@ -362,7 +368,266 @@ describe("vaultReceipt — RBAC", () => {
   });
 });
 
+// 0ksb: a receipt checks the cited document's own `sources`, one hop. Before
+// this, empty flags claimed "grounded" while the evidence underneath was
+// retracted, contested, deleted, or never checkable at all.
+describe("vaultReceipt — upstream sources (0ksb)", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = makeTempVault();
+  });
+
+  afterEach(() => {
+    cleanupVault(vault);
+  });
+
+  async function flagsFor(path: string, access?: AccessContext) {
+    const result = await vaultReceipt(vault, { paths: [path] }, access);
+    if (!result.ok) throw result.error;
+    return result.value;
+  }
+
+  it("keeps empty flags for a claim grounded in a current vault source", async () => {
+    writeDoc(vault, "pricing/evidence.md");
+    writeDoc(vault, "pricing/claim.md", {}, ["vault:pricing/evidence.md"]);
+    const r = await flagsFor("pricing/claim.md");
+    expect(r.summary.flags).toEqual([]);
+    expect(r.sources[0]?.upstreamFlags).toEqual([]);
+  });
+
+  it("flags distill, web, opaque, and unresolved legacy sources as unverifiable", async () => {
+    for (const [name, ref] of [
+      ["distilled", "distill:vendor-memo#abc123"],
+      ["web", "https://example.com/report"],
+      ["opaque", "slack:C123/p456"],
+      ["legacy", "a conversation with Bob"],
+    ] as const) {
+      writeDoc(vault, `pricing/${name}.md`, {}, [ref]);
+      const r = await flagsFor(`pricing/${name}.md`);
+      expect(r.summary.flags, ref).toEqual(["cites-unverifiable-source"]);
+      expect(r.sources[0]?.upstreamFlags, ref).toEqual(["cites-unverifiable-source"]);
+    }
+  });
+
+  it("treats a legacy source that resolves to a vault doc as a vault source", async () => {
+    writeDoc(vault, "pricing/evidence.md", { status: "deprecated" });
+    writeDoc(vault, "pricing/claim.md", {}, ["pricing/evidence"]);
+    const r = await flagsFor("pricing/claim.md");
+    expect(r.summary.flags).toEqual(["cites-retracted-upstream"]);
+  });
+
+  it("flags an explicit vault source that no longer exists as broken", async () => {
+    writeDoc(vault, "pricing/claim.md", {}, ["vault:pricing/deleted.md"]);
+    expect((await flagsFor("pricing/claim.md")).summary.flags).toEqual(["cites-broken-source"]);
+    // A role that reads every collection has nothing hidden from it, so a
+    // missing source cannot be confused with a hidden one: still broken.
+    const everything: AccessContext = {
+      user: "human:op",
+      roleName: "admin",
+      role: { read: ["*"], write: [], promote: false, ratify: false },
+    };
+    expect((await flagsFor("pricing/claim.md", everything)).summary.flags).toEqual([
+      "cites-broken-source",
+    ]);
+  });
+
+  it("flags superseded, retracted, and contested upstream sources", async () => {
+    writeDoc(vault, "pricing/old.md", { status: "superseded", superseded_by: "pricing/new.md" });
+    writeDoc(vault, "pricing/new.md");
+    writeDoc(vault, "pricing/dead.md", { status: "deprecated" });
+    writeDoc(vault, "pricing/gone.md", { status: "archived" });
+    writeDoc(vault, "pricing/disputed.md");
+    writeDoc(vault, "pricing/rebuttal.md");
+    await addTension(vault, {
+      title: "Disputed evidence",
+      kind: "factual",
+      sourceA: "pricing/disputed.md",
+      claimA: "says X",
+      sourceB: "pricing/rebuttal.md",
+      claimB: "says Y",
+      loggedBy: "agent:test",
+    });
+    writeDoc(vault, "pricing/c-old.md", {}, ["vault:pricing/old.md"]);
+    writeDoc(vault, "pricing/c-dead.md", {}, ["vault:pricing/dead.md"]);
+    writeDoc(vault, "pricing/c-gone.md", {}, ["vault:pricing/gone.md"]);
+    writeDoc(vault, "pricing/c-disputed.md", {}, ["vault:pricing/disputed.md"]);
+
+    expect((await flagsFor("pricing/c-old.md")).summary.flags).toEqual([
+      "cites-superseded-upstream",
+    ]);
+    expect((await flagsFor("pricing/c-dead.md")).summary.flags).toEqual([
+      "cites-retracted-upstream",
+    ]);
+    expect((await flagsFor("pricing/c-gone.md")).summary.flags).toEqual([
+      "cites-retracted-upstream",
+    ]);
+    const disputed = await flagsFor("pricing/c-disputed.md");
+    expect(disputed.summary.flags).toEqual(["cites-contested-upstream"]);
+    // The cited doc itself is not a party to the tension.
+    expect(disputed.summary.openTensions).toBe(0);
+  });
+
+  it("attributes upstream flags to the cited document that carries them", async () => {
+    writeDoc(vault, "pricing/dead.md", { status: "deprecated" });
+    writeDoc(vault, "pricing/clean.md");
+    writeDoc(vault, "pricing/claim.md", {}, ["vault:pricing/dead.md", "https://example.com"]);
+    const r = await vaultReceipt(vault, { paths: ["pricing/clean.md", "pricing/claim.md"] });
+    if (!r.ok) throw r.error;
+    expect(r.value.sources[0]?.upstreamFlags).toEqual([]);
+    expect(r.value.sources[1]?.upstreamFlags).toEqual([
+      "cites-retracted-upstream",
+      "cites-unverifiable-source",
+    ]);
+    expect(r.value.summary.flags).toEqual([
+      "cites-retracted-upstream",
+      "cites-unverifiable-source",
+    ]);
+  });
+
+  it("ignores a self-citation", async () => {
+    writeDoc(vault, "pricing/self.md", { status: "canonical" }, ["vault:pricing/self.md"]);
+    expect((await flagsFor("pricing/self.md")).summary.flags).toEqual([]);
+  });
+
+  it("keeps the receipt hash recomputable with upstream flags present", async () => {
+    writeDoc(vault, "pricing/claim.md", {}, ["distill:memo#x", "vault:pricing/deleted.md"]);
+    const r = await flagsFor("pricing/claim.md");
+    const { receiptHash, ...payload } = r;
+    expect(createHash("sha256").update(JSON.stringify(payload), "utf-8").digest("hex")).toBe(
+      receiptHash,
+    );
+  });
+
+  describe("repo: sources", () => {
+    const dirs: string[] = [];
+    afterEach(() => {
+      for (const d of dirs) rmSync(d, { recursive: true, force: true });
+      dirs.length = 0;
+    });
+
+    function repoVault(): string {
+      const repo = mkdtempSync(join(tmpdir(), "daftari-receipt-repo-"));
+      dirs.push(repo);
+      const v = join(repo, "vault");
+      mkdirSync(join(v, ".daftari"), { recursive: true });
+      mkdirSync(join(repo, "evidence"));
+      writeFileSync(join(repo, "evidence", "present.md"), "evidence");
+      writeFileSync(join(v, ".daftari", "config.yaml"), "repo_root: ..\n");
+      return v;
+    }
+
+    it("passes an existing repo file, flags a missing one as broken", async () => {
+      const v = repoVault();
+      writeDoc(v, "pricing/ok.md", {}, ["repo:evidence/present.md"]);
+      writeDoc(v, "pricing/missing.md", {}, ["repo:evidence/absent.md"]);
+      const ok1 = await vaultReceipt(v, { paths: ["pricing/ok.md"] });
+      const bad = await vaultReceipt(v, { paths: ["pricing/missing.md"] });
+      if (!ok1.ok || !bad.ok) throw new Error("receipt failed");
+      expect(ok1.value.summary.flags).toEqual([]);
+      expect(bad.value.summary.flags).toEqual(["cites-broken-source"]);
+    });
+
+    it("is unverifiable to a role without verify_repo_sources, and never stats it", async () => {
+      const v = repoVault();
+      writeDoc(v, "pricing/missing.md", {}, ["repo:evidence/absent.md"]);
+      const reader: AccessContext = {
+        user: "agent:r",
+        roleName: "reader",
+        role: { read: ["*"], write: [], promote: false, ratify: false },
+      };
+      const r = await vaultReceipt(v, { paths: ["pricing/missing.md"] }, reader);
+      if (!r.ok) throw r.error;
+      expect(r.value.summary.flags).toEqual(["cites-unverifiable-source"]);
+    });
+
+    it("is unverifiable when no repo_root is configured", async () => {
+      writeDoc(vault, "pricing/repo.md", {}, ["repo:evidence/present.md"]);
+      expect((await flagsFor("pricing/repo.md")).summary.flags).toEqual([
+        "cites-unverifiable-source",
+      ]);
+    });
+  });
+
+  describe("RBAC", () => {
+    const analyst: AccessContext = {
+      user: "human:test",
+      roleName: "analyst",
+      role: { read: ["pricing"], write: [], promote: false, ratify: false },
+    };
+
+    it("coarsens a hidden source and a deleted one to the same flag, with no state", async () => {
+      // Hidden and retracted and contested: none of that may surface.
+      writeDoc(vault, "moonshot/hidden.md", { status: "deprecated", title: "HIDDEN-TITLE" });
+      writeDoc(vault, "moonshot/other.md");
+      await addTension(vault, {
+        title: "HIDDEN-TENSION",
+        kind: "factual",
+        sourceA: "moonshot/hidden.md",
+        claimA: "says X",
+        sourceB: "moonshot/other.md",
+        claimB: "says Y",
+        loggedBy: "agent:test",
+      });
+      writeDoc(vault, "pricing/cites-hidden.md", {}, ["vault:moonshot/hidden.md"]);
+      writeDoc(vault, "pricing/cites-deleted.md", {}, ["vault:pricing/deleted.md"]);
+      // A doc under a readable path prefix whose collection is hidden: must
+      // look exactly like a deleted readable-prefix doc (#416).
+      writeDoc(vault, "pricing/misfiled.md", { collection: "moonshot" });
+      writeDoc(vault, "pricing/cites-misfiled.md", {}, ["vault:pricing/misfiled.md"]);
+
+      const hidden = await flagsFor("pricing/cites-hidden.md", analyst);
+      const deleted = await flagsFor("pricing/cites-deleted.md", analyst);
+      const misfiled = await flagsFor("pricing/cites-misfiled.md", analyst);
+      for (const r of [hidden, deleted, misfiled]) {
+        expect(r.summary.flags).toEqual(["cites-unreadable-source"]);
+        expect(r.sources[0]?.upstreamFlags).toEqual(["cites-unreadable-source"]);
+        const text = JSON.stringify(r);
+        expect(text).not.toContain("HIDDEN-TITLE");
+        expect(text).not.toContain("HIDDEN-TENSION");
+      }
+    });
+
+    it("folds a legacy source resolving into a hidden collection into unverifiable", async () => {
+      writeDoc(vault, "moonshot/secret-plan.md");
+      writeDoc(vault, "pricing/claim.md", {}, ["moonshot/secret-plan"]);
+      writeDoc(vault, "pricing/claim2.md", {}, ["moonshot/no-such-plan"]);
+      const a = await flagsFor("pricing/claim.md", analyst);
+      const b = await flagsFor("pricing/claim2.md", analyst);
+      expect(a.summary.flags).toEqual(["cites-unverifiable-source"]);
+      expect(b.summary.flags).toEqual(a.summary.flags);
+    });
+
+    it("does not surface a tension on a readable source whose counterpart is hidden", async () => {
+      writeDoc(vault, "pricing/evidence.md");
+      writeDoc(vault, "moonshot/rebuttal.md");
+      await addTension(vault, {
+        title: "Visible vs hidden",
+        kind: "factual",
+        sourceA: "pricing/evidence.md",
+        claimA: "says X",
+        sourceB: "moonshot/rebuttal.md",
+        claimB: "says Y",
+        loggedBy: "agent:test",
+      });
+      writeDoc(vault, "pricing/claim.md", {}, ["vault:pricing/evidence.md"]);
+      expect((await flagsFor("pricing/claim.md", analyst)).summary.flags).toEqual([]);
+      // The operator sees it.
+      expect((await flagsFor("pricing/claim.md")).summary.flags).toEqual([
+        "cites-contested-upstream",
+      ]);
+    });
+  });
+});
+
 describe("receipt tool definition", () => {
+  it("no longer claims empty flags mean grounded without naming what is checked", () => {
+    const def = receiptTools.find((t) => t.name === "vault_receipt");
+    expect(def?.description).toContain("cites-unverifiable-source");
+    expect(def?.description).toContain("one hop");
+    expect(def?.description).not.toContain("empty flags mean current, grounded, uncontested");
+  });
+
   it("registers vault_receipt as a read-only tool", () => {
     const def = receiptTools.find((t) => t.name === "vault_receipt");
     expect(def).toBeDefined();
