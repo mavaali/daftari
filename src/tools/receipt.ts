@@ -8,15 +8,37 @@
 // deterministic summary with machine-readable flags, the vault's git HEAD as
 // an as-of anchor, and a content hash over the whole receipt.
 //
+// One hop upstream (0ksb): each cited document's own `sources` are checked
+// too — whether each can be verified at all, whether it still resolves, and
+// whether a vault source has since been superseded, retracted, or contested —
+// plus the compiled-edge staleness vault_read already reports. Never deeper:
+// a source's sources are its own receipt's business.
+//
 // Discipline: the receipt only *reads* — frontmatter, the tension log, git.
 // It never grades, never synthesizes prose, never mints a value. Flags are
 // deterministic derivations from facts already in the vault. The optional
 // `claim` is caller-supplied and carried verbatim (labeled as such); it is
 // never interpolated into any Daftari-authored text.
 
-import { type AccessContext, canRead } from "../access/rbac.js";
+import {
+  type AccessContext,
+  canRead,
+  canVerifyRepoSources,
+  readableCollections,
+} from "../access/rbac.js";
 import { loadAttestKey, signBytes } from "../attest/sign.js";
 import { computeDecay, type DecayState } from "../curation/decay.js";
+import {
+  type CompiledStaleContext,
+  compiledUpstreamStaleness,
+  loadCompiledStaleContext,
+  splitUpstreamVisibility,
+} from "../curation/edge-staleness.js";
+import {
+  explicitVaultSourceTarget,
+  resolveVaultSourceRef,
+  verifyRepoSourceRef,
+} from "../curation/source-refs.js";
 import {
   AGING_TIERS,
   type AgingTier,
@@ -27,10 +49,22 @@ import {
   type TensionEntry,
   type TensionKind,
 } from "../curation/tension.js";
-import { visibleTensions } from "../curation/tension-access.js";
+import { sourceReadable, sourceVerifiable, visibleTensions } from "../curation/tension-access.js";
+import { buildPathIndexes } from "../curation/vault-docs.js";
 import { parseDocument } from "../frontmatter/parser.js";
-import { CONFIDENCES, err, ok, PROVENANCES, type Result, STATUSES } from "../frontmatter/types.js";
-import { readFile, resolveVaultPath } from "../storage/local.js";
+import { parseSourceRef } from "../frontmatter/source-ref.js";
+import {
+  CONFIDENCES,
+  err,
+  type Frontmatter,
+  ok,
+  PROVENANCES,
+  type Result,
+  STATUSES,
+} from "../frontmatter/types.js";
+import type { IndexDb } from "../storage/index-db.js";
+import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
+import { loadConfig } from "../utils/config.js";
 import { log as gitLog, isGitRepo } from "../utils/git.js";
 import { sha256Hex } from "../utils/hash.js";
 import { DECAY_SCHEMA, type ToolDefinition } from "./read.js";
@@ -76,6 +110,10 @@ export interface ReceiptSource {
   currentSource: ChainResolution | null;
   // Unresolved tensions touching this document.
   tensions: ReceiptTension[];
+  // 0ksb: flags derived from this document's own sources, one hop. Sorted;
+  // a subset of summary.flags. Lets a consumer see which cited document a
+  // summary upstream flag came from.
+  upstreamFlags: string[];
 }
 
 export interface ReceiptSummary {
@@ -85,8 +123,10 @@ export interface ReceiptSummary {
   openTensions: number;
   oldestUpdated: string | null;
   newestUpdated: string | null;
-  // Deterministic, sorted. Empty means: every cited document is current,
-  // grounded, and uncontested as far as the vault knows.
+  // Deterministic, sorted. Empty means: every cited document is current and
+  // uncontested, and so is every source it cites one hop up, each of which
+  // could be checked and still resolves — as far as the vault knows. See
+  // UPSTREAM_FLAGS for the one-hop flags.
   flags: string[];
 }
 
@@ -155,6 +195,172 @@ async function resolveChain(
   return { kind: "resolved", path: currentPath, title: currentTitle, hops };
 }
 
+// 0ksb: the one-hop upstream flags, each a deterministic derivation from a
+// cited document's own `sources` (plus its compiled consumes edges):
+//
+//   cites-unverifiable-source     — a source nothing in the vault can check:
+//                                   distill: (born-unverifiable), http(s)/
+//                                   mailto, other URI schemes, a legacy
+//                                   string that resolves to no readable doc,
+//                                   or a repo: ref this caller cannot verify.
+//   cites-broken-source           — a source that resolves to nothing: a
+//                                   vault: doc that is gone, a repo: file that
+//                                   is missing. Never shown to a caller with
+//                                   hidden collections (see unreadable).
+//   cites-unreadable-source       — a vault source this caller cannot read.
+//                                   For a caller who cannot read everything,
+//                                   a deleted source reads the same way: the
+//                                   two are deliberately indistinguishable
+//                                   (#217/#416 — no existence oracle), and
+//                                   nothing about the source's state shows.
+//   cites-superseded-upstream     — a readable source is superseded.
+//   cites-retracted-upstream      — a readable source is deprecated/archived.
+//   cites-contested-upstream      — a readable source is party to an
+//                                   unresolved tension the caller can see.
+//   cites-pending-broken-upstream — a compiled upstream input changed
+//                                   incompatibly since this doc was compiled
+//                                   (the edge-staleness class vault_read
+//                                   banners).
+//
+// repo: refs are checked for existence only — the vault holds no content hash
+// for them, so an altered repo file still passes.
+export const UPSTREAM_FLAGS = [
+  "cites-broken-source",
+  "cites-contested-upstream",
+  "cites-pending-broken-upstream",
+  "cites-retracted-upstream",
+  "cites-superseded-upstream",
+  "cites-unreadable-source",
+  "cites-unverifiable-source",
+] as const;
+type UpstreamFlag = (typeof UPSTREAM_FLAGS)[number];
+
+interface UpstreamContext {
+  vaultRoot: string;
+  access?: AccessContext;
+  // True when nothing can be hidden from the caller: the operator path (no
+  // access context) or a wildcard read grant. Only then is "resolves to
+  // nothing" safe to report as broken rather than unreadable.
+  seesAll: boolean;
+  // Already filtered to what the caller may see.
+  tensions: TensionEntry[];
+  stale: CompiledStaleContext | null;
+  db: () => IndexDb | null;
+  repo: () => { root: string | undefined; verify: boolean };
+  legacyIndexes: () => Promise<ReturnType<typeof buildPathIndexes>>;
+}
+
+async function loadSourceFrontmatter(
+  vaultRoot: string,
+  rel: string,
+): Promise<{ fm: Frontmatter; collection: string } | null> {
+  const resolved = resolveVaultPath(vaultRoot, rel);
+  if (!resolved.ok) return null;
+  const file = await readFile(resolved.value.absPath);
+  if (!file.ok) return null;
+  const parsed = parseDocument(file.value);
+  if (!parsed.ok) return null;
+  const fm = parsed.value.frontmatter;
+  return { fm, collection: fm.collection || topCollection(rel) };
+}
+
+async function upstreamFlagsFor(
+  ctx: UpstreamContext,
+  rel: string,
+  sources: string[],
+): Promise<UpstreamFlag[]> {
+  const flags = new Set<UpstreamFlag>();
+
+  // A readable vault source's own standing.
+  const flagState = (target: string, fm: Frontmatter) => {
+    if (fm.status === "superseded" || fm.superseded_by !== null) {
+      flags.add("cites-superseded-upstream");
+    }
+    if (fm.status === "deprecated" || fm.status === "archived") {
+      flags.add("cites-retracted-upstream");
+    }
+    if (ctx.tensions.some((t) => t.sourceA === target || t.sourceB === target)) {
+      flags.add("cites-contested-upstream");
+    }
+  };
+
+  for (const raw of sources) {
+    const parsed = parseSourceRef(raw);
+    switch (parsed.kind) {
+      case "distill":
+      case "external":
+      case "opaque":
+        flags.add("cites-unverifiable-source");
+        break;
+      case "repo": {
+        const repo = ctx.repo();
+        if (!repo.verify || repo.root === undefined) {
+          flags.add("cites-unverifiable-source");
+          break;
+        }
+        const status = verifyRepoSourceRef(repo.root, parsed.target).status;
+        if (status === "missing") flags.add("cites-broken-source");
+        else if (status !== "exists") flags.add("cites-unverifiable-source");
+        break;
+      }
+      case "vault": {
+        // An invalid address can name no document whatever the vault holds,
+        // so calling it broken discloses nothing.
+        const target = explicitVaultSourceTarget(raw);
+        if (target === null) {
+          flags.add("cites-broken-source");
+          break;
+        }
+        if (target === rel) break;
+        const src = await loadSourceFrontmatter(ctx.vaultRoot, target);
+        if (src && (!ctx.access || canRead(ctx.access.role, src.collection))) {
+          flagState(target, src.fm);
+        } else {
+          flags.add(ctx.seesAll ? "cites-broken-source" : "cites-unreadable-source");
+        }
+        break;
+      }
+      case "legacy": {
+        // Legacy strings were never promised to resolve (tier0.ts): one that
+        // names no readable doc is opaque provenance — unverifiable, never
+        // broken, so a hidden target and an absent one read the same.
+        const { byPath, byBasename } = await ctx.legacyIndexes();
+        const source = resolveVaultSourceRef(raw, rel, byPath, byBasename);
+        const target = source.kind === "vault" ? source.target : null;
+        if (target === rel) break;
+        const src = target ? await loadSourceFrontmatter(ctx.vaultRoot, target) : null;
+        if (target && src && (!ctx.access || canRead(ctx.access.role, src.collection))) {
+          flagState(target, src.fm);
+        } else {
+          flags.add("cites-unverifiable-source");
+        }
+        break;
+      }
+    }
+  }
+
+  // Compiled consumes edges: the same classification and disclosure split
+  // vault_read uses, so the two surfaces cannot disagree.
+  if (ctx.stale && ctx.stale.consumes.length > 0) {
+    const db = ctx.db();
+    const access = ctx.access;
+    const rows = compiledUpstreamStaleness(rel, ctx.stale.consumes, ctx.stale.provenance, (u) =>
+      sourceVerifiable(db, access, u),
+    );
+    const { visible, hiddenPending } =
+      access && !ctx.seesAll
+        ? splitUpstreamVisibility(rows, (u) => sourceReadable(db, access, u))
+        : { visible: rows, hiddenPending: "none" as const };
+    if (visible.some((r) => r.staleness === "pending-broken")) {
+      flags.add("cites-pending-broken-upstream");
+    }
+    if (visible.some((r) => r.staleness === "unverifiable")) flags.add("cites-broken-source");
+    if (hiddenPending !== "none") flags.add("cites-unreadable-source");
+  }
+
+  return [...flags].sort();
+}
+
 export interface VaultReceiptArgs {
   paths: string[];
   claim?: string;
@@ -190,15 +396,67 @@ export async function vaultReceipt(
   // denied collection, and an alias must not widen visibility.
   const tensionScan = await listTensions(vaultRoot, DEFAULT_TENSION_STATUS);
   if (!tensionScan.ok) return tensionScan;
-  let tensionEntries = tensionScan.value;
-  if (access) {
-    const accessDb = openIndexForAccessOrNull(vaultRoot);
-    try {
-      tensionEntries = visibleTensions(accessDb, tensionScan.value, access);
-    } finally {
-      accessDb?.close();
-    }
+
+  // One lazily opened index handle serves the tension visibility gate and the
+  // compiled-edge staleness join; a receipt that needs neither never opens it.
+  let db: IndexDb | null | undefined;
+  const getDb = () => {
+    if (db === undefined) db = openIndexForAccessOrNull(vaultRoot);
+    return db;
+  };
+  try {
+    return await compileReceipt(vaultRoot, args, access, tensionScan.value, getDb);
+  } finally {
+    db?.close();
   }
+}
+
+async function compileReceipt(
+  vaultRoot: string,
+  args: VaultReceiptArgs,
+  access: AccessContext | undefined,
+  allTensions: TensionEntry[],
+  getDb: () => IndexDb | null,
+): Promise<Result<VaultReceiptResult, Error>> {
+  const tensionEntries = access ? visibleTensions(getDb(), allTensions, access) : allTensions;
+
+  // Inputs to the one-hop upstream check, each loaded at most once and only
+  // when a cited document's sources need it.
+  const stale = await loadCompiledStaleContext(vaultRoot);
+  let repo: { root: string | undefined; verify: boolean } | undefined;
+  let legacy: ReturnType<typeof buildPathIndexes> | undefined;
+  const upstream: UpstreamContext = {
+    vaultRoot,
+    access,
+    seesAll: !access || readableCollections(access.role) === undefined,
+    tensions: tensionEntries,
+    stale,
+    db: getDb,
+    repo: () => {
+      if (repo === undefined) {
+        const cfg = loadConfig(vaultRoot);
+        repo = {
+          root: cfg.ok ? cfg.value.repoRoot : undefined,
+          verify: !access || canVerifyRepoSources(access.role),
+        };
+      }
+      return repo;
+    },
+    // Filesystem universe (receipts work while the index builds), narrowed to
+    // the caller's readable path prefixes so a hidden doc cannot make a bare
+    // basename ambiguous or resolve it.
+    legacyIndexes: async () => {
+      if (legacy === undefined) {
+        const files = await listFiles(vaultRoot);
+        const paths = files.ok ? files.value : [];
+        const visible = access
+          ? paths.filter((p) => canRead(access.role, topCollection(p)))
+          : paths;
+        legacy = buildPathIndexes(visible.map((path) => ({ path })));
+      }
+      return legacy;
+    },
+  };
 
   // Dedupe cited paths, preserving first-seen order.
   const citedPaths: string[] = [];
@@ -254,6 +512,8 @@ export async function vaultReceipt(
     if (currentSource !== null && currentSource.kind !== "resolved") {
       flagSet.add("supersession-unresolved");
     }
+    const upstreamFlags = await upstreamFlagsFor(upstream, rel, fm.sources);
+    for (const f of upstreamFlags) flagSet.add(f);
 
     sources.push({
       path: rel,
@@ -275,6 +535,7 @@ export async function vaultReceipt(
         date: t.date,
         agingTier: agingTier(t),
       })),
+      upstreamFlags,
     });
   }
 
@@ -359,13 +620,22 @@ export const receiptTools: ToolDefinition[] = [
       "Compile an epistemic receipt for the vault documents an answer relies " +
       "on. For each cited path: status, confidence, provenance, freshness " +
       "(decay), an exact content-version hash, the resolution of its " +
-      "supersession chain, and any unresolved tensions touching it. Plus a " +
-      "summary with deterministic flags (e.g. cites-stale, cites-contested, " +
-      "cites-superseded — empty flags mean current, grounded, uncontested), " +
-      "the vault's git HEAD as an as-of anchor, and a recomputable SHA-256 " +
-      "over the receipt. Attach the receipt to the answer so downstream " +
-      "consumers can see what it stands on. Read-only; facts are derived " +
-      "from frontmatter, the tension log, and git — never invented.",
+      "supersession chain, any unresolved tensions touching it, and flags " +
+      "for its own sources one hop up. Plus a summary with deterministic " +
+      "flags (e.g. cites-stale, cites-contested, cites-superseded; for " +
+      "sources: cites-unverifiable-source for distill:, web, and other " +
+      "uncheckable refs, cites-broken-source for a vault doc or repo file " +
+      "that is gone, cites-unreadable-source for one you cannot read, and " +
+      "cites-superseded-upstream / cites-retracted-upstream / " +
+      "cites-contested-upstream / cites-pending-broken-upstream for a " +
+      "source's own standing). Empty flags mean each cited document is " +
+      "current and uncontested and so is every source it cites one hop " +
+      "up, each checkable and still present — no deeper; repo: refs are " +
+      "checked for existence only. Also the vault's git HEAD as an as-of " +
+      "anchor and a recomputable SHA-256 over the receipt. Attach the " +
+      "receipt to the answer so downstream consumers can see what it " +
+      "stands on. Read-only; facts are derived from frontmatter, the " +
+      "tension log, the edge logs, and git — never invented.",
     inputSchema: {
       type: "object",
       properties: {
@@ -469,6 +739,13 @@ export const receiptTools: ToolDefinition[] = [
                   required: ["id", "title", "kind", "date", "agingTier"],
                 },
               },
+              upstreamFlags: {
+                type: "array",
+                items: { type: "string", enum: [...UPSTREAM_FLAGS] },
+                description:
+                  "Sorted flags derived from this document's own sources, one hop up; " +
+                  "a subset of summary.flags",
+              },
             },
             required: [
               "path",
@@ -484,6 +761,7 @@ export const receiptTools: ToolDefinition[] = [
               "decay",
               "currentSource",
               "tensions",
+              "upstreamFlags",
             ],
           },
         },
@@ -508,8 +786,9 @@ export const receiptTools: ToolDefinition[] = [
               type: "array",
               items: { type: "string" },
               description:
-                "Deterministic, sorted. Empty means every cited document is current, " +
-                "grounded, and uncontested as far as the vault knows",
+                "Deterministic, sorted. Empty means every cited document is current " +
+                "and uncontested, and so is every source it cites one hop up, each " +
+                "checkable and still present, as far as the vault knows",
             },
           },
           required: [
