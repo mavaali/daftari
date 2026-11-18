@@ -186,6 +186,10 @@ Once a draft is complete and trustworthy, `vault_promote` raises it to
 Promotion **refuses** unless the document is currently a draft and its
 frontmatter is complete. Only roles with `promote: true` may call it. This is
 the gate between "an agent wrote something" and "the vault vouches for it".
+The same grant guards every other route to `canonical`: a `vault_write` or
+`vault_merge` that would leave a document `canonical` when it was not before
+is refused for a role without `promote`, and so is ratifying a staged write or
+merge that would.
 
 ## 8. Deprecate what is no longer true
 

@@ -541,7 +541,10 @@ arrives, and it is the one layer a read cannot skip.
 
 RBAC is config-driven. `.daftari/config.yaml` declares named roles and their
 per-collection `read` / `write` permissions plus two verdict grants: `promote`
-(draft → canonical) and `ratify` (§11.6 — approve/reject staged actions and
+(draft → canonical; the only grant that can set `canonical` on a new or
+non-canonical document, through `vault_promote`, `vault_write`, `vault_merge`,
+or a ratified write/merge — under ratify it is the ratifier's grant that
+counts) and `ratify` (§11.6 — approve/reject staged actions and
 contest derives_from edges; the curation-verdict tier). The server is started
 with `--user` and `--role`. There is no user-management system to administer:
 the policy lives in one file and the identity lives in one flag.
