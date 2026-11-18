@@ -78,7 +78,7 @@ always valid even though you never typed those two fields.
 | Status | Meaning |
 |--------|---------|
 | `draft` | In progress. Where new knowledge starts. Lives anywhere, often in `_drafts/`. |
-| `canonical` | Vetted and trusted. Reached only via `vault_promote`, which requires complete frontmatter. |
+| `canonical` | Vetted and trusted. Reached via `vault_promote`, which requires a draft with complete frontmatter. Setting `canonical` on a new or non-canonical document needs the role's `promote` grant on every write path — `vault_write` (create or update), `vault_merge` (override or a status inherited from `path_a` into a target that was not already canonical), and `vault_ratify` of a staged write or merge, where the ratifier needs the grant. A role with the grant may write a document as `canonical` directly; a role without it is refused and pointed at `vault_promote`. Editing an already-canonical document without changing its status needs only `write`. |
 | `deprecated` | No longer current. Set by `vault_deprecate` with a required reason. Kept, not deleted. |
 | `superseded` | Replaced by a specific newer document. Typically paired with `superseded_by`. |
 | `archived` | Retired from active curation but retained for the record. |

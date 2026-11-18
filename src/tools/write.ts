@@ -785,6 +785,30 @@ export function requireWriteAccess(
   return ok(undefined);
 }
 
+// `canonical` is the vault vouching for a document, and the `promote` grant is
+// what authorizes that (docs/file-format.md). A write whose post-state is
+// canonical while the prior state was not (or there was no prior doc) is a
+// promote by another name, so it needs the grant on every write path, not only
+// vault_promote. Callers judge the MERGED post-state, so an inherited status
+// counts. Editing an already-canonical doc without changing its status is not
+// a transition and stays open to writers. No access context (operator) passes.
+// Under vault_ratify, `access` is the ratifier's, so the ratifier needs it.
+function requireCanonicalAuthority(
+  access: AccessContext | undefined,
+  oldStatus: unknown,
+  newStatus: unknown,
+  tool: string,
+): Result<void, Error> {
+  if (!access || newStatus !== "canonical" || oldStatus === "canonical") return ok(undefined);
+  if (canPromote(access.role)) return ok(undefined);
+  return err(
+    new Error(
+      `access denied: role '${access.roleName}' cannot promote documents — ` +
+        `${tool} cannot set status 'canonical'; write it as draft and use vault_promote`,
+    ),
+  );
+}
+
 // Git history is the attribution layer, and the caller-supplied `agent`
 // string is advisory — any authenticated principal could claim any agent.
 // When an AccessContext exists the commit author is the AUTHENTICATED
@@ -1582,6 +1606,17 @@ async function writeDocument(
     operation: hookOperation,
   });
   Object.assign(rawFrontmatter, transformResult.merged);
+
+  // Judged here — after the #113 merge (an omitted status is inherited) and
+  // the transform hooks (which may set status) — so it sees the status that
+  // will actually land.
+  const canonicalGate = requireCanonicalAuthority(
+    access,
+    oldFrontmatter?.status ?? null,
+    rawFrontmatter.status,
+    tool,
+  );
+  if (!canonicalGate.ok) return canonicalGate;
 
   // `updated` and `updated_by` are server-managed: performWrite re-stamps them
   // unconditionally after validation. Fill them in here too, so a caller who
@@ -3036,6 +3071,18 @@ export async function vaultMerge(
     updated: todayISO(),
     updated_by: agent.value,
   };
+
+  // A canonical result needs the promote grant when the target was not already
+  // canonical — whether the status comes from an override or is inherited from
+  // path_a into a new target. Merging into an already-canonical target is
+  // allowed, matching vault_write: a writer may already edit canonical content.
+  const canonicalGate = requireCanonicalAuthority(
+    access,
+    targetOldFrontmatter?.status ?? null,
+    targetRaw.status,
+    "vault_merge",
+  );
+  if (!canonicalGate.ok) return canonicalGate;
 
   // Reader parentage fusion (6mf.1). targetRaw inherits path_a's raw, so it
   // currently carries ONLY path_a's `readers` set and path_a's scalar reader_*

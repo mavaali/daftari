@@ -7,6 +7,7 @@ import {
   listStagedActions,
   materializeStagedActions,
   nowISO,
+  pendingLintItems,
   rebuildStagedActionsIndex,
   recordDecision,
   STAGED_ACTION_TYPES,
@@ -150,17 +151,62 @@ describe("staged-actions", () => {
     const still = await getStagedActionById(vault, ids[0] as string);
     expect(still.ok && still.value?.status).toBe("pending");
 
-    // A subsequent decision on the SAME id collapses on top of the first —
-    // proving the in-memory apply used the freshly-appended decision, not a
-    // stale pre-decision snapshot.
+    // A second decision on the SAME id is refused (8i1l): recordDecision
+    // re-checks the collapsed status, so a decided action keeps exactly one
+    // disposition and the log never ends [ratified, rejected].
     const again = await recordDecision(vault, target, {
       status: "rejected",
       ratifiedAt: "2026-06-09T09:15:00Z",
       ratifiedBy: "human:mihir",
     });
-    expect(again.ok && again.value.status).toBe("rejected");
+    expect(again.ok).toBe(false);
+    if (!again.ok) expect(again.error.message).toContain("'ratified', not 'pending'");
     const reread = await getStagedActionById(vault, target);
-    expect(reread.ok && reread.value?.status).toBe("rejected");
+    expect(reread.ok && reread.value?.status).toBe("ratified");
+  });
+
+  it("lint lists an interrupted (`applying`) action first, flagged, so it is not lost (8i1l)", async () => {
+    const a = await stageAction(vault, sampleInput);
+    const b = await stageAction(vault, { ...sampleInput, targetPath: "specs/other.md" });
+    if (!a.ok || !b.ok) throw new Error("stage failed");
+    await recordDecision(vault, b.value.id, {
+      status: "applying",
+      ratifiedAt: "2026-06-08T09:15:00Z",
+      ratifiedBy: "human:mihir",
+    });
+    const all = await listStagedActions(vault);
+    if (!all.ok) throw all.error;
+    const items = pendingLintItems(all.value, new Date());
+    expect(items.map((i) => i.id)).toEqual([b.value.id, a.value.id]);
+    expect(items[0]?.interrupted).toBe(true);
+    expect(items[1]?.interrupted).toBeUndefined();
+  });
+
+  it("recordDecision moves an `applying` action only when told to expect it (8i1l)", async () => {
+    const s = await stageAction(vault, sampleInput);
+    if (!s.ok) throw s.error;
+    const id = s.value.id;
+    const marked = await recordDecision(vault, id, {
+      status: "applying",
+      ratifiedAt: "2026-06-08T09:15:00Z",
+      ratifiedBy: "human:mihir",
+    });
+    expect(marked.ok && marked.value.status).toBe("applying");
+    // A plain decision expects pending and refuses.
+    const blind = await recordDecision(vault, id, {
+      status: "ratified",
+      ratifiedAt: "2026-06-08T09:15:01Z",
+      ratifiedBy: "human:mihir",
+    });
+    expect(blind.ok).toBe(false);
+    // The approval that set the marker completes it.
+    const done = await recordDecision(
+      vault,
+      id,
+      { status: "ratified", ratifiedAt: "2026-06-08T09:15:01Z", ratifiedBy: "human:mihir" },
+      { expect: "applying" },
+    );
+    expect(done.ok && done.value.status).toBe("ratified");
   });
 
   it("sweeps pending actions past their expiry into expired status", async () => {

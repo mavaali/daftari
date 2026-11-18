@@ -25,9 +25,29 @@
 // is per-process; it is sufficient because Daftari enforces one process per
 // vault (.daftari/process.lock — see CLAUDE.md), so there is never a second
 // writer racing this one. It is NOT a cross-process file lock.
+//
+// Decisions are different (8i1l): an approve spans many awaits (gates, the
+// dispatched write, its commit), so a synchronous section cannot cover it.
+// Every decision on one action — approve, reject, expire, interrupted-approval
+// resolution — runs under withStagedActionDecision: an in-process chain keyed
+// by (vault, id) plus a locks.db lease on stagedActionLockKey(id), which holds
+// across processes. recordDecision then re-checks the collapsed status before
+// it appends, so even a writer that skipped the lock cannot record a second
+// disposition. An approve writes an `applying` record before it dispatches and
+// its terminal record after; an approve interrupted in between stays
+// `applying`, which every decision path refuses until a human resolves it
+// (vault_ratify resolve_interrupted). See docs/architecture.md, "Staged
+// actions".
 
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import {
+  acquireLock,
+  type LockDb,
+  mintLeaseHolder,
+  openLockDb,
+  releaseLock,
+} from "../access/locks.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { getProvider } from "../search/vector.js";
 import {
@@ -65,8 +85,14 @@ export const DEFAULT_TTL_DAYS = 14;
 // is a legacy terminal state from v1.17 (before §11.4 wired up the
 // supersede/merge/confidence-up write tools); it is no longer produced but is
 // kept here so a record written then still collapses to a known status.
+// `applying` (8i1l) is the in-flight marker an approve writes before it
+// dispatches: it ends in `ratified`, or back in `pending` when the dispatch
+// fails. Left behind by a crash, it means "the write may have landed" and is
+// resolved by hand. A daftari that predates it reads it as a non-pending
+// status, so it neither re-applies nor expires the action either.
 export const STAGED_ACTION_STATUSES = [
   "pending",
+  "applying",
   "ratified",
   "rejected",
   "expired",
@@ -198,6 +224,8 @@ interface RawRecord {
   decided_by_principal?: string | null;
   run_id?: string | null;
   base_version?: string | null;
+  // Forensic note on a reopening `pending` record (8i1l); collapse ignores it.
+  reopen_reason?: string;
 }
 
 function readRawRecords(vaultRoot: string): RawRecord[] {
@@ -473,45 +501,150 @@ export async function stageActionWithConflictCheck(
   });
 }
 
-// Appends a decision record (ratify / reject / expire) for an existing action
-// and returns the collapsed result. Does NOT validate that the action is
-// pending — the caller (vault_ratify, the sweep) owns that policy. Errors only
-// if the id was never proposed.
+// --- decision exclusivity (8i1l) ---------------------------------------------
+
+// The locks.db key for one action's decision lease. The double-underscore
+// prefix (same convention as the tension log's `__tensions__`) cannot collide
+// with a vault-relative document path.
+export function stagedActionLockKey(id: string): string {
+  return `__staged_action__:${id}`;
+}
+
+// In-process serialization of decisions on one action — the same promise-chain
+// shape as git.ts's withCommitLock. The stored link always settles resolved,
+// so a failed decision never wedges the chain; entries self-remove once idle.
+const decisionChains = new Map<string, Promise<unknown>>();
+
+function chainDecision<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = decisionChains.get(key) ?? Promise.resolve();
+  const run = prev.then(fn);
+  const link = run.catch(() => undefined);
+  decisionChains.set(key, link);
+  void link.then(() => {
+    if (decisionChains.get(key) === link) decisionChains.delete(key);
+  });
+  return run;
+}
+
+// Runs `fn` as the only decider of action `id`. Within this process, callers
+// queue on a chain keyed by (resolved vault, id) — a queued caller runs after
+// the first finishes and re-reads the status itself. Across processes, the
+// decider holds a locks.db lease on stagedActionLockKey(id); a lease already
+// held by another process is refused, never waited on, so two processes can
+// never interleave check and decision. The lease has the usual 60s TTL, so a
+// crashed decider frees the action within a minute; whatever it left half-done
+// is visible as an `applying` status.
+export function withStagedActionDecision<T>(
+  vaultRoot: string,
+  id: string,
+  agent: string,
+  fn: () => Promise<Result<T, Error>>,
+): Promise<Result<T, Error>> {
+  return chainDecision(`${resolve(vaultRoot)}\0${id}`, async () => {
+    const opened = openLockDb(vaultRoot);
+    if (!opened.ok) return opened;
+    const db = opened.value;
+    const holder = mintLeaseHolder(agent);
+    try {
+      const lease = acquireLock(db, stagedActionLockKey(id), holder);
+      if (!lease.ok) {
+        return err(
+          new Error(
+            `staged action ${id} is being decided by another process — ` +
+              `retry once that decision finishes (${lease.error.message})`,
+          ),
+        );
+      }
+      try {
+        return await fn();
+      } finally {
+        releaseLock(db, stagedActionLockKey(id), holder);
+      }
+    } finally {
+      db.close();
+    }
+  });
+}
+
+export interface RecordDecisionOptions {
+  // The status the action must currently have for this decision to land.
+  // Default `pending`. The approve that wrote an `applying` marker passes
+  // `applying` to complete or release it; so does the interrupted-approval
+  // resolution.
+  expect?: StagedActionStatus;
+}
+
+// Appends one decision record after re-checking the collapsed status, in one
+// synchronous breath (no await between the read and the append). A `pending`
+// decision reopens an action: it carries no ratification fields, so the row
+// collapses back to a clean pending row.
+function appendDecisionChecked(
+  vaultRoot: string,
+  id: string,
+  decision: DecisionInput,
+  expected: StagedActionStatus,
+): Result<StagedActionRow, Error> {
+  // Collapse the pre-existing log ONCE. The decision we are about to write is
+  // fully known, so rather than re-reading + re-collapsing the whole file a
+  // second time to learn the post-write state, we apply this one decision to
+  // the collapsed map in memory — identical to collapse()'s decision branch.
+  const collapsed = collapse(readRawRecords(vaultRoot));
+  const existing = collapsed.get(id);
+  if (!existing) return err(new Error(`staged action not found: ${id}`));
+  // Defense in depth (8i1l): never record a second disposition, whatever the
+  // caller checked earlier. The log stays single-disposition even for a
+  // writer that bypassed withStagedActionDecision.
+  if (existing.status !== expected) {
+    return err(
+      new Error(
+        `staged action ${id} is '${existing.status}', not '${expected}' — ` +
+          `refusing to record '${decision.status}' over it`,
+      ),
+    );
+  }
+
+  const record: RawRecord =
+    decision.status === "pending"
+      ? { id, status: "pending", ...(decision.reason ? { reopen_reason: decision.reason } : {}) }
+      : {
+          id,
+          status: decision.status,
+          ratified_at: decision.ratifiedAt,
+          ratified_by: decision.ratifiedBy,
+          ...(decision.reason ? { ratification_reason: decision.reason } : {}),
+          ...(decision.decidedByPrincipal != null
+            ? { decided_by_principal: decision.decidedByPrincipal }
+            : {}),
+        };
+  mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
+  appendFileSync(stagedActionsPath(vaultRoot), `${JSON.stringify(record)}\n`);
+
+  // Mirror the append onto the in-memory row (same field mapping collapse()
+  // applies to a decision record) so the returned row is the post-write state.
+  existing.status = record.status ?? existing.status;
+  existing.ratified_at = record.ratified_at ?? null;
+  existing.ratified_by = record.ratified_by ?? null;
+  existing.ratification_reason = record.ratification_reason ?? null;
+  existing.decided_by_principal = record.decided_by_principal ?? null;
+  return ok(existing);
+}
+
+// Appends a decision record (ratify / reject / expire / applying / reopen) for
+// an existing action and returns the collapsed result. Refuses unless the
+// action's current status is `opts.expect` (default `pending`) — a decided
+// action keeps exactly one disposition (8i1l). Callers that decide on a user's
+// behalf also run under withStagedActionDecision, so the check and the act are
+// exclusive; this re-check is the backstop.
 export async function recordDecision(
   vaultRoot: string,
   id: string,
   decision: DecisionInput,
+  opts: RecordDecisionOptions = {},
 ): Promise<Result<StagedAction, Error>> {
   try {
-    // Collapse the pre-existing log ONCE. The decision we are about to write is
-    // fully known, so rather than re-reading + re-collapsing the whole file a
-    // second time to learn the post-write state, we apply this one decision to
-    // the collapsed map in memory — identical to collapse()'s decision branch.
-    const collapsed = collapse(readRawRecords(vaultRoot));
-    const existing = collapsed.get(id);
-    if (!existing) return err(new Error(`staged action not found: ${id}`));
-
-    const record: RawRecord = {
-      id,
-      status: decision.status,
-      ratified_at: decision.ratifiedAt,
-      ratified_by: decision.ratifiedBy,
-      ...(decision.reason ? { ratification_reason: decision.reason } : {}),
-      ...(decision.decidedByPrincipal != null
-        ? { decided_by_principal: decision.decidedByPrincipal }
-        : {}),
-    };
-    mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
-    appendFileSync(stagedActionsPath(vaultRoot), `${JSON.stringify(record)}\n`);
-
-    // Mirror the append onto the in-memory row (same field mapping collapse()
-    // applies to a decision record) so the returned row is the post-write state.
-    existing.status = record.status ?? existing.status;
-    existing.ratified_at = record.ratified_at ?? null;
-    existing.ratified_by = record.ratified_by ?? null;
-    existing.ratification_reason = record.ratification_reason ?? null;
-    existing.decided_by_principal = record.decided_by_principal ?? null;
-    return ok(rowToStagedAction(existing));
+    const row = appendDecisionChecked(vaultRoot, id, decision, opts.expect ?? "pending");
+    if (!row.ok) return row;
+    return ok(rowToStagedAction(row.value));
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     return err(new Error(`cannot record decision: ${reason}`));
@@ -542,6 +675,10 @@ export interface StagedActionLintItem {
   ageDays: number;
   expiresInDays: number;
   rationale: string;
+  // 8i1l: true for an approval interrupted between its write and its
+  // decision (status `applying`) — it needs a human to settle it with
+  // vault_ratify resolve_interrupted. Absent on ordinary pending items.
+  interrupted?: true;
 }
 
 // First sentence of a rationale: up to the first sentence-ending period
@@ -553,20 +690,26 @@ function firstSentence(text: string): string {
 }
 
 // Pending actions for the lint "Staged actions" section, soonest-to-expire
-// first. Pure — the lint path derives this from an already-read action list
-// instead of collapsing the log a second time.
+// first, with interrupted approvals (`applying`, 8i1l) ahead of them all and
+// flagged: they no longer read as pending, and must not drop out of sight.
+// Pure — the lint path derives this from an already-read action list instead
+// of collapsing the log a second time.
 export function pendingLintItems(actions: StagedAction[], now: Date): StagedActionLintItem[] {
-  return actions
-    .filter((a) => a.status === "pending")
-    .sort((a, b) => (a.expiresAt < b.expiresAt ? -1 : a.expiresAt > b.expiresAt ? 1 : 0))
-    .map((a) => ({
-      id: a.id,
-      actionType: a.actionType,
-      targetPath: a.targetPath,
-      ageDays: daysSince(a.proposedAt, now),
-      expiresInDays: daysUntil(a.expiresAt, now),
-      rationale: firstSentence(a.rationale),
-    }));
+  const byExpiry = (a: StagedAction, b: StagedAction): number =>
+    a.expiresAt < b.expiresAt ? -1 : a.expiresAt > b.expiresAt ? 1 : 0;
+  const item = (a: StagedAction): StagedActionLintItem => ({
+    id: a.id,
+    actionType: a.actionType,
+    targetPath: a.targetPath,
+    ageDays: daysSince(a.proposedAt, now),
+    expiresInDays: daysUntil(a.expiresAt, now),
+    rationale: firstSentence(a.rationale),
+    ...(a.status === "applying" ? { interrupted: true as const } : {}),
+  });
+  return [
+    ...actions.filter((a) => a.status === "applying").sort(byExpiry),
+    ...actions.filter((a) => a.status === "pending").sort(byExpiry),
+  ].map(item);
 }
 
 // Read-only — the sweep that expires stale actions is a separate step.
@@ -607,16 +750,32 @@ export async function sweepExpiredActions(
       .sort((a, b) => (a.expires_at < b.expires_at ? -1 : a.expires_at > b.expires_at ? 1 : 0));
     const at = toSecondISO(now);
     const expired: string[] = [];
-    if (stale.length > 0) mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
-    for (const row of stale) {
-      const record: RawRecord = {
-        id: row.id,
-        status: "expired",
-        ratified_at: at,
-        ratified_by: SWEEP_PRINCIPAL,
-      };
-      appendFileSync(stagedActionsPath(vaultRoot), `${JSON.stringify(record)}\n`);
-      expired.push(row.id);
+    if (stale.length === 0) return ok({ expired });
+    // 8i1l: each expiry is a decision like any other. It takes the action's
+    // decision lease (skipping an action someone is deciding right now — the
+    // next sweep gets it if it is still pending) and re-checks `pending`
+    // under the lease, so an expiry never lands on top of an approval.
+    const opened = openLockDb(vaultRoot);
+    if (!opened.ok) return opened;
+    const db: LockDb = opened.value;
+    const holder = mintLeaseHolder(SWEEP_PRINCIPAL);
+    try {
+      for (const row of stale) {
+        if (!acquireLock(db, stagedActionLockKey(row.id), holder).ok) continue;
+        try {
+          const decided = appendDecisionChecked(
+            vaultRoot,
+            row.id,
+            { status: "expired", ratifiedAt: at, ratifiedBy: SWEEP_PRINCIPAL },
+            "pending",
+          );
+          if (decided.ok) expired.push(row.id);
+        } finally {
+          releaseLock(db, stagedActionLockKey(row.id), holder);
+        }
+      }
+    } finally {
+      db.close();
     }
     return ok({ expired });
   } catch (e) {

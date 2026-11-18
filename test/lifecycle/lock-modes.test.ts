@@ -20,7 +20,7 @@ import {
   readLockfile,
 } from "../../src/lifecycle/lock.js";
 
-function lockDataFor(vault: string, pid: number, mode?: "stdio" | "serve"): LockData {
+function lockDataFor(vault: string, pid: number, mode?: "stdio" | "serve" | "cli"): LockData {
   return {
     daftari: true,
     pid,
@@ -82,7 +82,7 @@ describe("mode-aware process lock (#5)", () => {
     return pid;
   }
 
-  function writeHolderLock(pid: number, mode?: "stdio" | "serve"): void {
+  function writeHolderLock(pid: number, mode?: "stdio" | "serve" | "cli"): void {
     // Same host = same host id + MACs + the holder's temp-dir marker.
     writeFileSync(holderMarkerPath(`n-${pid}`) as string, String(pid));
     writeFileSync(
@@ -149,6 +149,33 @@ describe("mode-aware process lock (#5)", () => {
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.error.message).toContain("mode=stdio");
+  });
+
+  // 8i1l: a one-shot CLI writer (distill --review --yes) holds the vault for
+  // the length of its batch. It must never replace a live holder, and a live
+  // CLI batch must never be SIGTERMed mid-write by a stdio start.
+  it("cli REFUSES against any live holder and never signals it", async () => {
+    const pid = await spawnHolder();
+    for (const holderMode of ["stdio", "serve"] as const) {
+      writeHolderLock(pid, holderMode);
+      const r = await acquireLock(vault, "test", { mode: "cli" });
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.error.message).toContain(`pid=${pid}`);
+    }
+    expect(holder?.killed).toBe(false);
+  });
+
+  it("stdio REFUSES against a live cli holder instead of SIGTERMing it", async () => {
+    const pid = await spawnHolder();
+    writeHolderLock(pid, "cli");
+    const r = await acquireLock(vault, "test", { mode: "stdio" });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toMatch(/one-shot daftari command/);
+    expect(holder?.killed).toBe(false);
+    const still = readLockfile(vault);
+    expect(still.ok && still.value?.pid).toBe(pid);
   });
 
   it("stale serve locks are overwritten silently in every mode", async () => {
