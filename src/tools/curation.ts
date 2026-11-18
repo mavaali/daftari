@@ -941,7 +941,9 @@ const lintOutputSchema: Record<string, unknown> = {
     },
     stagedActions: {
       type: "array",
-      description: "Pending staged actions awaiting ratification, soonest-to-expire first",
+      description:
+        "Pending staged actions awaiting ratification, soonest-to-expire first; " +
+        "interrupted approvals (interrupted: true) are listed ahead of them",
       items: {
         type: "object",
         properties: {
@@ -951,6 +953,12 @@ const lintOutputSchema: Record<string, unknown> = {
           ageDays: { type: "integer" },
           expiresInDays: { type: "integer" },
           rationale: { type: "string", description: "First sentence of the staged rationale" },
+          interrupted: {
+            type: "boolean",
+            description:
+              "Present (true) for an approval interrupted between its write and its " +
+              "decision; settle it with vault_ratify resolve_interrupted",
+          },
         },
         required: ["id", "actionType", "targetPath", "ageDays", "expiresInDays", "rationale"],
         additionalProperties: false,

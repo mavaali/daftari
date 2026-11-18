@@ -837,6 +837,43 @@ surfaces pending actions soonest-to-expire first and expires past-TTL ones as a
 housekeeping sweep on each run — the queue can grow stale, but it never grows
 unbounded.
 
+**One decision per action.** An approve takes tens of milliseconds (gates, the
+dispatched write, its commit), so two decisions on one action used to race:
+approve and reject could both succeed, and two approves could apply a write
+twice. Every decision now runs as the only decider of its action — approve,
+reject, the expiry sweep, and the interrupted-approval resolution below. Inside
+a process, decisions on one action queue on an in-process chain; a queued
+caller re-reads the status when its turn comes, so the loser of a race gets
+"not pending". Across processes, the decider holds a `.daftari/locks.db` lease
+on the action (`__staged_action__:<id>`, the usual 60s TTL); a second process
+finding it held is refused ("being decided by another process") rather than
+made to wait, and the sweep skips that action until its next run. Under all of
+that, the log append itself re-checks the collapsed status and refuses to
+record a decision over anything but the status it expects, so the log stays
+single-disposition even for a writer that skipped the lock. `daftari distill
+--review --yes` is the one batch writer outside the servers; it ratifies only
+while holding the vault process lock (mode `cli`), refuses with exit 6 when a
+live serve or stdio session holds the vault, and is never SIGTERMed by a stdio
+start.
+
+**Interrupted approvals.** An approve appends an `applying` record before it
+dispatches and its terminal `ratified` record after. A dispatch that fails, a
+shadow-mode dispatch, and a stale write each append a record that returns the
+action to `pending`, so a retry works as before. If the process dies between
+the write and the terminal record, the action stays `applying`. That status
+means "the write may or may not have landed": approve refuses it (it could
+apply twice), reject refuses it (it could stand over a landed write), the
+expiry sweep leaves it alone, and `vault_lint` lists it first with
+`interrupted: true`. A human inspects the target (`vault_read`,
+`vault_provenance`, `git log`) and calls `vault_ratify` with
+`resolve_interrupted: "landed"` — recorded as ratified, nothing applied — or
+`"not-landed"`, which returns it to `pending` to approve or reject again. Logs
+written before this change have no `applying` records and collapse as before; a
+daftari that predates it reads `applying` as a non-pending status, so it
+neither re-applies nor expires the action. A crash during a decision also
+leaves its lease for up to 60s, during which a retry is refused as "being
+decided by another process".
+
 #### derives_from edges
 
 The earned re-derivation graph (§11.3) is the trust substrate the consolidation
