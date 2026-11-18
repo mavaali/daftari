@@ -83,11 +83,12 @@ export function renderMarkdown(report: SleepReport): string {
 
   lines.push(`## Wake list — ${c.wake.length} advisory task(s)`);
   if (c.wake.length === 0) {
-    lines.push("Nothing needs waking. No canonical accumulation document matched a wake trigger.");
+    lines.push("Nothing needs waking. No accumulation document matched a wake trigger.");
   } else {
     lines.push(
       "Canonical accumulation documents triggered by decay, ended validity, or " +
-        "retracted/vanished grounding. Point an agent at the wake queue to re-verify and stage diffs for " +
+        "retracted/vanished grounding, and any live accumulation document (drafts " +
+        "included) whose grounding is at risk. Point an agent at the wake queue to re-verify and stage diffs for " +
         "ratification — the vault never re-verifies on its own.",
     );
     lines.push("");

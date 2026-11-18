@@ -660,6 +660,35 @@ export function inboundLinkers(
     .all(targetPath) as { path: string; status: string; kind: DocEdgeKind }[];
 }
 
+// The indexed documents `sourcePath` cites in its `sources` (one hop, nlzr),
+// projected to the columns a grounding assessment reads — no content blob, no
+// JSON parse. Joined to `documents`, so a cited doc that no longer exists is
+// simply absent (vanished grounding is reported elsewhere). Ordered by path.
+export interface SourceTargetRow {
+  path: string;
+  collection: string;
+  status: string;
+  supersededBy: string | null;
+  updated: string;
+  ttlDays: number | null;
+  validFrom: string | null;
+  validUntil: string | null;
+}
+
+export function outgoingSourceRows(db: IndexDb, sourcePath: string): SourceTargetRow[] {
+  return db
+    .prepare(
+      `SELECT d.path AS path, d.collection AS collection, d.status AS status,
+              d.superseded_by AS supersededBy, d.updated AS updated,
+              d.ttl_days AS ttlDays, d.valid_from AS validFrom, d.valid_until AS validUntil
+         FROM doc_links AS l
+         JOIN documents AS d ON d.path = l.target_path
+        WHERE l.source_path = ? AND l.kind = 'source'
+        ORDER BY d.path`,
+    )
+    .all(sourcePath) as SourceTargetRow[];
+}
+
 // --- declared amendments (#643) ---------------------------------------------
 //
 // doc_amends inverts `amends` frontmatter so "what amends this document?" is

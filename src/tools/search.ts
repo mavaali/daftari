@@ -14,6 +14,11 @@ import {
   splitUpstreamVisibility,
 } from "../curation/edge-staleness.js";
 import {
+  GROUNDING_AT_RISK_SCHEMA,
+  groundingFromIndex,
+  groundingSummary,
+} from "../curation/grounding.js";
+import {
   ensureLedgerWritable,
   leakLedgerPath,
   recordLeakLedgerEntries,
@@ -267,6 +272,10 @@ async function annotateAndLogServedHits(
       const unverifiableBucket = bucketHiddenDownstream(visibleUnverifiable);
       if (unverifiableBucket !== "none") hit.unverifiableUpstream = unverifiableBucket;
     }
+    // nlzr: grounding at risk — the one shared assessment vault_read and
+    // vault_receipt use, from the caller's vantage on the same open handle.
+    const grounding = groundingFromIndex(vaultRoot, db, hit.path, access);
+    if (grounding) hit.groundingAtRisk = grounding;
     entries.push({
       tool,
       file: hit.path,
@@ -1434,6 +1443,7 @@ const hybridHitSchema = {
       description: "No inbound links or sources citations from the caller's vantage.",
     },
     retiredStillLinked: { type: "boolean" },
+    groundingAtRisk: GROUNDING_AT_RISK_SCHEMA,
     viaCoverage: {
       type: "boolean",
       description: "True when the coverage pass added this doc rather than the ranker.",
@@ -1526,7 +1536,8 @@ function summaryLine(rank: number, hit: HybridHit): string {
   const snippet =
     head.length > SUMMARY_SNIPPET_MAX ? `${head.slice(0, SUMMARY_SNIPPET_MAX)}…` : head;
   const tail = snippet.length > 0 ? ` — ${snippet}` : "";
-  return `${rank}. ${hit.path} (${hit.score.toFixed(3)})${tail}${amendedByTail(hit)}`;
+  const grounding = hit.groundingAtRisk ? ` · ${groundingSummary(hit.groundingAtRisk)}` : "";
+  return `${rank}. ${hit.path} (${hit.score.toFixed(3)})${tail}${amendedByTail(hit)}${grounding}`;
 }
 
 // The relation is the whole point of the annotation, so its paths ride the
@@ -1599,6 +1610,9 @@ export const searchTools: ToolDefinition[] = [
       "Hits may carry `contested`: unresolved recorded tensions involving " +
       "the document, with both claims shown (`claimSelf`/`claimOther`), " +
       "capped at 3 per hit; `contestedCount` reports the true total. " +
+      "Hits may carry `groundingAtRisk`: a vault source the document cites " +
+      "one hop up is contested, past its TTL or validity, superseded, or " +
+      "retracted, each reason naming the source (unreadable sources omitted). " +
       "Pass rerank_candidates to also receive a `rerank` block — the top-K " +
       "of the fused ranking as compact judging records plus instructions — " +
       "and act as the reranker yourself: fusion scores measure retrieval " +
