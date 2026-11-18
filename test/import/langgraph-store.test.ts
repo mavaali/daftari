@@ -4,11 +4,11 @@
 // is tested.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { load } from "js-yaml";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   applyPlan,
@@ -16,9 +16,23 @@ import {
   type LanggraphImportOptions,
   readStoreRows,
   renderPlan,
+  runLanggraphImport,
   type StoreRow,
   slugifyKey,
 } from "../../src/import/langgraph-store.js";
+
+const pgRows = vi.hoisted(() => ({ rows: [] as unknown[] }));
+
+// Stands in for the live store so the CLI runner can be driven end to end.
+vi.mock("pg", () => ({
+  default: {
+    Client: class {
+      connect = async () => {};
+      end = async () => {};
+      query = async (sql: string) => ({ rows: sql.startsWith("SELECT") ? pgRows.rows : [] });
+    },
+  },
+}));
 
 function makeRow(overrides: Partial<StoreRow> = {}): StoreRow {
   return {
@@ -201,9 +215,68 @@ describe("applyPlan", () => {
   it("no-ops cleanly on an empty plan", async () => {
     const vault = makeVault();
     const opts = makeOpts(vault, { apply: true, yes: true });
-    const res = await applyPlan({ notes: [], skipped: [], byPrefix: {} }, opts);
+    const res = await applyPlan({ notes: [], skipped: [], ignored: [], byPrefix: {} }, opts);
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.value).toEqual({ written: 0, commit: null });
+  });
+});
+
+describe("runLanggraphImport with a vault ignore list", () => {
+  const tmpDirs: string[] = [];
+  afterEach(() => {
+    vi.restoreAllMocks();
+    for (const dir of tmpDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function makeVault(config: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "daftari-lg-ignore-"));
+    tmpDirs.push(dir);
+    mkdirSync(join(dir, ".daftari"));
+    writeFileSync(join(dir, ".daftari", "config.yaml"), config, "utf-8");
+    return dir;
+  }
+
+  async function run(vault: string, ...flags: string[]) {
+    pgRows.rows = [makeRow(), makeRow({ key: "k2", prefix: "v1.ops" })];
+    const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const code = await runLanggraphImport(vault, ["--dsn", "postgresql://x", ...flags]);
+    return {
+      code,
+      stdout: stdout.mock.calls.map((call) => call[0]).join(""),
+      stderr: stderr.mock.calls.map((call) => call[0]).join(""),
+    };
+  }
+
+  const IGNORE_OPS = "version: 1\nignore:\n  - langgraph/ops\n";
+
+  it("--apply writes the rest and reports what the vault ignores", async () => {
+    const vault = makeVault(IGNORE_OPS);
+    const { code, stdout } = await run(vault, "--apply", "--yes");
+
+    expect(code).toBe(0);
+    expect(stdout).toContain("wrote 1 claim notes");
+    expect(stdout).toMatch(/skipped \(vault 'ignore' config\): 1 — e\.g\. langgraph\/ops\//);
+    expect(existsSync(join(vault, "langgraph", "pricing"))).toBe(true);
+    expect(existsSync(join(vault, "langgraph", "ops"))).toBe(false);
+  });
+
+  it("--plan counts only the notes it would write", async () => {
+    const { code, stdout } = await run(makeVault(IGNORE_OPS), "--plan");
+
+    expect(code).toBe(0);
+    expect(stdout).toContain("claim notes to create: 1");
+    expect(stdout).not.toContain("v1.ops: 1");
+    expect(stdout).toMatch(/skipped \(vault 'ignore' config\): 1 — e\.g\. langgraph\/ops\//);
+  });
+
+  it("refuses a malformed config before reading the store", async () => {
+    const vault = makeVault("version: 1\nignore: 42\n");
+    const { code, stderr } = await run(vault, "--apply", "--yes");
+
+    expect(code).toBe(1);
+    expect(stderr).toContain("daftari import langgraph-store:");
+    expect(existsSync(join(vault, "langgraph"))).toBe(false);
   });
 });
 

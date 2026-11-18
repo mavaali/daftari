@@ -1429,7 +1429,10 @@ const hybridHitSchema = {
         "Coarse bucket of VISIBLE upstream inputs the caller can no longer " +
         "verify (deleted/evicted). Never an exact count (#217/#416).",
     },
-    orphan: { type: "boolean", description: "No inbound links from the caller's vantage." },
+    orphan: {
+      type: "boolean",
+      description: "No inbound links or sources citations from the caller's vantage.",
+    },
     retiredStillLinked: { type: "boolean" },
     viaCoverage: {
       type: "boolean",

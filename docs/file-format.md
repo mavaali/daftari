@@ -78,7 +78,7 @@ always valid even though you never typed those two fields.
 | Status | Meaning |
 |--------|---------|
 | `draft` | In progress. Where new knowledge starts. Lives anywhere, often in `_drafts/`. |
-| `canonical` | Vetted and trusted. Reached only via `vault_promote`, which requires complete frontmatter. |
+| `canonical` | Vetted and trusted. Reached via `vault_promote`, which requires a draft with complete frontmatter. Setting `canonical` on a new or non-canonical document needs the role's `promote` grant on every write path — `vault_write` (create or update), `vault_merge` (override or a status inherited from `path_a` into a target that was not already canonical), and `vault_ratify` of a staged write or merge, where the ratifier needs the grant. A role with the grant may write a document as `canonical` directly; a role without it is refused and pointed at `vault_promote`. Editing an already-canonical document without changing its status needs only `write`. |
 | `deprecated` | No longer current. Set by `vault_deprecate` with a required reason. Kept, not deleted. |
 | `superseded` | Replaced by a specific newer document. Typically paired with `superseded_by`. |
 | `archived` | Retired from active curation but retained for the record. |
@@ -377,7 +377,7 @@ frontmatter is what tooling reads.
 ### Links: wikilinks vs. markdown links
 
 Daftari parses **both** internal link styles when it builds the inter-document
-link graph for `vault_lint`'s orphan and deprecated-still-linked checks:
+link graph for `vault_lint`'s orphan and retired-still-linked checks:
 
 | Style | Example | Resolved by |
 |-------|---------|-------------|
@@ -389,9 +389,23 @@ External URLs and pure `#anchor` links are ignored — they do not create graph
 edges. Prefer wikilinks for cross-references within the vault: they survive a
 document being moved between collections, since they resolve by basename.
 
-A document that no other document links to is reported as an **orphan** by
+A `sources` entry that resolves to a vault document also counts as an inbound
+edge for the orphan check. It does not feed retired-still-linked: a canonical
+document citing a deprecated source is reported as a `lifecycleConflicts`
+finding instead.
+
+A vault path in backticks is not an edge. A code span is literal text and can't
+be told apart from a path quoted in a command or a counterexample. When an
+orphan is named that way, its lint finding lists the documents that do it, so
+you can add a wikilink or a `sources` entry there.
+
+A document that nothing links to or cites is reported as an **orphan** by
 `vault_lint` — not an error, but a signal that a piece of knowledge is
 disconnected from the rest of the vault.
+
+`vault_lint` also returns `orphanSummary`, with the two counts either side of
+`orphanFiles`: `noInboundLink` (no wikilink or markdown link points here) and
+`nothingRefers` (an orphan that no backticked path names either).
 
 ## A complete example
 

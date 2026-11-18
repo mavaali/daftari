@@ -78,7 +78,7 @@ function certaintyFor(check: LintCheckName): Confidence {
 
 const SUGGESTED_ACTIONS: Record<LintCheckName, string> = {
   staleFiles: "Update or archive the document; its TTL has expired",
-  orphanFiles: "Link to this document from at least one other vault document",
+  orphanFiles: "Link to this document or cite it in sources from another vault document",
   oldDrafts: "Promote, abandon, or archive this draft",
   stagnantLowConfidence: "Revisit and update this low-confidence document",
   retiredStillLinked: "Remove or update links to this retired document",

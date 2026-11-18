@@ -13,12 +13,14 @@
 // (makeTempVault). proposals are staged directly via proposeAllClaims with a
 // known run_id; the LLM extraction stage is not involved.
 
-import { existsSync } from "node:fs";
+import { type ChildProcess, spawn } from "node:child_process";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listStagedActions } from "../../src/curation/staged-actions.js";
 import { runDistill } from "../../src/distill/cli.js";
 import { readDistillState } from "../../src/distill/state.js";
+import { holderMarkerPath, hostId, hostMacs, readLockfile } from "../../src/lifecycle/lock.js";
 import {
   captureStdout,
   makeClaim,
@@ -202,5 +204,98 @@ describe("daftari distill --review (U9)", () => {
     expect(pending.ok).toBe(true);
     if (!pending.ok) return;
     expect(pending.value.filter((a) => a.runId === runB)).toHaveLength(0);
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// 8i1l: --review --yes ratifies only while holding the vault process lock.
+// Before, it called vault_ratify from a second process while a live serve held
+// the vault, and the two appended decisions to one log (T02: 8/100 runs ended
+// [rejected, ratified]).
+// ---------------------------------------------------------------------------
+
+describe("daftari distill --review vs the vault process lock (8i1l)", () => {
+  let vault: string;
+  let holder: ChildProcess | null = null;
+
+  beforeEach(() => {
+    vault = makeTempVault();
+  });
+
+  afterEach(() => {
+    if (holder) {
+      holder.kill("SIGKILL");
+      holder = null;
+    }
+    cleanupVault(vault);
+  });
+
+  // A fresh same-host lease naming a live (inert) pid: a live serve holder as
+  // far as the refusal matrix is concerned.
+  function holdVaultAsServe(): number {
+    holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    const pid = holder.pid;
+    if (pid === undefined) throw new Error("spawn failed");
+    const nonce = `n-${pid}`;
+    writeFileSync(holderMarkerPath(nonce) as string, String(pid));
+    mkdirSync(join(vault, ".daftari"), { recursive: true });
+    writeFileSync(
+      join(vault, ".daftari", "process.lock"),
+      JSON.stringify({
+        daftari: true,
+        pid,
+        vaultRoot: vault,
+        startedAt: new Date().toISOString(),
+        version: "test",
+        mode: "serve",
+        bind: "127.0.0.1:8787",
+        host: hostId(),
+        macs: hostMacs(),
+        nonce,
+        heartbeatAt: new Date().toISOString(),
+        heartbeatMs: 1_000,
+        leaseMs: 60_000,
+      }),
+    );
+    return pid;
+  }
+
+  it("refuses --yes while a live serve holds the vault, and ratifies nothing", async () => {
+    const runA = "distill-run-lock";
+    await stageRun(vault, "chat-lock", runA, [makeClaim("held-claim", "abab0001")]);
+    const pid = holdVaultAsServe();
+
+    // captureStdout swallows stderr; this test needs to read it.
+    const errs: string[] = [];
+    const spyOut = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const spyErr = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      errs.push(String(chunk));
+      return true;
+    });
+    let code: number;
+    try {
+      code = await runDistill(["--vault", vault, "--review", runA, "--yes"]);
+    } finally {
+      spyOut.mockRestore();
+      spyErr.mockRestore();
+    }
+
+    expect(code).toBe(6);
+    expect(errs.join("")).toMatch(/daftari serve/);
+    const pending = await listStagedActions(vault, "pending");
+    expect(pending.ok && pending.value.filter((a) => a.runId === runA)).toHaveLength(1);
+    // The holder keeps the vault.
+    const still = readLockfile(vault);
+    expect(still.ok && still.value?.pid).toBe(pid);
+  }, 60_000);
+
+  it("the dry-run needs no lock; --yes releases the lock when done", async () => {
+    const runA = "distill-run-free";
+    await stageRun(vault, "chat-free", runA, [makeClaim("free-claim", "abab0002")]);
+    const { code } = await captureStdout(() =>
+      runDistill(["--vault", vault, "--review", runA, "--yes"]),
+    );
+    expect(code).toBe(0);
+    expect(existsSync(join(vault, ".daftari", "process.lock"))).toBe(false);
   }, 60_000);
 });

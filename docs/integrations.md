@@ -454,7 +454,7 @@ The following files are local operator state and are ignored by Git:
 | `.daftari/integrations.state.enc` | AES-256-GCM encrypted tokens, OAuth transactions, cursors, webhook secrets/subscriptions, source IDs/revisions/hashes, Microsoft enrollment records (who/when/collection/audience-ack), and run references |
 | `.daftari/integration-queue.json` | Metadata-only durable webhook work and processed-event replay tombstones retained for up to 30 days and capped at 20,000 IDs |
 | `.daftari/integration-review.jsonl` | Append-only unavailable-source review events |
-| `.daftari/distill-state.json` | Distill hashes, landed claim keys, and an exact distilled-claim remainder while a partial proposal batch is retrying |
+| `.daftari/distill-state.json` | Distill hashes, landed claim keys, an exact distilled-claim remainder while a partial proposal batch is retrying, and anchors of chunks whose extraction failed and will be retried |
 
 Fetched document text and provider response bodies are held in memory only for
 normalization and distillation, then discarded. The staged Markdown proposals

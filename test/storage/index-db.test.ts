@@ -28,6 +28,7 @@ import {
   insertEmbeddingVec,
   openIndexDb,
   parseJsonColumn,
+  replaceDocLinks,
   replaceDocumentFields,
   setMeta,
 } from "../../src/storage/index-db.js";
@@ -270,11 +271,11 @@ describe("index-db", () => {
     expect(documentCount(db)).toBe(0);
     expect(embeddingCount(db)).toBe(1);
     expect(db.prepare("SELECT COUNT(*) AS n FROM document_fields").get()).toEqual({ n: 0 });
-    expect(getMeta(db, "schema_version")).toBe("14");
+    expect(getMeta(db, "schema_version")).toBe("15");
     expect(getMeta(db, "vault_manifest")).toBeNull();
   });
 
-  it("schema 13 → 14 rebuild: an index built by #646 is dropped so doc_amends gets populated", () => {
+  it("schema 13 rebuild: an index built by #646 is dropped so doc_amends gets populated", () => {
     // #646 and #643 both bumped to "13". An index stamped "13" by the #646 build
     // must still rebuild, or doc_amends stays empty until a manual reindex.
     setMeta(db, "schema_version", "13");
@@ -287,8 +288,34 @@ describe("index-db", () => {
     db = reopened.value;
 
     expect(documentCount(db)).toBe(0);
-    expect(getMeta(db, "schema_version")).toBe("14");
+    expect(getMeta(db, "schema_version")).toBe("15");
     expect(getMeta(db, "vault_manifest")).toBeNull();
+  });
+
+  it("schema 14 → 15 rebuild: replaces the kind-less doc_links table", () => {
+    db.exec(`
+      DROP TABLE doc_links;
+      CREATE TABLE doc_links (
+        source_path TEXT NOT NULL,
+        target_path TEXT NOT NULL,
+        PRIMARY KEY (source_path, target_path)
+      );
+      INSERT INTO doc_links VALUES ('a.md', 'b.md');
+    `);
+    // "14" is what #643 (PR #657) stamps; an index at 14 has the kind-less table.
+    setMeta(db, "schema_version", "14");
+    db.close();
+
+    const reopened = openIndexDb(vault, LOCAL_MINILM_DIM);
+    if (!reopened.ok) throw reopened.error;
+    db = reopened.value;
+
+    expect(db.prepare("SELECT COUNT(*) AS n FROM doc_links").get()).toEqual({ n: 0 });
+    replaceDocLinks(db, "a.md", [
+      { target: "b.md", kind: "link" },
+      { target: "b.md", kind: "source" },
+    ]);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM doc_links").get()).toEqual({ n: 2 });
   });
 
   it("schema 4 → 5 rebuild: a v4 index is dropped and recreated cleanly", () => {
@@ -310,7 +337,7 @@ describe("index-db", () => {
     db = reopened.value;
 
     expect(documentCount(db)).toBe(0);
-    expect(getMeta(db, "schema_version")).toBe("14");
+    expect(getMeta(db, "schema_version")).toBe("15");
     // The fresh index includes the document-fields projection in addition to
     // the document/chunk/cache/meta tables and both virtual search tables.
     const tables = db

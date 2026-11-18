@@ -10,15 +10,17 @@
 import { readFileSync } from "node:fs";
 import { basename, extname, resolve } from "node:path";
 import { withCallBudget } from "../consolidate/call-budget.js";
-import { listStagedActions } from "../curation/staged-actions.js";
+import { listStagedActions, type StagedAction } from "../curation/staged-actions.js";
 import type { LlmTransport } from "../eval/llm-openrouter.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import { acquireLock, releaseLock } from "../lifecycle/lock.js";
 import { vaultRatify } from "../tools/staged-actions.js";
 import {
   DEFAULT_CORROBORATION_THRESHOLD,
   type DistillConfig,
   loadConfig,
 } from "../utils/config.js";
+import { DAFTARI_VERSION } from "../version.js";
 import type { SourceAdapter } from "./adapters/types.js";
 import { chunkMessages } from "./chunk.js";
 import { buildReceipt, planDistill } from "./cost.js";
@@ -26,7 +28,7 @@ import { extractClaims, resolveMaxClaims } from "./extract.js";
 import { ADAPTER_REGISTRY, DISTILL_NOT_CONFIGURED_MSG, resolveDistillClient } from "./index.js";
 import { makeOverlapHinter } from "./propose.js";
 import { appendDistillReceipt } from "./receipt-store.js";
-import { distillUpsert, recordLandedClaim } from "./state.js";
+import { distillUpsert, pendingChunkRetry, recordLandedClaim } from "./state.js";
 
 // ---------------------------------------------------------------------------
 // CLI front door — U7
@@ -87,6 +89,9 @@ Exit codes:
   4   Partial failure (some claims failed to stage, or some proposals failed to ratify).
   5   Extraction failed: every chunk errored, so nothing was staged and the
       source's distill state was left unchanged (re-run once the cause is fixed).
+  6   Vault busy: --review --yes/--auto-safe found another daftari holding the
+      vault (a running serve or stdio session) and ratified nothing. Approve
+      through that instance's vault_ratify, or stop it and re-run.
 `;
 
 /**
@@ -203,7 +208,7 @@ function resolveDistillConfig(vaultRoot: string): Result<DistillConfig, Error> {
  *   --propose:        full LLM-driven extraction + staged proposals.
  *   --review:         batch-ratify a prior run's staged proposals.
  *
- * Returns an exit code (0/2/3/4/5); the caller sets process.exitCode.
+ * Returns an exit code (0/2/3/4/5/6); the caller sets process.exitCode.
  * Diagnostics go to stderr; clean output goes to stdout.
  */
 export async function runDistill(argv: string[]): Promise<number> {
@@ -561,13 +566,25 @@ export async function runDistill(argv: string[]): Promise<number> {
   const budgetedClient = withCallBudget(clientRes.value.client, config.maxLlmCalls);
 
   const runId = makeRunId();
+  const scope = senderFlag !== undefined ? `sender:${senderFlag}` : undefined;
+
+  // kphd: an unchanged source whose last run left failed chunks re-extracts
+  // only those chunks (anchors are content-derived, so they match).
+  const retryAnchors = new Set(pendingChunkRetry(vaultRoot, { sourceId, sourceContent, scope }));
+  const extractChunks =
+    retryAnchors.size > 0 ? chunks.filter((c) => retryAnchors.has(c.anchor)) : chunks;
+  if (retryAnchors.size > 0) {
+    process.stderr.write(
+      `daftari distill: re-extracting ${extractChunks.length} previously failed chunk(s)\n`,
+    );
+  }
 
   process.stderr.write(
     `daftari distill: extracting claims from ${sourceId} ` +
-      `(${chunks.length} chunks, max ${config.maxLlmCalls} LLM calls)...\n`,
+      `(${extractChunks.length} chunks, max ${config.maxLlmCalls} LLM calls)...\n`,
   );
 
-  const outcome = await extractClaims(chunks, budgetedClient, {
+  const outcome = await extractClaims(extractChunks, budgetedClient, {
     model: config.model,
     maxClaims: runConfig.maxClaims,
     inCallInputCap: config.inCallInputCap,
@@ -584,8 +601,15 @@ export async function runDistill(argv: string[]): Promise<number> {
   // there is nothing to stage, and calling distillUpsert would record this
   // source as distilled. Persist the receipt (the calls were still spent) and
   // fail loudly instead of printing a "complete" summary with claims: 0.
+  // A retry is exempt: the source's hash is already recorded from a partial
+  // run, so a retry that fails again is still a partial run (exit 0) and its
+  // chunks stay pending.
   const attemptedChunks = outcome.llmCalls - (outcome.budget_exhausted ? 1 : 0);
-  if (attemptedChunks > 0 && outcome.chunkErrors.length === attemptedChunks) {
+  if (
+    retryAnchors.size === 0 &&
+    attemptedChunks > 0 &&
+    outcome.chunkErrors.length === attemptedChunks
+  ) {
     const failedReceipt = buildReceipt({
       outcome,
       config: runConfig,
@@ -621,7 +645,15 @@ export async function runDistill(argv: string[]): Promise<number> {
     runId,
     overlapSearch: hinter,
     extractionErrors: outcome.chunkErrors.length,
-    ...(senderFlag !== undefined ? { scope: `sender:${senderFlag}` } : {}),
+    failedChunkAnchors: [
+      ...outcome.chunkErrors.map((ce) => ce.anchor),
+      // A retry cut short (call budget, claim cap) keeps the pending chunks it
+      // never reached; extraction walks chunks in order, so they are the tail.
+      ...(retryAnchors.size > 0
+        ? extractChunks.slice(Math.max(attemptedChunks, 0)).map((c) => c.anchor)
+        : []),
+    ],
+    ...(scope !== undefined ? { scope } : {}),
   });
 
   if (!upsertRes.ok) {
@@ -685,6 +717,13 @@ export async function runDistill(argv: string[]): Promise<number> {
       `daftari distill: source ${sourceId} is unchanged since its last recorded distill — ` +
         `${outcome.claims.length} extracted claim(s) were not staged. To re-stage, remove ` +
         `sources["${sourceId}"] from .daftari/distill-state.json and re-run.\n`,
+    );
+  }
+
+  const pendingRetry = upsert.pendingRetryAnchors ?? [];
+  if (pendingRetry.length > 0) {
+    process.stderr.write(
+      `daftari distill: ${pendingRetry.length} chunk(s) pending retry on the next run\n`,
     );
   }
 
@@ -756,7 +795,13 @@ function parseCorroboration(proposedDiff: unknown): number {
  * the rest stay queued for a human. Plain `--yes` ratifies everything and
  * ignores the threshold. When both are given, `--yes` wins (with a stderr note).
  *
- * Exit codes: 0 = success (including empty match / dry-run); 4 = one or more
+ * 8i1l: ratifying holds the vault process lock (mode `cli`) for the whole
+ * batch, like every other process that writes the vault. A live serve or
+ * stdio holder refuses it (exit 6) instead of letting two processes append
+ * decisions to one log. The dry-run reads only and takes no lock.
+ *
+ * Exit codes: 0 = success (including empty match / dry-run); 6 = the vault is
+ * held by another daftari and nothing was ratified; 4 = one or more
  * ratifies failed.
  */
 async function reviewRun(
@@ -812,9 +857,52 @@ async function reviewRun(
     return 0;
   }
 
+  if (toRatify.length === 0) {
+    return reviewSummary(runId, matched.length, 0, 0, 0, autoSafe && !yesAll);
+  }
+
+  let leaseLost = false;
+  const locked = await acquireLock(vaultRoot, DAFTARI_VERSION, {
+    mode: "cli",
+    onLeaseLost: () => {
+      leaseLost = true;
+    },
+  });
+  if (!locked.ok) {
+    process.stderr.write(
+      `daftari distill: cannot ratify — ${locked.error.message} Nothing was ratified.\n`,
+    );
+    return 6;
+  }
+  try {
+    return await ratifyBatch(vaultRoot, runId, principal, matched.length, toRatify, {
+      gated: autoSafe && !yesAll,
+      leaseLost: () => leaseLost,
+    });
+  } finally {
+    releaseLock(vaultRoot);
+  }
+}
+
+async function ratifyBatch(
+  vaultRoot: string,
+  runId: string,
+  principal: string,
+  matchedCount: number,
+  toRatify: StagedAction[],
+  opts: { gated: boolean; leaseLost: () => boolean },
+): Promise<number> {
   let approved = 0;
   let failed = 0;
   for (const action of toRatify) {
+    // Another process took the vault over (serve --takeover): stop writing.
+    if (opts.leaseLost()) {
+      process.stderr.write(
+        "daftari distill: lost the vault process lock to another daftari; stopping\n",
+      );
+      failed += toRatify.length - approved - failed;
+      break;
+    }
     const ratifyRes = await vaultRatify(vaultRoot, {
       id: action.id,
       decision: "approve",
@@ -847,15 +935,26 @@ async function reviewRun(
     }
   }
 
+  return reviewSummary(runId, matchedCount, toRatify.length, approved, failed, opts.gated);
+}
+
+function reviewSummary(
+  runId: string,
+  matchedCount: number,
+  ratifyCount: number,
+  approved: number,
+  failed: number,
+  gated: boolean,
+): number {
   // queued-below-threshold is only meaningful on the --auto-safe path, where
   // the corroboration gate held some proposals back for a human.
-  const queued = matched.length - toRatify.length;
+  const queued = matchedCount - ratifyCount;
   process.stdout.write(
     [
       `distill --review complete`,
       `  run-id:     ${runId}`,
       `  approved:   ${approved}`,
-      ...(autoSafe && !yesAll ? [`  queued (below threshold): ${queued}`] : []),
+      ...(gated ? [`  queued (below threshold): ${queued}`] : []),
       `  failed:     ${failed}`,
       ``,
     ].join("\n"),

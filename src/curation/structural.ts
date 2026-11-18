@@ -4,11 +4,13 @@
 // arithmetic over the document's own frontmatter, free at read time. The
 // structural signals deliberately left out — orphanhood and
 // retired-still-linked (deprecated or superseded) — need the whole-vault
-// inbound-link graph, which
+// inbound graph, which
 // is exactly what a read must NOT recompute per query. That graph is now
 // materialized into the ephemeral index at (re)index time (index-db.ts
 // doc_links, fed by the same extraction/resolution lint uses), so this
-// module answers from one indexed query.
+// module answers from one indexed query. Orphanhood counts body links and
+// `sources` citations (#641); retired-still-linked stays body links only,
+// because tier0's lifecycleConflicts owns canonical docs citing retired ones.
 //
 // Advisory, the decay banner's contract: reported on reads and search hits,
 // never blocking, never auto-fixed. Unresolved tensions — the third signal
@@ -27,7 +29,7 @@ import { type IndexDb, inboundLinkers } from "../storage/index-db.js";
 import { sourceReadable } from "./tension-access.js";
 
 export interface StructuralDecay {
-  // No document the caller can read links here.
+  // No document the caller can read links here or cites this in `sources`.
   orphan: boolean;
   // Set when THIS doc is deprecated or superseded and canonical docs still
   // link to it — the "settled docs keep leaning on a retired one" hazard.
@@ -49,7 +51,7 @@ export function structuralDecay(input: {
   const { db, path, status, access } = input;
   if (db === null) return null;
 
-  let linkers: { path: string; status: string }[];
+  let linkers: ReturnType<typeof inboundLinkers>;
   try {
     linkers = inboundLinkers(db, path);
   } catch {
@@ -62,7 +64,7 @@ export function structuralDecay(input: {
   const orphan = visible.length === 0;
   const canonicalLinkers =
     status === "deprecated" || status === "superseded"
-      ? visible.filter((l) => l.status === "canonical").map((l) => l.path)
+      ? visible.filter((l) => l.kind === "link" && l.status === "canonical").map((l) => l.path)
       : [];
   const retiredStillLinked =
     canonicalLinkers.length > 0 ? { canonical_linkers: canonicalLinkers } : null;
@@ -71,7 +73,9 @@ export function structuralDecay(input: {
 
   const notes: string[] = [];
   if (orphan) {
-    notes.push("no vault document you can read links here — connect it or consider archiving");
+    notes.push(
+      "no vault document you can read links here or cites this in sources — connect it or consider archiving",
+    );
   }
   if (retiredStillLinked) {
     notes.push(

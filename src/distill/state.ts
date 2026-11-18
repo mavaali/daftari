@@ -62,6 +62,14 @@ export interface DistillSourceState {
    * matches the first's hash and no-ops. The landed `claims` map stays shared.
    */
   scope_hashes?: Record<string, string>;
+  /**
+   * Anchors of chunks whose extraction failed in a run that still landed
+   * other chunks' claims (kphd). content_hash advanced past them, so the next
+   * run over the unchanged source re-extracts only these. Absent ⇒ [].
+   */
+  failed_chunk_anchors?: string[];
+  /** Per-scope variant of failed_chunk_anchors, keyed like scope_hashes. */
+  scope_failed_chunk_anchors?: Record<string, string[]>;
 }
 
 export interface DistillState {
@@ -191,6 +199,61 @@ export function joinClaims(
 }
 
 // ---------------------------------------------------------------------------
+// Failed-chunk retry manifest (kphd)
+// ---------------------------------------------------------------------------
+
+function scopedContentHash(sourceContent: string, scope: string | undefined): string {
+  return sourceContentHash(scope ? `${scope}\u0000${sourceContent}` : sourceContent);
+}
+
+function failedAnchorsFor(
+  src: DistillSourceState | undefined,
+  scope: string | undefined,
+): string[] {
+  return (scope ? src?.scope_failed_chunk_anchors?.[scope] : src?.failed_chunk_anchors) ?? [];
+}
+
+/**
+ * Return `base` with the failed-chunk anchors for `scope` set to `anchors`,
+ * carrying every other scope's anchors over from `prior`. Empty ⇒ the field is
+ * omitted, so a clean source's state stays byte-identical to the old shape.
+ */
+function withFailedAnchors(
+  base: DistillSourceState,
+  prior: DistillSourceState | undefined,
+  scope: string | undefined,
+  anchors: string[],
+): DistillSourceState {
+  const next: DistillSourceState = { ...base };
+  const unscoped = scope ? (prior?.failed_chunk_anchors ?? []) : anchors;
+  if (unscoped.length > 0) next.failed_chunk_anchors = [...unscoped].sort();
+  const scoped: Record<string, string[]> = { ...prior?.scope_failed_chunk_anchors };
+  if (scope) {
+    if (anchors.length > 0) scoped[scope] = [...anchors].sort();
+    else delete scoped[scope];
+  }
+  if (Object.keys(scoped).length > 0) next.scope_failed_chunk_anchors = scoped;
+  return next;
+}
+
+/**
+ * Chunks to re-extract for an unchanged source (kphd): the anchors a prior
+ * partial run recorded, or [] when the content changed (a full run follows)
+ * or nothing failed. The CLI calls this before extraction to narrow the
+ * chunk list; distillUpsert re-derives the same answer from state.
+ */
+export function pendingChunkRetry(
+  vaultRoot: string,
+  input: { sourceId: string; sourceContent: string; scope?: string },
+): string[] {
+  const prior = readDistillState(vaultRoot).sources[input.sourceId];
+  if (prior === undefined) return [];
+  const contentHash = scopedContentHash(input.sourceContent, input.scope);
+  const priorHash = input.scope ? prior.scope_hashes?.[input.scope] : prior.content_hash;
+  return priorHash === contentHash ? failedAnchorsFor(prior, input.scope) : [];
+}
+
+// ---------------------------------------------------------------------------
 // The upsert orchestrator
 // ---------------------------------------------------------------------------
 
@@ -231,6 +294,12 @@ export interface DistillUpsertInput {
    * no-op'ing on a hash a failed run wrote (bead b4m3). Absent ⇒ 0.
    */
   extractionErrors?: number;
+  /**
+   * Anchors of the chunks counted in extractionErrors (kphd). Persisted when
+   * the run still lands claims, so the next run retries just those chunks.
+   * Absent ⇒ []; a clean run clears any previously recorded anchors.
+   */
+  failedChunkAnchors?: string[];
 }
 
 export interface DistillUpsertOutcome {
@@ -247,6 +316,13 @@ export interface DistillUpsertOutcome {
   /** False when the state file could not be written (proposals still staged). */
   stateWritten: boolean;
   stateError?: string;
+  /**
+   * Anchors a prior partial run recorded for this unchanged source (kphd).
+   * Non-empty ⇒ this run was a chunk retry rather than a whole-source no-op.
+   */
+  retryAnchors?: string[];
+  /** Anchors the next run will retry, as recorded (or left) by this run. */
+  pendingRetryAnchors?: string[];
 }
 
 /**
@@ -267,12 +343,16 @@ export async function distillUpsert(
   const state = readDistillState(vaultRoot);
   const prior = state.sources[input.sourceId];
   const scope = input.scope;
-  const contentHash = sourceContentHash(
-    scope ? `${scope}\u0000${input.sourceContent}` : input.sourceContent,
-  );
+  const contentHash = scopedContentHash(input.sourceContent, scope);
   const priorHash = scope ? prior?.scope_hashes?.[scope] : prior?.content_hash;
+  const hashUnchanged = prior !== undefined && priorHash === contentHash;
+  const resumingPendingEmit =
+    prior?.pending_content_hash === contentHash && (prior.pending_claims?.length ?? 0) > 0;
+  // An unchanged hash is a free no-op unless a prior partial run left failed
+  // chunks to retry (kphd) or a staging remainder for this very hash.
+  const retryAnchors = hashUnchanged ? failedAnchorsFor(prior, scope) : [];
 
-  if (prior !== undefined && priorHash === contentHash) {
+  if (hashUnchanged && retryAnchors.length === 0 && !resumingPendingEmit) {
     return ok({
       noop: true,
       skipped: [],
@@ -280,14 +360,17 @@ export async function distillUpsert(
       created: [],
       propose: null,
       stateWritten: true,
+      retryAnchors: [],
+      pendingRetryAnchors: [],
     });
   }
 
   // A run whose extraction errored and yielded nothing must leave no trace:
   // recording its hash would make the next (working) run over the same source
-  // a silent no-op that discards every claim it extracts.
+  // a silent no-op that discards every claim it extracts. A retry is exempt:
+  // its hash is already recorded and the prior anchors stay pending.
   const extractionErrors = input.extractionErrors ?? 0;
-  if (extractionErrors > 0 && input.claims.length === 0) {
+  if (extractionErrors > 0 && input.claims.length === 0 && !hashUnchanged) {
     return ok({
       noop: false,
       skipped: [],
@@ -296,11 +379,16 @@ export async function distillUpsert(
       propose: null,
       stateWritten: false,
       stateError: `extraction failed for ${extractionErrors} chunk(s) and produced no claims; source state not recorded`,
+      retryAnchors,
+      pendingRetryAnchors: [],
     });
   }
 
-  const resumingPendingEmit =
-    prior?.pending_content_hash === contentHash && (prior.pending_claims?.length ?? 0) > 0;
+  // The failed anchors belong to whichever claim batch is staged: a resumed
+  // pending emit replays the batch (and failures) of the run that recorded it.
+  const failedAnchors = resumingPendingEmit
+    ? failedAnchorsFor(prior, scope)
+    : (input.failedChunkAnchors ?? []);
   // LLM extraction is nondeterministic. Once any claim in a batch fails, the
   // exact failed remainder becomes the retry manifest: accepting a fresh
   // paraphrase could duplicate a successful claim or omit a failed one.
@@ -360,14 +448,19 @@ export async function distillUpsert(
     const emittedClaimKeys = new Set(alreadyEmitted);
     for (const result of propose.results) emittedClaimKeys.add(result.claim_key);
     const failedClaimKeys = new Set(propose.errors.map((failure) => failure.claim_key));
-    state.sources[input.sourceId] = {
-      content_hash: prior?.content_hash ?? "",
-      claims: prior?.claims ?? {},
-      pending_content_hash: contentHash,
-      emitted_claim_keys: [...emittedClaimKeys].sort(),
-      pending_claims: toPropose.filter((claim) => failedClaimKeys.has(claim.claim_key)),
-      ...(prior?.scope_hashes ? { scope_hashes: prior.scope_hashes } : {}),
-    };
+    state.sources[input.sourceId] = withFailedAnchors(
+      {
+        content_hash: prior?.content_hash ?? "",
+        claims: prior?.claims ?? {},
+        pending_content_hash: contentHash,
+        emitted_claim_keys: [...emittedClaimKeys].sort(),
+        pending_claims: toPropose.filter((claim) => failedClaimKeys.has(claim.claim_key)),
+        ...(prior?.scope_hashes ? { scope_hashes: prior.scope_hashes } : {}),
+      },
+      prior,
+      scope,
+      failedAnchors,
+    );
     const wrote = writeDistillState(vaultRoot, state);
     return ok({
       noop: false,
@@ -379,21 +472,28 @@ export async function distillUpsert(
       stateError: wrote.ok
         ? "proposal staging was incomplete"
         : `proposal staging was incomplete; ${wrote.error.message}`,
+      retryAnchors,
+      pendingRetryAnchors: wrote.ok ? failedAnchors : failedAnchorsFor(prior, scope),
     });
   }
 
   // Advance the emit clock; the landed map only moves via recordLandedClaim.
-  state.sources[input.sourceId] = scope
-    ? {
-        content_hash: prior?.content_hash ?? "",
-        claims: prior?.claims ?? {},
-        scope_hashes: { ...prior?.scope_hashes, [scope]: contentHash },
-      }
-    : {
-        content_hash: contentHash,
-        claims: prior?.claims ?? {},
-        ...(prior?.scope_hashes ? { scope_hashes: prior.scope_hashes } : {}),
-      };
+  state.sources[input.sourceId] = withFailedAnchors(
+    scope
+      ? {
+          content_hash: prior?.content_hash ?? "",
+          claims: prior?.claims ?? {},
+          scope_hashes: { ...prior?.scope_hashes, [scope]: contentHash },
+        }
+      : {
+          content_hash: contentHash,
+          claims: prior?.claims ?? {},
+          ...(prior?.scope_hashes ? { scope_hashes: prior.scope_hashes } : {}),
+        },
+    prior,
+    scope,
+    failedAnchors,
+  );
   const wrote = writeDistillState(vaultRoot, state);
 
   return ok({
@@ -404,5 +504,7 @@ export async function distillUpsert(
     propose,
     stateWritten: wrote.ok,
     ...(wrote.ok ? {} : { stateError: wrote.error.message }),
+    retryAnchors,
+    pendingRetryAnchors: wrote.ok ? failedAnchors : failedAnchorsFor(prior, scope),
   });
 }

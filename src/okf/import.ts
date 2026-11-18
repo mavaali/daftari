@@ -16,8 +16,15 @@ import { parseDocument } from "../frontmatter/parser.js";
 import { validateFrontmatter } from "../frontmatter/schema.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { reindexVault } from "../search/reindex.js";
-import { directoryExists, listFiles, readFile, resolveVaultPath } from "../storage/local.js";
+import {
+  directoryExists,
+  listFiles,
+  matchesIgnoreList,
+  readFile,
+  resolveVaultPath,
+} from "../storage/local.js";
 import { serializeDocument } from "../tools/write.js";
+import { loadConfig } from "../utils/config.js";
 import { catFileBlob, commit } from "../utils/git.js";
 import { hasDaftariSidecar, isAttestedComputation, okfToDaftari } from "./map.js";
 import { OKF_RESERVED_FILES } from "./types.js";
@@ -105,6 +112,8 @@ export async function importBundle(
   if (!(await directoryExists(bundleDir)) || !(await directoryExists(vaultRoot))) {
     return err(new Error("import requires existing bundle and vault directories"));
   }
+  const config = loadConfig(vaultRoot);
+  if (!config.ok) return config;
   const listed = await listFiles(bundleDir, undefined, { raw: true });
   if (!listed.ok) return err(listed.error);
 
@@ -115,7 +124,7 @@ export async function importBundle(
   const warnings: string[] = [];
   const plan: ImportPlanItem[] = [];
   const writtenPaths: string[] = [];
-  const skipped = 0;
+  let skipped = 0;
   const prepared: PreparedDocument[] = [];
   const destinations = new Set<string>();
 
@@ -132,6 +141,14 @@ export async function importBundle(
       }
       const target = importPath(vaultRoot, relPath);
       if (!target.ok) return err(new Error(`invalid import destination: ${target.error.message}`));
+      // An ignored path is not a vault document (#646). Skip it, unlike the
+      // batch-aborting checks around it: this is the vault declining the file,
+      // not a defect in the bundle, so the rest of the bundle still imports.
+      if (matchesIgnoreList(target.value.relPath, config.value.ignore)) {
+        skipped++;
+        warnings.push(`${relPath}: skipped, excluded by the vault's 'ignore' config`);
+        continue;
+      }
       if (destinations.has(target.value.relPath)) {
         return err(new Error(`duplicate import destination: ${relPath}`));
       }

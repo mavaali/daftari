@@ -354,7 +354,12 @@ export function createServer(
       // this branch — it keeps working for clients that don't do
       // elicitation, and on 2025-era connections the SDK's legacy shim
       // fulfils the form over the session.
-      if (name === "vault_ratify" && typeof args.decision !== "string") {
+      // A resolve_interrupted call (8i1l) carries its own answer; no form.
+      if (
+        name === "vault_ratify" &&
+        typeof args.decision !== "string" &&
+        typeof args.resolve_interrupted !== "string"
+      ) {
         const round = await ratifyElicitationRound(vaultRoot, args, access, ctx);
         if (round.reply !== undefined) return round.reply;
         args = round.args;
