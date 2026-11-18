@@ -6,7 +6,10 @@
 #
 #   read    — collections whose documents the role may read/search
 #   write   — collections the role may create/append/deprecate documents in
-#   promote — whether the role may promote a draft to canonical
+#   promote — whether the role may promote a draft to canonical. It is the
+#             only grant that can set status 'canonical' on a new or
+#             non-canonical doc, through any write tool (vault_write,
+#             vault_merge, vault_ratify), not just vault_promote
 #   ratify  — whether the role may issue curation verdicts: approve/reject
 #             staged actions and contest derives_from edges (§11.6)
 #

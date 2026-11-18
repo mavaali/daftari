@@ -65,8 +65,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { err, ok, type Result } from "../frontmatter/types.js";
 
 // #5 (spec 2026-07-20 Decision 4): the lock records HOW the holder serves.
-// Absent (pre-#5 lockfiles) means stdio.
-export type LockMode = "stdio" | "serve";
+// Absent (pre-#5 lockfiles) means stdio. `cli` (8i1l) is a one-shot command
+// that writes for the length of a batch (`daftari distill --review --yes`):
+// it refuses against any live holder and is never SIGTERMed by a stdio start.
+export type LockMode = "stdio" | "serve" | "cli";
 
 export type LockData = {
   daftari: true;
@@ -688,6 +690,20 @@ function modeRefusal(
   takeover: boolean,
 ): Error | null {
   const priorMode: LockMode = prior.mode ?? "stdio";
+  if (mode === "cli") {
+    const what = priorMode === "serve" ? "daftari serve" : "daftari instance";
+    return new Error(
+      `this vault is held by a live ${what} (${holder}). ` +
+        `A one-shot command never replaces a live holder: run it when no daftari ` +
+        `holds the vault, or do the same work through the running instance.`,
+    );
+  }
+  if (mode === "stdio" && priorMode === "cli") {
+    return new Error(
+      `this vault is held by a one-shot daftari command (${holder}) that is ` +
+        `writing; retry once it finishes.`,
+    );
+  }
   if (mode === "stdio" && priorMode === "serve") {
     return new Error(
       `this vault is held by a live daftari serve (${holder}). ` +

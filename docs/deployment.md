@@ -66,6 +66,12 @@ configured `repo_root`; it does not grant arbitrary file reads.
 verification management for vault-wide source integrations. Leave it off agent
 and reader roles.
 
+`promote` is the only grant that can make a document `canonical`. A role
+without it is refused when any write would set `canonical` on a new or
+non-canonical document — `vault_write`, `vault_merge` (including a status
+inherited from `path_a`), or approving such a staged action with
+`vault_ratify`. It may still edit documents that are already canonical.
+
 No `--role`, or a role name absent from config, becomes the deny-all guest.
 Create a separate role for unattended curation: grant the reads and writes it
 needs, but leave `ratify` off so the agent proposes and a human disposes.
