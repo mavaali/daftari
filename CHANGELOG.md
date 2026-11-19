@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.19.1] - 2026-11-18
+
 ### Security
 
 - **Dependency updates clear all critical and high Dependabot alerts** — `@modelcontextprotocol/server` 2.4.0, `@modelcontextprotocol/node` 2.1.2, `@modelcontextprotocol/client` 2.4.0, `@modelcontextprotocol/sdk` 1.32.2 (root and router), `zod` 4.6.7, `sharp` 0.35.5, `js-yaml` 3.15.2 (via gray-matter), `vitest` 4.1.12, and `next` 16.4.6 in the Berlin Bureau example. All within existing semver-minor ranges; Biome stays at 2.5.x (2.6 adds lint errors). Two moderate findings remain, `glob` and `minimatch`, which only have fixes in a new major.
