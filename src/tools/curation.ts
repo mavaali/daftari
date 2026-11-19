@@ -15,6 +15,7 @@ import {
   canRead,
   canVerifyRepoSources,
   hasAnyRead,
+  readableCollections,
 } from "../access/rbac.js";
 import { CONSOLIDATE_AGENT } from "../consolidate/constants.js";
 import type { CompiledEdgeCoverageSummary } from "../curation/consumes.js";
@@ -59,11 +60,7 @@ import {
   type TensionResolution,
 } from "../curation/tension.js";
 import { canSeeTension, sourceReadable, visibleTensions } from "../curation/tension-access.js";
-import {
-  bucketHiddenDownstream,
-  computeTensionBlast,
-  type TensionBlastResult,
-} from "../curation/tension-blast.js";
+import { computeTensionBlast, type TensionBlastResult } from "../curation/tension-blast.js";
 import { loadTensionClusters, type TensionClustersResult } from "../curation/tension-clusters.js";
 import { loadTensionTriage, type TensionTriageResult } from "../curation/tension-triage.js";
 import { parseDocument } from "../frontmatter/parser.js";
@@ -335,33 +332,16 @@ export async function vaultTensionBlast(
         new Error(`access denied: role '${access.roleName}' cannot blast from '${document}'`),
       );
     }
-    const result = await computeTensionBlast(vaultRoot, { document, cluster_id }, (entries) =>
-      visibleTensions(db, entries, access),
+    // #217 (B′) / #84q6: the downstream list, counts, distances and depth are
+    // computed over the readable subgraph (computeBlastForReader); the hidden
+    // remainder surfaces only as a coarsened bucket — an exact delta would
+    // disclose linked existence (small-cell class).
+    return await computeTensionBlast(
+      vaultRoot,
+      { document, cluster_id },
+      (entries) => visibleTensions(db, entries, access),
+      access ? (p) => sourceReadable(db, access, p) : undefined,
     );
-    if (!result.ok || !access) return result;
-
-    // #217 (B′): the downstream list omits docs the role cannot read; the
-    // visible counts and depth are recomputed over what remains, and the
-    // hidden remainder surfaces only as a coarsened bucket — an exact delta
-    // would disclose linked existence (small-cell class).
-    const kept = result.value.downstream.filter((e) => sourceReadable(db, access, e.path));
-    const hidden = result.value.downstream.length - kept.length;
-    let primary_blast = 0;
-    let advisory_blast = 0;
-    let max_depth = 0;
-    for (const e of kept) {
-      if (e.dependency_type === "source") primary_blast += 1;
-      else advisory_blast += 1;
-      if (e.distance > max_depth) max_depth = e.distance;
-    }
-    return ok({
-      ...result.value,
-      downstream: kept,
-      primary_blast,
-      advisory_blast,
-      max_depth,
-      hidden_downstream: bucketHiddenDownstream(hidden),
-    });
   } finally {
     db?.close();
   }
@@ -473,6 +453,7 @@ export async function vaultLint(
       access
         ? {
             pathVisible: (p) => sourceReadable(db, access, p),
+            restrictedVantage: readableCollections(access.role) !== undefined,
             verifyRepoSources: canVerifyRepoSources(access.role),
           }
         : {},

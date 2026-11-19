@@ -219,6 +219,64 @@ export function computeBlast(args: ComputeBlastArgs): ComputeBlastOutput {
   return { downstream: entries, primary_blast, advisory_blast, max_depth };
 }
 
+export interface ReaderBlastOutput extends ComputeBlastOutput {
+  hidden_downstream: HiddenDownstream;
+}
+
+// The ONE RBAC filter every reader-facing blast surface goes through (#217,
+// #84q6). With no predicate (no RBAC) it is computeBlast plus
+// hidden_downstream "none".
+//
+// With a predicate, the BFS is re-run over the readable subgraph only: hidden
+// docs are neither reported nor walked through. Filtering the full result
+// instead kept each survivor's ORIGINAL distance, so with E <- C1 (hidden) <-
+// C2 a reader saw C2 at distance 2 with nothing at 1 — and C2's readable
+// `sources` names C1, so the gap disclosed that a hidden doc cites E.
+//
+// A readable doc reachable only through hidden docs is therefore dropped from
+// the list and folded into the coarsened hidden_downstream bucket, without a
+// distance. The bucket already means "downstream exposure not shown to you";
+// dropping such docs silently would understate the blast (a safety signal),
+// while listing them at any distance re-creates the disclosure. Counts and
+// max_depth describe the visible list only.
+export function computeBlastForReader(
+  args: ComputeBlastArgs,
+  readable?: (path: string) => boolean,
+): ReaderBlastOutput {
+  const full = computeBlast(args);
+  if (!readable) return { ...full, hidden_downstream: "none" };
+
+  const memo = new Map<string, boolean>();
+  const canRead = (p: string): boolean => {
+    let v = memo.get(p);
+    if (v === undefined) {
+      v = readable(p);
+      memo.set(p, v);
+    }
+    return v;
+  };
+  const restrict = (m: Map<string, Set<string>>): Map<string, Set<string>> => {
+    const out = new Map<string, Set<string>>();
+    for (const [target, citers] of m) {
+      if (!canRead(target)) continue;
+      out.set(target, new Set([...citers].filter(canRead)));
+    }
+    return out;
+  };
+  const visible = computeBlast({
+    seeds: args.seeds.filter(canRead),
+    reverseSource: restrict(args.reverseSource),
+    reverseLink: restrict(args.reverseLink),
+  });
+  // The readable subgraph's closure is a subset of the full closure, so the
+  // difference is exactly the not-shown remainder (hidden docs plus readable
+  // docs reachable only through them).
+  return {
+    ...visible,
+    hidden_downstream: bucketHiddenDownstream(full.downstream.length - visible.downstream.length),
+  };
+}
+
 // Orchestration: validate the exactly-one-of input, load the docs and
 // clusters, resolve seeds, build the reverse maps, run the BFS, and assemble
 // the response. Returns a Result — tool handlers never throw.
@@ -226,6 +284,7 @@ export async function computeTensionBlast(
   vaultRoot: string,
   input: TensionBlastInput,
   entryFilter: (entries: TensionEntry[]) => TensionEntry[] = (e) => e,
+  readable?: (path: string) => boolean,
 ): Promise<Result<TensionBlastResult, Error>> {
   const hasDoc = typeof input.document === "string" && input.document.length > 0;
   const hasCluster = typeof input.cluster_id === "string" && input.cluster_id.length > 0;
@@ -279,11 +338,10 @@ export async function computeTensionBlast(
   const reverseSource = buildReverseSourceMap(docs);
   const reverseLink = buildReverseLinkMap(docs);
 
-  const { downstream, primary_blast, advisory_blast, max_depth } = computeBlast({
-    seeds,
-    reverseSource,
-    reverseLink,
-  });
+  // RBAC policy is injected by the tool layer as `readable`; absent, nothing
+  // is hidden.
+  const { downstream, primary_blast, advisory_blast, max_depth, hidden_downstream } =
+    computeBlastForReader({ seeds, reverseSource, reverseLink }, readable);
 
   return ok({
     contested_document,
@@ -293,8 +351,6 @@ export async function computeTensionBlast(
     primary_blast,
     advisory_blast,
     max_depth,
-    // The computation itself is RBAC-blind (policy is injected by the tool
-    // layer); the handler overwrites this after filtering the downstream set.
-    hidden_downstream: "none",
+    hidden_downstream,
   });
 }
