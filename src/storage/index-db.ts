@@ -1270,6 +1270,9 @@ export interface StagedActionRow {
   // Carried on the in-memory row and in the JSONL decision record; NOT stored
   // in the staged_actions sqlite table (no DDL/upsert change needed).
   decided_by_principal?: string | null;
+  // Bead 9mpe: human | agent | unknown, derived from decided_by_principal at
+  // decision time. JSONL-only, like decided_by_principal.
+  decided_by_kind?: string | null;
   // Trace/run id from the proposal record (#235). JSONL-only, like
   // decided_by_principal — no sqlite column.
   run_id?: string | null;

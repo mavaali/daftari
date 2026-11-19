@@ -28,7 +28,9 @@ day (committer clock).
 
 The default report is a belief snapshot: the vault's document and tension
 state at that point, plus the drift since — documents added/removed, status
-and confidence transitions, and tensions opened or resolved.
+and confidence transitions, and tensions opened or resolved. The tension
+log is a gitignored governance journal, so when it is not in git at the
+commit the tension "then" state is reported as unknown, never as zero.
 
 Flags:
   --vault <path>         Vault root (default: current directory).

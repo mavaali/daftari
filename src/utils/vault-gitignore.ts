@@ -33,6 +33,13 @@ export const VAULT_GITIGNORE = `# Daftari rebuilds these from the markdown files
 .daftari/consumes.jsonl
 .daftari/tier2-verdicts.jsonl
 .daftari/shadow-actions.jsonl
+# Governance journals (ozor). Git carries your knowledge; a Daftari backup
+# (\`daftari sync\`) carries your governance. These are never auto-committed, so
+# they are ignored rather than left untracked for an operator's \`git add -A\`.
+.daftari/tensions.md
+.daftari/board-dispositions.jsonl
+.daftari/distill-receipts.jsonl
+.daftari/review-log.jsonl
 # vault_erase receipt — its 'paths' field NAMES the erased file, which can
 # itself be the sensitive breadcrumb; must never be committed into the freshly
 # scrubbed history (R12).
@@ -61,17 +68,14 @@ export const VAULT_GITIGNORE = `# Daftari rebuilds these from the markdown files
 // A stable line guaranteed to appear in VAULT_GITIGNORE; used as the marker to
 // detect whether an existing .gitignore already carries the Daftari block.
 const MARKER = ".daftari/index.db";
-// Rules added after the first Daftari block shipped; an older block gets the
-// missing ones appended.
-const REQUIRED_RULES = [
-  ".daftari/process.lock",
-  ".daftari/process.lock.*",
-  ".daftari/integrations.state.enc",
-  ".daftari/integrations.state.enc.*.tmp",
-  ".daftari/integration-queue.json",
-  ".daftari/integration-queue.json.tmp-*",
-  ".daftari/integration-review.jsonl",
-] as const;
+// Every rule in the template. An older Daftari block gets whichever of these
+// it lacks appended — derived from the template so a rule added later can
+// never be missed by the upgrade (auth-log once was, ozor). Appending an
+// ignore rule never untracks a file git already tracks: an operator who
+// committed a journal keeps it tracked until they `git rm --cached` it.
+const REQUIRED_RULES = VAULT_GITIGNORE.split("\n")
+  .map((l) => l.trim())
+  .filter((l) => l.length > 0 && !l.startsWith("#"));
 
 // Ensures the vault's .gitignore carries the Daftari ignore block. Idempotent:
 //   "created"  — no .gitignore existed; wrote VAULT_GITIGNORE.
@@ -100,7 +104,7 @@ export async function ensureVaultGitignore(
     if (missingRules.length === 0) return "present";
     await appendFile(
       path,
-      `\n# Daftari machine-local state — never commit it.\n${missingRules.join("\n")}\n`,
+      `\n# Daftari state added since this block was written — never commit it.\n${missingRules.join("\n")}\n`,
     );
     return "appended";
   }

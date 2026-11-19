@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -416,5 +416,70 @@ describe("runAsof (CLI)", () => {
   it("prints help on --help", async () => {
     const code = await runAsof(["--help"]);
     expect(code).toBe(0);
+  });
+});
+
+// ozor: the tension log is a gitignored governance journal, so on a policy-
+// conforming vault it is never in any commit. asof must say it cannot know
+// the "then" tension state — never a confident "open then: 0".
+describe("tension state not in git (ozor)", () => {
+  let ignored: string;
+
+  beforeAll(() => {
+    ignored = mkdtempSync(join(tmpdir(), "daftari-asof-ozor-"));
+    const run = (args: string[]) =>
+      execFileSync("git", ["-C", ignored, ...args], {
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: "t",
+          GIT_AUTHOR_EMAIL: "t@t",
+          GIT_COMMITTER_NAME: "t",
+          GIT_COMMITTER_EMAIL: "t@t",
+        },
+      });
+    run(["init", "--quiet"]);
+    writeFileSync(join(ignored, ".gitignore"), ".daftari/tensions.md\n", "utf-8");
+    mkdirSync(join(ignored, "pricing"), { recursive: true });
+    writeFileSync(
+      join(ignored, "pricing", "a.md"),
+      `---\ntitle: "A"\ndomain: "accumulation"\ncollection: "pricing"\nstatus: "canonical"\nconfidence: "medium"\ncreated: "2026-01-15"\nupdated: "2026-01-15"\nupdated_by: "agent:test"\nprovenance: "direct"\nsuperseded_by: null\nttl_days: 365\nsources: []\ntags: []\n---\n\nA.\n`,
+      "utf-8",
+    );
+    mkdirSync(join(ignored, ".daftari"), { recursive: true });
+    // An open tension that existed at the commit — but only in the working tree.
+    writeFileSync(join(ignored, ".daftari", "tensions.md"), TENSIONS_V1, "utf-8");
+    run(["add", "-A", "."]);
+    run(["commit", "--quiet", "-m", "seed"]);
+  });
+
+  afterAll(() => {
+    rmSync(ignored, { recursive: true, force: true });
+  });
+
+  it("reports the then-state as unknown with a reason, and no since-lists", async () => {
+    const commit = await resolveAsofCommit(ignored, "HEAD");
+    expect(commit.ok).toBe(true);
+    if (!commit.ok) return;
+    const tensionsNow = await listTensions(ignored);
+    if (!tensionsNow.ok) throw tensionsNow.error;
+    const r = await beliefSnapshot(ignored, commit.value, tensionsNow.value);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const tn = r.value.tensions;
+    expect(tn.openThen).toBeNull();
+    expect(tn.openedSince).toBeNull();
+    expect(tn.resolvedSince).toBeNull();
+    expect(tn.thenUnavailable).toMatch(/not in git/);
+    expect(tn.openNow).toBe(1);
+  });
+
+  it("the report says unknown, never 'open then: 0'", async () => {
+    const out = join(ignored, "..", `asof-ozor-${Date.now()}.md`);
+    const code = await runAsof(["HEAD", "--vault", ignored, "--output", out]);
+    expect(code).toBe(0);
+    const text = readFileSync(out, "utf-8");
+    rmSync(out, { force: true });
+    expect(text).toContain("open then: **unknown**");
+    expect(text).not.toContain("open then: **0**");
   });
 });

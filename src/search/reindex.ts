@@ -19,6 +19,7 @@
 
 import { stat } from "node:fs/promises";
 import { rebuildEdgesIndex } from "../curation/edges.js";
+import { missingGovernanceJournalsWarning } from "../curation/governance-journals.js";
 import { hasLocalSourceRef, outgoingEdges } from "../curation/source-refs.js";
 import { rebuildStagedActionsIndex } from "../curation/staged-actions.js";
 import { buildPathIndexes, extractLinks } from "../curation/vault-docs.js";
@@ -268,6 +269,9 @@ export interface ReindexResult {
   embeddedCount: number;
   cacheHits: number;
   orphansRemoved: number;
+  // Set when the vault has Daftari write history but no governance journals
+  // (the git-clone case, ozor): governance state is gone and IDs restart.
+  governanceWarning?: string;
 }
 
 export interface ReindexOptions {
@@ -318,6 +322,7 @@ export function reindexWarnings(result: ReindexResult): string[] {
     );
     for (const s of result.invalidFrontmatter) lines.push(`  ${s.path}: ${s.reason}`);
   }
+  if (result.governanceWarning) lines.push(result.governanceWarning);
   return lines;
 }
 
@@ -669,6 +674,7 @@ export async function reindexVault(
     // pass when nothing on disk has changed.
     const manifest = await buildManifest(vaultRoot);
     if (manifest) writeManifest(db, manifest);
+    const governanceWarning = await missingGovernanceJournalsWarning(vaultRoot);
     return ok({
       documentCount: staged.length,
       chunkCount,
@@ -681,6 +687,7 @@ export async function reindexVault(
       embeddedCount: committedEmbeds,
       cacheHits,
       orphansRemoved,
+      ...(governanceWarning ? { governanceWarning } : {}),
     });
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);

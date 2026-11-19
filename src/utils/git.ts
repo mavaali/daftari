@@ -481,6 +481,23 @@ export async function log(
   return ok(commits);
 }
 
+// Short hash of the newest commit made by a Daftari write tool (subjects
+// read "vault_<tool>: …"), or null when there is none or this is not a git
+// repository. Read-only.
+export async function lastDaftariWriteCommit(vaultRoot: string): Promise<string | null> {
+  if (!(await isGitRepo(vaultRoot))) return null;
+  const result = await git(vaultRoot, [
+    "log",
+    "-1",
+    "--format=%h",
+    "--extended-regexp",
+    "--grep=^vault_[a-z_]+: ",
+  ]);
+  if (!result.ok) return null;
+  const hash = result.value.trim();
+  return hash === "" ? null : hash;
+}
+
 // Vault-relative .md paths changed between `sinceCommit` and HEAD. Used by the
 // consolidate event clock (spec §3.1). A bad/unknown commit is an error, not [] —
 // the caller treats that as the nil baseline path (skip the event clock), so the

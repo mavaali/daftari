@@ -222,6 +222,11 @@ export interface LintOptions {
   // hidden linker exists). tensionHealth is exempt: vault-global counts by
   // design (see the 2026-07-14 edge-graph spec, decision C).
   pathVisible?: (path: string) => boolean;
+  // #84q6: the caller cannot read every collection. Broken-ref findings then
+  // say "unresolvable or unreadable" — under pathVisible a hidden source and a
+  // missing one are the same to this caller, and the wording must not claim
+  // which.
+  restrictedVantage?: boolean;
   // U12/R9: verbatim-quote budget for synthesized (compiled) notes. Defaults to
   // the distill config's maxVerbatimChars; a caller may override per run.
   maxVerbatimChars?: number;
@@ -395,7 +400,7 @@ export async function runLint(
   // Computed over the caller-visible doc set like the rest of lint (#217):
   // a source the caller cannot read is indistinguishable from one that does
   // not exist.
-  const t0 = tier0Findings(docs);
+  const t0 = tier0Findings(docs, { restricted: opts.restrictedVantage === true });
   checks.brokenSourceRefs = t0.brokenSourceRefs;
   checks.lifecycleConflicts = t0.lifecycleConflicts;
   checks.schemaInvalid = t0.schemaInvalid;

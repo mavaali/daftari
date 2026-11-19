@@ -89,7 +89,22 @@ export interface SyncManifest {
   version: 1;
   // vault-relative path → sha256 hex of the file bytes
   files: Record<string, string>;
+  // Paths that were owner-only (no group/other permission bits) at push time;
+  // restore recreates them 0600 (ozor). Optional: older manifests lack it, and
+  // restore then falls back to OWNER_ONLY_KNOWN. Only ever TIGHTENS a mode — a
+  // poisoned list can make a file 0600, never looser or executable.
+  ownerOnly?: string[];
 }
+
+// Files Daftari itself writes 0600 (session cookie audience, integration
+// credentials and queues). Restored 0600 even from a manifest that predates
+// `ownerOnly`, so an old backing cannot loosen them to the umask default.
+const OWNER_ONLY_KNOWN = new Set([
+  ".daftari/session-audience",
+  ".daftari/integrations.state.enc",
+  ".daftari/integration-queue.json",
+  ".daftari/integration-review.jsonl",
+]);
 
 export interface SyncSummary {
   uploaded: number;
@@ -104,6 +119,7 @@ interface LocalFile {
   absPath: string;
   hash: string;
   size: number;
+  mode: number;
 }
 
 // Streaming hash so the walk phase never buffers a whole file — .git is in
@@ -130,15 +146,15 @@ function streamHash(abs: string): Promise<{ hash: string; size: number }> {
 // processes, and a one-shot CLI run simply pays the honest full cost.
 const hashMemo = new Map<string, { size: number; mtimeMs: number; hash: string }>();
 
-async function hashFile(abs: string): Promise<{ hash: string; size: number }> {
+async function hashFile(abs: string): Promise<{ hash: string; size: number; mode: number }> {
   const s = await stat(abs);
   const memo = hashMemo.get(abs);
   if (memo && memo.size === s.size && memo.mtimeMs === s.mtimeMs) {
-    return { hash: memo.hash, size: memo.size };
+    return { hash: memo.hash, size: memo.size, mode: s.mode };
   }
   const hashed = await streamHash(abs);
   hashMemo.set(abs, { size: hashed.size, mtimeMs: s.mtimeMs, hash: hashed.hash });
-  return hashed;
+  return { ...hashed, mode: s.mode };
 }
 
 // Walks the vault tree (dotfiles included — .git is the point), hashing every
@@ -168,8 +184,8 @@ async function collectLocalState(
     const hashed = await runPool(
       candidates.map((c, i) => async (): Promise<Result<void, Error>> => {
         try {
-          const { hash, size } = await hashFile(c.abs);
-          files[i] = { relPath: c.rel, absPath: c.abs, hash, size };
+          const { hash, size, mode } = await hashFile(c.abs);
+          files[i] = { relPath: c.rel, absPath: c.abs, hash, size, mode };
           return ok(undefined);
         } catch (e) {
           return err(
@@ -200,7 +216,10 @@ async function readManifest(backend: StorageBackend): Promise<Result<SyncManifes
     for (const [k, v] of Object.entries(parsed.files)) {
       if (typeof v === "string") files[k] = v;
     }
-    return ok({ version: 1, files });
+    const ownerOnly = Array.isArray(parsed.ownerOnly)
+      ? parsed.ownerOnly.filter((p): p is string => typeof p === "string")
+      : undefined;
+    return ok({ version: 1, files, ...(ownerOnly ? { ownerOnly } : {}) });
   } catch (e) {
     return err(
       new Error(
@@ -287,6 +306,10 @@ export async function syncVault(
   const nextFiles: Record<string, string> = Object.create(null);
   for (const f of local.value.files) nextFiles[f.relPath] = f.hash;
   nextManifest.files = nextFiles;
+  nextManifest.ownerOnly = local.value.files
+    .filter((f) => (f.mode & 0o077) === 0)
+    .map((f) => f.relPath)
+    .sort();
   const wrote = await backend.put(
     MANIFEST_KEY,
     Buffer.from(JSON.stringify(nextManifest, null, 2), "utf-8"),
@@ -339,6 +362,7 @@ export async function restoreVault(
     return err(new Error(`backing at ${backend.id} holds no manifest — nothing to restore`));
   }
 
+  const ownerOnly = new Set([...OWNER_ONLY_KNOWN, ...(manifest.value.ownerOnly ?? [])]);
   let bytesTotal = 0;
   const tasks = paths.map((relPath) => async (): Promise<Result<void, Error>> => {
     // Confine each manifest path to the restore root — the manifest is data
@@ -370,7 +394,9 @@ export async function restoreVault(
     }
     try {
       await mkdir(dirname(target), { recursive: true });
-      await writeFile(target, got.value);
+      // The target is fresh (restore refuses a non-empty root), so `mode`
+      // applies at creation; everything else keeps the umask default.
+      await writeFile(target, got.value, ownerOnly.has(relPath) ? { mode: 0o600 } : {});
     } catch (e) {
       return err(
         new Error(`cannot write ${relPath}: ${e instanceof Error ? e.message : String(e)}`),

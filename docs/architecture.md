@@ -163,7 +163,11 @@ Three things sit alongside the markdown:
 - **SQLite index** (`.daftari/index.db`). Holds the lexical (FTS5) and
   vector (sqlite-vec) indexes that power hybrid search. It is **ephemeral**
   — it can be rebuilt from the markdown files at any time with
-  `vault_reindex`, and it is git-ignored.
+  `vault_reindex`, and it is git-ignored. The rebuild covers the documents;
+  the tables reindex fills from governance journals (`staged_actions`,
+  `derives_from_edges`) come back only if those journals are present, and a
+  git clone does not carry them (see "What Git carries vs what a Daftari
+  backup carries" in deployment.md).
 
   Lexical ranking lives in two FTS5 virtual tables — `chunks_fts` over
   chunk text and `documents_fts` over title, tags, and body — kept in
@@ -916,8 +920,9 @@ source of truth, with a derived `derives_from_edges` table in the ephemeral inde
 (rebuilt on reindex, materialized at startup) for the loop's traversal engine.
 Distill run receipts (provider, ZDR, cost, model, and the staging `runId` that
 joins to produced artifacts) are persisted separately to
-`.daftari/distill-receipts.jsonl` — operator-local and gitignored, never exposed
-through MCP tools.
+`.daftari/distill-receipts.jsonl` — operator-local and gitignored (an older vault
+`.gitignore` may lack the rule; `ensureVaultGitignore` appends it),
+carried by `daftari sync`, never exposed through MCP tools.
 
 ## The consolidation loop
 

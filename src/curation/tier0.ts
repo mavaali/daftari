@@ -77,8 +77,15 @@ export interface Tier0Findings {
 // resolution universe: under RBAC, lint passes the caller-visible subset, so
 // findings compute from the caller's vantage (#217) — a source the caller
 // cannot read is indistinguishable from one that does not exist, the same
-// rule every other lint check follows.
-export function tier0Findings(docs: LoadedDoc[]): Tier0Findings {
+// rule every other lint check follows. `restricted` (a caller who cannot read
+// every collection) coarsens the broken-ref wording to "unresolvable or
+// unreadable", so the finding never asserts a hidden-but-live source is
+// missing — the receipt's cites-unreadable-source rule (#84q6). It applies to
+// every broken ref for that caller, so the wording is no existence oracle.
+export function tier0Findings(
+  docs: LoadedDoc[],
+  opts: { restricted?: boolean } = {},
+): Tier0Findings {
   const { byPath, byBasename } = buildPathIndexes(docs);
   const docByPath = new Map(docs.map((d) => [d.path, d]));
 
@@ -128,7 +135,7 @@ export function tier0Findings(docs: LoadedDoc[]): Tier0Findings {
     if (broken.length > 0) {
       out.brokenSourceRefs.push({
         path: doc.path,
-        detail: `unresolvable reference(s): ${broken.join(", ")}`,
+        detail: `${opts.restricted ? "unresolvable or unreadable" : "unresolvable"} reference(s): ${broken.join(", ")}`,
       });
     }
     if (conflicts.length > 0) {

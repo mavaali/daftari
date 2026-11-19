@@ -515,6 +515,12 @@ export interface DaftariConfig {
   // (leniently parsed; not required). Used by isConfiguredPrincipal to gate
   // board owner/reassign actions to known identities only.
   principals: string[];
+  // Bead 9mpe: optional `principal_kinds:` mapping of authenticated principal
+  // → human | agent | unknown, read by the review journal to stamp
+  // decided_by_kind on review decisions (see curation/review-log.ts). Absent
+  // ⇒ undefined; unmapped principals fall back to the session-login identity
+  // (human) and the agent:/system: prefixes (agent), else unknown.
+  principalKinds?: Record<string, "human" | "agent" | "unknown">;
 }
 
 export type GraphExpandSubset = "trigger" | "all" | "tensions";
@@ -2522,6 +2528,22 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     return err(new Error(`malformed config: ${principalsList.error.message}`));
   }
 
+  // Optional `principal_kinds:` mapping (bead 9mpe). Absent ⇒ undefined.
+  let principalKinds: Record<string, "human" | "agent" | "unknown"> | undefined;
+  if (root.principal_kinds !== undefined && root.principal_kinds !== null) {
+    const map = requireMapping(root.principal_kinds, "'principal_kinds'");
+    if (!map.ok) return err(new Error(`malformed config: ${map.error.message}`));
+    principalKinds = Object.create(null) as Record<string, "human" | "agent" | "unknown">;
+    for (const [name, kind] of Object.entries(map.value)) {
+      if (kind !== "human" && kind !== "agent" && kind !== "unknown") {
+        return err(
+          new Error(`malformed config: 'principal_kinds.${name}' must be human | agent | unknown`),
+        );
+      }
+      principalKinds[name] = kind;
+    }
+  }
+
   return ok({
     roles,
     defaultRole,
@@ -2554,5 +2576,6 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     federation: federationConfig.value,
     integrations: integrationsConfig.value,
     principals: principalsList.value,
+    ...(principalKinds !== undefined ? { principalKinds } : {}),
   });
 }

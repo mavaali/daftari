@@ -18,6 +18,7 @@ summarize, and propose; they do not silently edit the documents under review.
 | Ask the owner what the vault cannot infer | `daftari interview` | Verbatim source transcript tied to the prompting gaps |
 | Reconstruct a past belief state | `daftari asof` | Historical state, drift, or counterfactual blast report |
 | Inspect contributor track records | `vault_witness` | Advisory, deterministic principal-level ledger |
+| Measure human review burden | `daftari review-stats` | Decisions by human/agent, time to decision, tension backlog by week |
 | Check documentation coherence | `daftari audit` | Broken references and direct/transitive staleness |
 | Package evidence for another system | `vault_receipt` or `daftari attest` | Recomputable receipt or signed attestation bundle |
 
@@ -194,6 +195,58 @@ the score. If one author accounts for at least 95% of writes and attributed
 positions provide no less-concentrated counter-signal, the flat-curve monitor
 declares comparisons uninformative instead of presenting concentration as
 signal.
+
+## Measure review burden
+
+Every review decision appends one content-free line to
+`.daftari/review-log.jsonl`: staged-action ratify, reject and expiry, board
+dispositions, tension resolutions, and direct `vault_promote` calls. Each line
+carries the item id, the action, `decided_by_kind` (`human`, `agent` or
+`unknown`), `changed_anything` (true only when the decision changed a vault
+document, which means an approve that landed or a promote), and a timestamp.
+Board listings and the court docket record the first time each item was
+shown to a reviewer of each kind. Tension logging records an open event.
+The journal holds no titles, claims, rationales or paths. Documents are
+recorded by hash. Like the other `.daftari` journals it is git-ignored and
+included in `daftari sync` backups.
+
+```bash
+daftari review-stats --vault ./my-vault --since 30d
+daftari review-stats --vault ./my-vault --since 2026-10-01 --json
+```
+
+The report shows decisions by kind and surface, the share that changed the
+vault, median and p90 time from first shown to decided for each decider kind,
+and tensions opened, resolved and still open at the end of each week.
+
+`decided_by_kind` comes from the authenticated principal (`--user` or the
+`server.auth` identity). It never comes from a caller-supplied field such as
+`vault_ratify`'s `principal`, `court rule --by`, or a tool's `agent` argument.
+Daftari resolves it in this order:
+
+1. an entry in `principal_kinds` in `.daftari/config.yaml`;
+2. the browser-login identity, `server.auth.session.maps_to.user`, which is
+   `human`;
+3. a principal starting with `agent:` or `system:`, which is `agent` (the
+   expiry sweep is always `agent`);
+4. otherwise `unknown`.
+
+```yaml
+principal_kinds:
+  mihir: human
+  mavaali: agent          # an agent running under an admin role
+  "cli:mihir": human      # local `daftari court` runs as cli:<os user>
+```
+
+Limits: the kind is a property of the identity, not of who was at the
+keyboard. An agent that holds a human's token or login is counted as human.
+`daftari court rule` has no authentication, so it is attributed to
+`cli:<os user>`, which stays `unknown` unless you map it. A human and an
+agent running as the same OS user can't be told apart. The `dispose` role
+grant is not used as a signal, because agents can run under roles that have
+it. Decisions made before this journal existed are not counted, and
+time-to-decision counts only items that were shown to a reviewer of the
+decider's kind.
 
 ## Audit markdown coherence
 

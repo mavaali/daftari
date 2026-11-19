@@ -28,6 +28,11 @@ import {
 } from "../curation/leak-ledger.js";
 import { foreignPositionViolation } from "../curation/positions.js";
 import { frontmatterDiff, recordProvenance } from "../curation/provenance.js";
+import {
+  appendReviewEvents,
+  docReviewItem,
+  principalKindForVault,
+} from "../curation/review-log.js";
 import { recordShadowAction } from "../curation/shadow.js";
 import { resolveVaultSourceRef } from "../curation/source-refs.js";
 import { stageActionWithConflictCheck } from "../curation/staged-actions.js";
@@ -35,10 +40,9 @@ import { closesSupersedeLoop, type SupersedeEdit } from "../curation/supersede-c
 import { sourceReadable, sourceVerifiable } from "../curation/tension-access.js";
 import {
   type BlastDownstreamEntry,
-  bucketHiddenDownstream,
   buildReverseLinkMap,
   buildReverseSourceMap,
-  computeBlast,
+  computeBlastForReader,
   type HiddenDownstream,
 } from "../curation/tension-blast.js";
 import {
@@ -2246,8 +2250,8 @@ export async function vaultPromote(
 // or superseded). Best-effort: returns null when docs can't be loaded so the
 // caller can omit `dependents` without failing the write.
 //
-// When `access` is provided, filters the downstream set to docs the role can
-// read and coarsens the hidden remainder via bucketHiddenDownstream. Without
+// When `access` is provided, the blast is computed over the docs the role can
+// read (computeBlastForReader) and the hidden remainder is coarsened. Without
 // access, all downstream docs are returned and hidden_downstream is "none".
 async function buildDependentsAdvisory(
   vaultRoot: string,
@@ -2260,36 +2264,23 @@ async function buildDependentsAdvisory(
 
   const reverseSource = buildReverseSourceMap(docs);
   const reverseLink = buildReverseLinkMap(docs);
-  const blast = computeBlast({ seeds: [retractedPath], reverseSource, reverseLink });
-
-  if (access) {
-    const db = openIndexForAccessOrNull(vaultRoot);
-    try {
-      const kept = blast.downstream.filter((e) => sourceReadable(db, access, e.path));
-      const hidden = blast.downstream.length - kept.length;
-      let primary_blast = 0;
-      let advisory_blast = 0;
-      for (const e of kept) {
-        if (e.dependency_type === "source") primary_blast += 1;
-        else advisory_blast += 1;
-      }
-      return {
-        downstream: kept,
-        primary_blast,
-        advisory_blast,
-        hidden_downstream: bucketHiddenDownstream(hidden),
-      };
-    } finally {
-      db?.close();
-    }
+  // #217 / #84q6: the shared reader filter — distances over the readable
+  // subgraph, hidden remainder coarsened. No access ⇒ nothing hidden.
+  const db = access ? openIndexForAccessOrNull(vaultRoot) : null;
+  try {
+    const blast = computeBlastForReader(
+      { seeds: [retractedPath], reverseSource, reverseLink },
+      access ? (p) => sourceReadable(db, access, p) : undefined,
+    );
+    return {
+      downstream: blast.downstream,
+      primary_blast: blast.primary_blast,
+      advisory_blast: blast.advisory_blast,
+      hidden_downstream: blast.hidden_downstream,
+    };
+  } finally {
+    db?.close();
   }
-
-  return {
-    downstream: blast.downstream,
-    primary_blast: blast.primary_blast,
-    advisory_blast: blast.advisory_blast,
-    hidden_downstream: "none",
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -4069,7 +4060,26 @@ export const writeTools: ToolDefinition[] = [
       actions: ["promote"],
       statuses: ["canonical"],
     }),
-    handler: (vaultRoot, args, access) => vaultPromote(vaultRoot, args, access),
+    // The review-journal decision is recorded here, at the tool entry point,
+    // not inside vaultPromote: vault_ratify dispatches vaultPromote directly
+    // and records its own staged decision, so a ratified promote counts once.
+    handler: async (vaultRoot, args, access) => {
+      const result = await vaultPromote(vaultRoot, args, access);
+      if (result.ok) {
+        appendReviewEvents(vaultRoot, [
+          {
+            ev: "decision",
+            surface: "promote",
+            item: docReviewItem(result.value.path),
+            action: "promote",
+            decided_by_kind: principalKindForVault(vaultRoot, access?.user),
+            changed_anything: result.value.shadow !== true,
+            at: new Date().toISOString(),
+          },
+        ]);
+      }
+      return result;
+    },
   },
   {
     name: "vault_deprecate",

@@ -49,6 +49,7 @@ Usage:
   daftari view [--vault <path>]       Read-only web portal over the vault (see: daftari view --help)
   daftari sleep [options]             Nightly metabolic pass — wake list + Morning Report (see: daftari sleep --help)
   daftari runs [list|show <id>]       Inspect the sleep run ledger (see: daftari runs --help)
+  daftari review-stats [options]      Review burden: decisions by human/agent, time to decision (see: daftari review-stats --help)
   daftari sync --vault <path>         Push the vault to its storage backing / restore (see: daftari sync --help)
 
 Server options:
@@ -311,6 +312,12 @@ export async function run(argv: string[]): Promise<void> {
   if (argv[0] === "sleep") {
     const { runSleep } = await import("./sleep/index.js");
     process.exitCode = await runSleep(argv.slice(1));
+    return;
+  }
+
+  if (argv[0] === "review-stats") {
+    const { runReviewStats } = await import("./curation/review-stats.js");
+    process.exitCode = await runReviewStats(argv.slice(1));
     return;
   }
 
