@@ -350,6 +350,22 @@ describe("loadConfig — schema extensions", () => {
       });
     });
 
+    it("lets the oauth audience be omitted (defaults to the resource URL at serve startup) but not empty", () => {
+      const block = (audienceLine: string) =>
+        `version: 1\nserver:\n  auth:\n    oauth:\n      issuer: https://idp.example\n${audienceLine}` +
+        "      jwks_uri: https://idp.example/jwks.json\n" +
+        '      subjects:\n        "a@example.com":\n          user: human:a\n          role: analyst\n';
+      writeConfig(block(""));
+      const omitted = loadConfig(dir);
+      expect(omitted.ok).toBe(true);
+      if (omitted.ok) expect(omitted.value.server.oauth?.audience).toBeUndefined();
+
+      writeConfig(block('      audience: ""\n'));
+      const empty = loadConfig(dir);
+      expect(empty.ok).toBe(false);
+      if (!empty.ok) expect(empty.error.message).toMatch(/audience/);
+    });
+
     it("keeps an oauth subject literally named __proto__ as an own mapping", () => {
       // Plain-object bracket assignment would invoke the inherited setter,
       // silently dropping the mapping and its startup role check.
@@ -369,6 +385,8 @@ describe("loadConfig — schema extensions", () => {
     });
 
     it("rejects an oauth block missing a required field", () => {
+      // audience is optional since OAuth discovery (it defaults to the
+      // resource URL at serve startup); jwks_uri is still required.
       writeConfig(
         "version: 1\nserver:\n  auth:\n    oauth:\n      issuer: https://idp.example\n" +
           "      subjects: {}\n",
@@ -376,7 +394,7 @@ describe("loadConfig — schema extensions", () => {
       const bad = loadConfig(dir);
       expect(bad.ok).toBe(false);
       if (bad.ok) return;
-      expect(bad.error.message).toContain("server.auth.oauth.audience");
+      expect(bad.error.message).toContain("server.auth.oauth.jwks_uri");
     });
 
     it("parses the storage block and rejects malformed shapes loud (#6)", () => {

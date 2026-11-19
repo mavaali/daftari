@@ -272,4 +272,21 @@ describe("serve OAuth resource-server auth (#7)", () => {
   it("oauth alone counts as auth configured: no token is 401, not guest", async () => {
     await expect(connect()).rejects.toThrow(/unauthorized|HTTP 401/i);
   });
+
+  // Discovery exists only when oauth AND public_base_url are declared. This
+  // fixture has no public_base_url, so there is nothing daftari may honestly
+  // publish as `resource`: no metadata document, no challenge header.
+  it("without public_base_url there is no discovery document and the 401 carries no challenge", async () => {
+    const origin = `http://127.0.0.1:${handle.port}`;
+    for (const path of [
+      "/.well-known/oauth-protected-resource",
+      "/.well-known/oauth-protected-resource/mcp",
+    ]) {
+      const res = await fetch(`${origin}${path}`);
+      expect(res.status, path).toBe(404);
+    }
+    const denied = await fetch(`${origin}/mcp`, { method: "POST", body: "{}" });
+    expect(denied.status).toBe(401);
+    expect(denied.headers.get("www-authenticate")).toBeNull();
+  });
 });
