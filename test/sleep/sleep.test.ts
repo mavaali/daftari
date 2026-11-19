@@ -51,7 +51,8 @@ beforeEach(() => {
   vault = mkdtempSync(join(tmpdir(), "daftari-sleep-"));
   // The cast:
   //   pricing/rotten.md — canonical, past its 30d TTL, cited by derived.md
-  //     → the load-bearing wake case.
+  //     → the load-bearing wake case. derived.md, fresh itself, wakes too:
+  //     its grounding is at risk (nlzr).
   //   pricing/lonely.md — canonical, past TTL, no dependents → quiet decay.
   //   moonshot/dream.md — GENERATIVE, past TTL → counted, never woken.
   //   pricing/fresh.md — canonical, inside TTL → untouched.
@@ -72,13 +73,18 @@ afterEach(() => {
 });
 
 describe("runSleepCycle", () => {
-  it("wakes load-bearing decayed docs and only them", async () => {
+  it("wakes load-bearing decayed docs and their at-risk dependents, and only them", async () => {
     const r = await runSleepCycle(vault);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const c = r.value;
 
-    expect(c.wake.map((w) => w.path)).toEqual(["pricing/rotten.md"]);
+    // Ranked by blast: rotten (1 downstream) before derived (0).
+    expect(c.wake.map((w) => w.path)).toEqual(["pricing/rotten.md", "pricing/derived.md"]);
+    const dependent = c.wake[1];
+    expect(dependent?.reason).toContain("grounding at risk: pricing/rotten.md");
+    expect(dependent?.groundingAtRisk?.reasons.map((x) => x.kind)).toEqual(["ttl-expired"]);
+    expect(c.wake[0]?.groundingAtRisk).toBeUndefined();
     const w = c.wake[0];
     expect(w?.blastPrimary).toBe(1);
     expect(w?.blastTotal).toBe(1);
@@ -110,7 +116,15 @@ describe("runSleepCycle", () => {
     const r = await runSleepCycle(vault);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.value.wake.map((w) => w.path)).toEqual(["pricing/hub.md", "pricing/rotten.md"]);
+    // Own-decay wakes rank by blast; the at-risk dependents (blast 0, age 0)
+    // follow in path order.
+    expect(r.value.wake.map((w) => w.path)).toEqual([
+      "pricing/hub.md",
+      "pricing/rotten.md",
+      "competitive-intel/a.md",
+      "competitive-intel/b.md",
+      "pricing/derived.md",
+    ]);
   });
 
   it("sweeps expired staged actions and reports the queue", async () => {
@@ -163,18 +177,19 @@ describe("runSleep (CLI)", () => {
 
     const md = readFileSync(outMd, "utf-8");
     expect(md).toContain("# Morning Report");
-    expect(md).toContain("## Wake list — 1 advisory task(s)");
+    expect(md).toContain("## Wake list — 2 advisory task(s)");
     expect(md).toContain("| pricing/rotten.md |");
+    expect(md).toContain("| pricing/derived.md | canonical, grounding at risk: pricing/rotten.md");
     expect(md).toContain("Quiet decay — 1");
     expect(md).toContain("generative docs past TTL: 1");
     expect(md).toContain("compiled-edge coverage: no compiled-edge data (5 docs uninstrumented)");
 
     const queue = readFileSync(wakeQueuePath(vault), "utf-8").trim().split("\n");
-    expect(queue).toHaveLength(1);
+    expect(queue).toHaveLength(2);
     expect(JSON.parse(queue[0] as string).path).toBe("pricing/rotten.md");
 
     const json = JSON.parse(readFileSync(outJson, "utf-8"));
-    expect(json.cycle.wake).toHaveLength(1);
+    expect(json.cycle.wake).toHaveLength(2);
     expect(json.cycle.compiledEdgeCoverage.status).toBe("no-data");
     expect(json.wakeQueuePath).toBe(wakeQueuePath(vault));
     rmSync(outMd, { force: true });
@@ -194,9 +209,10 @@ describe("runSleep (CLI)", () => {
     const outMd = join(vault, "..", `sleep-cap-${Date.now()}.md`);
     expect(await runSleep(["--vault", vault, "--wake-limit", "1", "--output", outMd])).toBe(0);
     const md = readFileSync(outMd, "utf-8");
-    expect(md).toContain("…and 1 more (full list in the queue)");
+    // rotten + old2 (own decay) and derived + c (their at-risk dependents).
+    expect(md).toContain("…and 3 more (full list in the queue)");
     // The queue still carries the full list.
-    expect(readFileSync(wakeQueuePath(vault), "utf-8").trim().split("\n")).toHaveLength(2);
+    expect(readFileSync(wakeQueuePath(vault), "utf-8").trim().split("\n")).toHaveLength(4);
     rmSync(outMd, { force: true });
   });
 

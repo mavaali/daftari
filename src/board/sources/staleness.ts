@@ -55,9 +55,15 @@ import type { AccessContext } from "../../access/rbac.js";
 import { canRead } from "../../access/rbac.js";
 import { type UpstreamStaleness, upstreamStaleness } from "../../curation/edge-staleness.js";
 import { listEdges } from "../../curation/edges.js";
+import { groundingAssessor, groundingSummary } from "../../curation/grounding.js";
 import { readProvenanceLog } from "../../curation/provenance.js";
 import { computeStaleness, olderSeriesMembers } from "../../curation/staleness.js";
-import { sourceReadable, sourceVerifiable } from "../../curation/tension-access.js";
+import { listTensions } from "../../curation/tension.js";
+import {
+  sourceReadable,
+  sourceVerifiable,
+  visibleTensions,
+} from "../../curation/tension-access.js";
 import { readTier2Verdicts } from "../../curation/tier2.js";
 import { loadDocuments } from "../../curation/vault-docs.js";
 import { collectionForPath } from "../../storage/index-db.js";
@@ -382,6 +388,104 @@ export const edgeStalenessAdapter: FindingSourceAdapter = {
         findings.push(...buildEdgeStalenessFindings(artifact, allowedRows, nowIso));
       }
 
+      return findings;
+    } finally {
+      db?.close();
+    }
+  },
+
+  identityOf(raw: Finding): string {
+    return deriveIdentity("staleness", raw.check, raw.target, raw.discriminator);
+  },
+
+  fingerprintOf(raw: Finding): string {
+    return fingerprint(raw.evidence);
+  },
+
+  async reproduces(
+    identity_key: string,
+    vaultRoot: string,
+    access: AccessContext,
+    now?: Date,
+  ): Promise<boolean> {
+    const currentFindings = await this.list(vaultRoot, access, now);
+    return currentFindings.some((f) => f.identity_key === identity_key);
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Grounding-at-risk adapter (nlzr)
+// ---------------------------------------------------------------------------
+//
+// One Finding per readable document whose grounding is at risk: a vault
+// source it cites one hop up is contested, past its TTL or validity,
+// superseded, or retracted. Classified by the shared groundingAssessor — the
+// same function the sleep wake list uses — so the two push surfaces agree.
+//
+//   - source: "staleness", check: "grounding-at-risk"
+//   - target: StalenessTarget { kind:"staleness", path } — the DEPENDENT, so
+//     `document=<decision>` finds the card on the decision itself.
+//   - identity: deriveIdentity("staleness", "grounding-at-risk", target).
+//   - fingerprint: the reasons (source, kind, tension ids, expiry date) — all
+//     stable until the grounding actually changes.
+//   - RBAC: the dependent must be readable; only readable sources and visible
+//     tensions are assessed, so the evidence never names an unreadable source.
+//     suggested_action stays generic: it becomes the ledger descriptor label,
+//     which outlives the per-caller evidence.
+
+export const groundingAtRiskAdapter: FindingSourceAdapter = {
+  async list(vaultRoot: string, access: AccessContext, now?: Date): Promise<Finding[]> {
+    const nowDate = now ?? new Date();
+    const nowIso = nowDate.toISOString();
+
+    const loaded = await loadDocuments(vaultRoot);
+    if (!loaded.ok) return [];
+    const tensions = await listTensions(vaultRoot);
+    if (!tensions.ok) return [];
+
+    const db = openIndexForAccessOrNull(vaultRoot);
+    try {
+      const readable = (path: string) => sourceReadable(db, access, path);
+      const assess = groundingAssessor(loaded.value, visibleTensions(db, tensions.value, access), {
+        now: nowDate,
+        readable,
+      });
+      const findings: Finding[] = [];
+      for (const doc of loaded.value) {
+        if (!readable(doc.path)) continue;
+        const status = doc.frontmatter.status;
+        if (status === "deprecated" || status === "superseded" || status === "archived") continue;
+        const grounding = assess(doc);
+        if (grounding === null) continue;
+
+        const target: StalenessTarget = { kind: "staleness", path: doc.path };
+        const evidence: Record<string, unknown> = {
+          reasons: grounding.reasons.map((r) => ({
+            source: r.source,
+            kind: r.kind,
+            ...(r.tensionIds ? { tensionIds: r.tensionIds } : {}),
+            ...(r.expiredOn ? { expiredOn: r.expiredOn } : {}),
+          })),
+          summary: groundingSummary(grounding),
+        };
+        findings.push({
+          identity_key: deriveIdentity("staleness", "grounding-at-risk", target),
+          source: "staleness",
+          check: "grounding-at-risk",
+          target,
+          fingerprint: fingerprint(evidence),
+          certainty: "medium",
+          evidence,
+          suggested_action:
+            "Re-verify this document: a source it cites is contested, expired, superseded, or retracted",
+          verify_predicate: `staleness:grounding-at-risk on ${doc.path}`,
+          owner: "",
+          first_seen: nowIso,
+          last_seen: nowIso,
+          disposition: "new",
+          history: [],
+        });
+      }
       return findings;
     } finally {
       db?.close();

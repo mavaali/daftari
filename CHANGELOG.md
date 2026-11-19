@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Grounding at risk: a document is flagged when a source it cites is contested, expired or retracted** (nlzr) — before, a decision resting on four expired assumptions looked clean everywhere, and a contested assumption reached it only through a `vault_receipt` call that did not say which source. A document's grounding is now at risk when a vault source it cites in `sources`, one hop up, is party to an unresolved tension, past its `ttl_days`, past its `valid_until`, superseded, or deprecated/archived. One shared function feeds every surface. `vault_read` gains a `grounding_at_risk` block with a banner, and search hits gain `groundingAtRisk` plus a `grounding at risk: <source> — <reason>` summary line. `vault_receipt` gains `cites-expired-upstream`, and each receipt source carries `groundingAtRisk`, which names the source behind its contested, expired, superseded and retracted flags. The board gets a `grounding-at-risk` card on the dependent. Sources the caller cannot read are left out entirely, so nothing about them is disclosed. Measured on a 1,477-document vault: about 8 µs per document, with no measurable change in search or read latency. **Behaviour change:** `daftari sleep` now wakes any live accumulation document whose grounding is at risk, including drafts, except a non-canonical document whose only risk is a contested source (read, search, receipt and board still show it); before, it woke only canonical documents and never for a contested or expired source. A draft citing a retracted source used to stay silent and now wakes. On a ~1,500-document vault the wake list grew from 1 to 2 today and from 6 to 10 two months out.
+
 ## [3.18.0] - 2026-11-18
 
 ### Added

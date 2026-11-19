@@ -24,7 +24,7 @@
 import type { AccessContext, FindingSourceAdapter } from "../types.js";
 import { lintAdapter } from "./lint.js";
 import { stagedAdapter } from "./staged.js";
-import { edgeStalenessAdapter, ttlStalenessAdapter } from "./staleness.js";
+import { edgeStalenessAdapter, groundingAtRiskAdapter, ttlStalenessAdapter } from "./staleness.js";
 import { tensionAdapter } from "./tension.js";
 import { tier2QueueAdapter } from "./tier2.js";
 
@@ -40,6 +40,7 @@ export const SOURCE_ADAPTERS: FindingSourceAdapter[] = [
   lintAdapter,
   ttlStalenessAdapter,
   edgeStalenessAdapter,
+  groundingAtRiskAdapter,
   stagedAdapter,
   tier2QueueAdapter,
   tensionAdapter,

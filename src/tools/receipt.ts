@@ -35,6 +35,15 @@ import {
   splitUpstreamVisibility,
 } from "../curation/edge-staleness.js";
 import {
+  assessGrounding,
+  GROUNDING_AT_RISK_SCHEMA,
+  type GroundingAtRisk,
+  type GroundingRiskKind,
+  type GroundingSourceState,
+  sourceRiskReasons,
+  stateFromFrontmatter,
+} from "../curation/grounding.js";
+import {
   explicitVaultSourceTarget,
   resolveVaultSourceRef,
   verifyRepoSourceRef,
@@ -114,6 +123,10 @@ export interface ReceiptSource {
   // a subset of summary.flags. Lets a consumer see which cited document a
   // summary upstream flag came from.
   upstreamFlags: string[];
+  // nlzr: the named detail behind the contested/expired/superseded/retracted
+  // upstream flags — which source, which reason (tension ids, expiry date).
+  // Null when no readable source is at risk; unreadable sources never appear.
+  groundingAtRisk: GroundingAtRisk | null;
 }
 
 export interface ReceiptSummary {
@@ -217,6 +230,8 @@ async function resolveChain(
 //   cites-retracted-upstream      — a readable source is deprecated/archived.
 //   cites-contested-upstream      — a readable source is party to an
 //                                   unresolved tension the caller can see.
+//   cites-expired-upstream        — a readable source is past its TTL or
+//                                   its valid_until (nlzr).
 //   cites-pending-broken-upstream — a compiled upstream input changed
 //                                   incompatibly since this doc was compiled
 //                                   (the edge-staleness class vault_read
@@ -227,6 +242,7 @@ async function resolveChain(
 export const UPSTREAM_FLAGS = [
   "cites-broken-source",
   "cites-contested-upstream",
+  "cites-expired-upstream",
   "cites-pending-broken-upstream",
   "cites-retracted-upstream",
   "cites-superseded-upstream",
@@ -234,6 +250,14 @@ export const UPSTREAM_FLAGS = [
   "cites-unverifiable-source",
 ] as const;
 type UpstreamFlag = (typeof UPSTREAM_FLAGS)[number];
+
+const RISK_FLAG: Record<GroundingRiskKind, UpstreamFlag> = {
+  contested: "cites-contested-upstream",
+  "ttl-expired": "cites-expired-upstream",
+  "validity-ended": "cites-expired-upstream",
+  superseded: "cites-superseded-upstream",
+  retracted: "cites-retracted-upstream",
+};
 
 interface UpstreamContext {
   vaultRoot: string;
@@ -244,6 +268,7 @@ interface UpstreamContext {
   seesAll: boolean;
   // Already filtered to what the caller may see.
   tensions: TensionEntry[];
+  now: Date;
   stale: CompiledStaleContext | null;
   db: () => IndexDb | null;
   repo: () => { root: string | undefined; verify: boolean };
@@ -268,20 +293,23 @@ async function upstreamFlagsFor(
   ctx: UpstreamContext,
   rel: string,
   sources: string[],
-): Promise<UpstreamFlag[]> {
+): Promise<{ flags: UpstreamFlag[]; grounding: GroundingAtRisk | null }> {
   const flags = new Set<UpstreamFlag>();
+  const states: GroundingSourceState[] = [];
 
-  // A readable vault source's own standing.
+  // A readable vault source's own standing: the shared grounding classifier
+  // (nlzr) decides, and each reason kind maps onto its upstream flag — so the
+  // receipt, vault_read, vault_search and the wake list cannot disagree.
   const flagState = (target: string, fm: Frontmatter) => {
-    if (fm.status === "superseded" || fm.superseded_by !== null) {
-      flags.add("cites-superseded-upstream");
-    }
-    if (fm.status === "deprecated" || fm.status === "archived") {
-      flags.add("cites-retracted-upstream");
-    }
-    if (ctx.tensions.some((t) => t.sourceA === target || t.sourceB === target)) {
-      flags.add("cites-contested-upstream");
-    }
+    const touching = ctx.tensions.filter((t) => t.sourceA === target || t.sourceB === target);
+    const state = stateFromFrontmatter(
+      target,
+      fm,
+      touching.flatMap((t) => (t.id ? [t.id] : [])),
+      touching.length,
+    );
+    states.push(state);
+    for (const reason of sourceRiskReasons(state, ctx.now)) flags.add(RISK_FLAG[reason.kind]);
   };
 
   for (const raw of sources) {
@@ -358,7 +386,7 @@ async function upstreamFlagsFor(
     if (hiddenPending !== "none") flags.add("cites-unreadable-source");
   }
 
-  return [...flags].sort();
+  return { flags: [...flags].sort(), grounding: assessGrounding(states, ctx.now) };
 }
 
 export interface VaultReceiptArgs {
@@ -430,6 +458,7 @@ async function compileReceipt(
     access,
     seesAll: !access || readableCollections(access.role) === undefined,
     tensions: tensionEntries,
+    now: new Date(),
     stale,
     db: getDb,
     repo: () => {
@@ -512,7 +541,7 @@ async function compileReceipt(
     if (currentSource !== null && currentSource.kind !== "resolved") {
       flagSet.add("supersession-unresolved");
     }
-    const upstreamFlags = await upstreamFlagsFor(upstream, rel, fm.sources);
+    const { flags: upstreamFlags, grounding } = await upstreamFlagsFor(upstream, rel, fm.sources);
     for (const f of upstreamFlags) flagSet.add(f);
 
     sources.push({
@@ -536,6 +565,7 @@ async function compileReceipt(
         agingTier: agingTier(t),
       })),
       upstreamFlags,
+      groundingAtRisk: grounding,
     });
   }
 
@@ -627,8 +657,9 @@ export const receiptTools: ToolDefinition[] = [
       "uncheckable refs, cites-broken-source for a vault doc or repo file " +
       "that is gone, cites-unreadable-source for one you cannot read, and " +
       "cites-superseded-upstream / cites-retracted-upstream / " +
-      "cites-contested-upstream / cites-pending-broken-upstream for a " +
-      "source's own standing). Empty flags mean each cited document is " +
+      "cites-contested-upstream / cites-expired-upstream / " +
+      "cites-pending-broken-upstream for a source's own standing, with " +
+      "groundingAtRisk naming which source and why). Empty flags mean each cited document is " +
       "current and uncontested and so is every source it cites one hop " +
       "up, each checkable and still present — no deeper; repo: refs are " +
       "checked for existence only. Also the vault's git HEAD as an as-of " +
@@ -746,6 +777,13 @@ export const receiptTools: ToolDefinition[] = [
                   "Sorted flags derived from this document's own sources, one hop up; " +
                   "a subset of summary.flags",
               },
+              groundingAtRisk: {
+                oneOf: [GROUNDING_AT_RISK_SCHEMA, { type: "null" }],
+                description:
+                  "Which readable source puts this document's grounding at risk and why " +
+                  "(contested with tension ids, expired with the date, superseded, " +
+                  "retracted). Null when none; unreadable sources never appear.",
+              },
             },
             required: [
               "path",
@@ -762,6 +800,7 @@ export const receiptTools: ToolDefinition[] = [
               "currentSource",
               "tensions",
               "upstreamFlags",
+              "groundingAtRisk",
             ],
           },
         },

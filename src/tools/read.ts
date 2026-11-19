@@ -14,6 +14,11 @@ import {
   type UpstreamStaleness,
 } from "../curation/edge-staleness.js";
 import {
+  GROUNDING_AT_RISK_SCHEMA,
+  type GroundingAtRisk,
+  groundingFromIndex,
+} from "../curation/grounding.js";
+import {
   ensureLedgerWritable,
   leakLedgerPath,
   recordLeakLedgerEntry,
@@ -176,6 +181,13 @@ export interface VaultReadResult {
   // none are visible.
   contested?: ContestedTension[];
   contestedCount?: number;
+  // nlzr: grounding at risk — a vault source this document cites one hop up
+  // is contested, past its TTL or validity, superseded, or retracted. Names
+  // each source and reason; sources the caller cannot read are omitted
+  // entirely (no path, title, or state). Absent when nothing is at risk, or
+  // when the index is unavailable (the same degrade-to-silence as
+  // `contested`). Advisory: never mutates this document.
+  grounding_at_risk?: GroundingAtRisk;
   // U-7 (LD-7): the positional contest block — distinct from `contested`
   // (tension annotations). Present ONLY on a contested doc with no
   // ratified org_position; absent otherwise (upstream_staleness's
@@ -444,6 +456,7 @@ export async function vaultRead(
   let structural: StructuralDecay | null = null;
   let contestedResult: { contested: ContestedTension[]; contestedCount: number } | null = null;
   let amended: AmendedBy | null = null;
+  let grounding: GroundingAtRisk | null = null;
   try {
     // Reader-facing surface: visible edges by omission, hidden pending edges
     // coarsened (#217 — an exact count over unreadable units is a small-cell
@@ -507,6 +520,7 @@ export async function vaultRead(
     });
     if (db) contestedResult = contestedFor(vaultRoot, db, resolved.value.relPath, access);
     if (db) amended = amendedByFor(db, resolved.value.relPath, access);
+    if (db) grounding = groundingFromIndex(vaultRoot, db, resolved.value.relPath, access);
   } finally {
     db?.close();
   }
@@ -666,6 +680,7 @@ export async function vaultRead(
     ...(contestedResult
       ? { contested: contestedResult.contested, contestedCount: contestedResult.contestedCount }
       : {}),
+    ...(grounding ? { grounding_at_risk: grounding } : {}),
     ...(contestedPositions ? { contested_positions: contestedPositions } : {}),
     ...(ratifiedView ? { ratified_view: ratifiedView } : {}),
     ...(contestedInputs ? { contested_inputs: contestedInputs } : {}),
@@ -1402,7 +1417,10 @@ export const readTools: ToolDefinition[] = [
       "orphan: nothing you can read links here or cites this in sources; retired_still_linked: " +
       "canonical docs still lean on this retired (deprecated/superseded) one; null when healthy), " +
       "any unresolved tensions involving the document (contested, same " +
-      "shape as search hits), a contested_positions block when principals " +
+      "shape as search hits), a grounding_at_risk block when a vault source " +
+      "this document cites one hop up is contested, past its TTL or " +
+      "validity, superseded, or retracted (each reason names the source; " +
+      "sources you cannot read are omitted), a contested_positions block when principals " +
       "hold conflicting live positions and no org position is ratified, " +
       "a ratified_view block when an org position IS ratified (the org's " +
       "belief at its confidence, with the surviving minority carried as " +
@@ -1544,6 +1562,7 @@ export const readTools: ToolDefinition[] = [
           },
         },
         contestedCount: { type: "integer", minimum: 0 },
+        grounding_at_risk: GROUNDING_AT_RISK_SCHEMA,
         // U-7: present only on a contested doc with no ratified org_position;
         // absent otherwise (same absent-key discipline as upstream_staleness).
         contested_positions: {

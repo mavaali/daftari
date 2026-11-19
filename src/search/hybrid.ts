@@ -17,6 +17,7 @@
 // lexical-only and reports vectorUsed: false rather than failing.
 
 import { computeDecay, type DecayState } from "../curation/decay.js";
+import type { GroundingAtRisk } from "../curation/grounding.js";
 import type { ValidityReport } from "../curation/validity.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import {
@@ -110,6 +111,9 @@ export interface HybridHit {
   // Tool handler, not ranker.
   orphan?: boolean;
   retiredStillLinked?: boolean;
+  // nlzr: a cited vault source one hop up is contested, expired, superseded,
+  // or retracted — tool handler, not ranker; absent when nothing is at risk.
+  groundingAtRisk?: GroundingAtRisk;
   viaCoverage?: boolean; // true when added by the coverage pass, not the ranker
   coverageReason?: "edge" | "entity-window"; // why it was added (stage 1 sets entity-window)
   // off.1/MAV-154: set when the graph-expansion pass injected this hit (not the

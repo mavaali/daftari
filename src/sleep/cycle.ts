@@ -21,7 +21,8 @@ import {
   currentConsumesEdges,
   listConsumesEdges,
 } from "../curation/consumes.js";
-import { explicitVaultSourceTarget, resolveVaultSourceRef } from "../curation/source-refs.js";
+import { type GroundingAtRisk, groundingAssessor } from "../curation/grounding.js";
+import { explicitVaultSourceTarget } from "../curation/source-refs.js";
 import {
   daysUntil,
   listStagedActions,
@@ -95,8 +96,9 @@ async function vanishedSourceDetail(
   return `${path} missing from worktree; git history unavailable`;
 }
 
-// An advisory task for a canonical accumulation document triggered by decay,
-// ended validity, or retracted/vanished grounding. The wake queue exists for
+// An advisory task for an accumulation document triggered by decay, ended
+// validity, or retracted/vanished grounding (canonical docs), or by grounding
+// at risk (any non-retired doc, drafts included — nlzr). The wake queue exists for
 // an external agent to re-verify these against their sources — daftari never
 // re-verifies on its own.
 export interface WakeTask {
@@ -110,6 +112,9 @@ export interface WakeTask {
   blastTotal: number;
   sources: string[];
   reason: string;
+  // nlzr: present when a cited source puts this doc's grounding at risk —
+  // the same assessment vault_read and vault_receipt carry.
+  groundingAtRisk?: GroundingAtRisk;
 }
 
 export interface QuietDecay {
@@ -174,7 +179,7 @@ export async function runSleepCycle(
   const reverseSource = buildReverseSourceMap(docs.value);
   const reverseLink = buildReverseLinkMap(docs.value);
 
-  const { byPath, byBasename } = buildPathIndexes(docs.value);
+  const { byPath } = buildPathIndexes(docs.value);
   const vanishedCompiledByArtifact = new Map<string, Set<string>>();
   for (const edge of currentConsumesEdges(consumes.value)) {
     const unit = validCompiledUnitPath(edge.unit);
@@ -183,11 +188,12 @@ export async function runSleepCycle(
     missing.add(unit);
     vanishedCompiledByArtifact.set(edge.artifact, missing);
   }
-  const retracted = new Set(
-    docs.value
-      .filter((d) => d.frontmatter.status === "deprecated" || d.frontmatter.status === "superseded")
-      .map((d) => d.path),
-  );
+  // nlzr: grounding at risk, from the operator's vantage (sleep takes no
+  // access context) — the same shared classifier vault_read, vault_search and
+  // vault_receipt use.
+  const allTensions = await listTensions(vaultRoot);
+  if (!allTensions.ok) return allTensions;
+  const groundingOf = groundingAssessor(docs.value, allTensions.value, { now });
 
   const staleness = { fresh: 0, aging: 0, stale: 0, total: 0 };
   const wake: WakeTask[] = [];
@@ -224,16 +230,29 @@ export async function runSleepCycle(
     const validityEnded =
       validity?.state === "expired" && (doc.frontmatter.superseded_by ?? null) === null;
 
-    // Third reason to wake: this doc (even if fresh by TTL and validity-valid)
-    // cites a deprecated or superseded source in its `sources` frontmatter.
-    // Scope is intentionally locked to the sources frontmatter edge only — not
-    // markdown body links. Self-terminating once the source is re-pointed.
-    const citedRetracted = (doc.frontmatter.sources ?? [])
-      .map((raw) => {
-        const source = resolveVaultSourceRef(raw, doc.path, byPath, byBasename);
-        return source.kind === "vault" ? source.target : null;
-      })
-      .filter((t): t is string => t !== null && retracted.has(t));
+    // Third reason to wake: grounding at risk (nlzr) — a source in this
+    // doc's `sources` frontmatter (one hop; not body links) is contested,
+    // expired, superseded, or retracted. Self-terminating once the source is
+    // fixed or re-pointed. A retracted/superseded source on a canonical doc
+    // keeps its long-standing wake copy; every other at-risk case — and every
+    // non-canonical, non-retired doc (decisions are often drafts) — wakes with
+    // the grounding reason itself. A non-canonical doc whose only risk is a
+    // contested source does not wake: open tensions already sit on the docket,
+    // and read, search, receipt and board still show the risk.
+    const assessed = groundingOf(doc);
+    const wakeReasons =
+      doc.frontmatter.status === "canonical"
+        ? (assessed?.reasons ?? [])
+        : (assessed?.reasons ?? []).filter((r) => r.kind !== "contested");
+    const grounding =
+      assessed !== null && wakeReasons.length > 0 ? { ...assessed, reasons: wakeReasons } : null;
+    const citedRetracted = [
+      ...new Set(
+        (grounding?.reasons ?? [])
+          .filter((r) => r.kind === "retracted" || r.kind === "superseded")
+          .map((r) => r.source),
+      ),
+    ];
     const citesRetracted = citedRetracted.length > 0;
 
     // Fourth reason to wake: an explicit declared vault source or a unit in
@@ -249,15 +268,25 @@ export async function runSleepCycle(
     const vanished = [...vanishedSources].sort();
     const hasVanishedSource = vanished.length > 0;
 
-    if (!s.expired && !validityEnded && !citesRetracted && !hasVanishedSource) continue;
+    const ownTrigger = s.expired || validityEnded || citesRetracted || hasVanishedSource;
+    if (!ownTrigger && grounding === null) continue;
     if (doc.frontmatter.domain === "generative") {
-      generativeStale += 1;
+      if (ownTrigger) generativeStale += 1;
       continue;
     }
-    if (doc.frontmatter.status !== "canonical") continue;
+    const status = doc.frontmatter.status;
+    const canonical = status === "canonical";
+    const retiredStatus =
+      status === "deprecated" || status === "superseded" || status === "archived";
+    if (!canonical && (grounding === null || retiredStatus)) continue;
 
     const blast = computeBlast({ seeds: [doc.path], reverseSource, reverseLink });
-    if (blast.downstream.length === 0 && !citesRetracted && !hasVanishedSource) {
+    if (
+      blast.downstream.length === 0 &&
+      !citesRetracted &&
+      !hasVanishedSource &&
+      grounding === null
+    ) {
       decayedQuiet.push({ path: doc.path, ageDays: s.ageDays });
       continue;
     }
@@ -283,18 +312,24 @@ export async function runSleepCycle(
         ? `source-vanished: canonical grounding disappeared: ${vanishedDetail.join("; ")} — ` +
           `re-verify grounding, restore or replace the source where appropriate, and ` +
           `stage any dependent diff for ratification`
-        : citesRetracted
+        : canonical && citesRetracted
           ? `canonical, cites retracted source(s): ${citedRetracted.join(", ")} — ` +
             `re-verify grounding, re-point to the successor if one exists, and ` +
             `stage the diff for ratification`
-          : validityEnded
-            ? `canonical, but its validity ended ${validity?.until} and nothing ` +
-              `supersedes it; ${blast.downstream.length} downstream document(s) ` +
-              "depend on it — find what replaced the claim and stage the diff for " +
-              "ratification"
-            : `canonical, ${s.ageDays}d since update (TTL ${s.ttlDays}d), ` +
-              `${blast.downstream.length} downstream document(s) depend on it — ` +
-              `re-verify against its sources and stage the diff for ratification`,
+          : grounding !== null
+            ? `${status}, ${grounding.reasons
+                .map((r) => `grounding at risk: ${r.source} — ${r.detail}`)
+                .join("; ")} — re-verify this document against its sources and stage ` +
+              "any diff for ratification"
+            : validityEnded
+              ? `canonical, but its validity ended ${validity?.until} and nothing ` +
+                `supersedes it; ${blast.downstream.length} downstream document(s) ` +
+                "depend on it — find what replaced the claim and stage the diff for " +
+                "ratification"
+              : `canonical, ${s.ageDays}d since update (TTL ${s.ttlDays}d), ` +
+                `${blast.downstream.length} downstream document(s) depend on it — ` +
+                `re-verify against its sources and stage the diff for ratification`,
+      ...(grounding !== null ? { groundingAtRisk: grounding } : {}),
     });
   }
 
@@ -306,9 +341,7 @@ export async function runSleepCycle(
   decayedQuiet.sort((a, b) => b.ageDays - a.ageDays || a.path.localeCompare(b.path));
 
   // Tension surface: unresolved counts, the stale tier, and the docket head.
-  const tensions = await listTensions(vaultRoot);
-  if (!tensions.ok) return tensions;
-  const openTensions = tensions.value.filter((t) => !t.resolved);
+  const openTensions = allTensions.value.filter((t) => !t.resolved);
   const staleTensions = openTensions
     .filter((t) => agingTier(t, now) === "stale")
     .map((t) => ({

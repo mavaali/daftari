@@ -64,7 +64,10 @@ The pass:
 2. Scores document decay and checks validity windows.
 3. Detects retracted or vanished declared and compiled grounding.
 4. Writes canonical accumulation documents needing review to
-   `.daftari/wake-queue.jsonl`, ranked by blast radius.
+   `.daftari/wake-queue.jsonl`, ranked by blast radius. Any live accumulation
+   document whose grounding is at risk is woken too, drafts included, except
+   a non-canonical document whose only risk is a contested source (see
+   "Grounding at risk" below).
 5. Produces a Morning Report covering tensions, pending ratification, and
    rubber-stamp signals.
 
@@ -251,7 +254,9 @@ names no document) raises `cites-unverifiable-source`; one that is gone (a
 deleted vault document, a missing `repo:` file) raises `cites-broken-source`;
 a vault source that has been superseded, deprecated or archived, or is party to
 an open tension, raises `cites-superseded-upstream`, `cites-retracted-upstream`
-or `cites-contested-upstream`; a compiled input that changed incompatibly
+or `cites-contested-upstream`; one past its TTL or its `valid_until` raises
+`cites-expired-upstream`. Each receipt source's `groundingAtRisk` names which
+source raised those four flags and why; a compiled input that changed incompatibly
 raises `cites-pending-broken-upstream`. A source the caller cannot read raises
 only `cites-unreadable-source`, and for a caller who cannot read every
 collection a deleted source looks the same, so the receipt never reveals
@@ -259,6 +264,33 @@ whether a hidden document exists or what state it is in. `repo:` sources are
 checked for existence, not content. Empty flags therefore mean the cited
 documents and their direct sources are current, uncontested, checkable and
 present; they say nothing about sources two hops away.
+
+### Grounding at risk
+
+The receipt is a pull: an operator has to think to ask for it. The same
+one-hop check is pushed to every surface that already shows a document:
+
+- `vault_read` returns a `grounding_at_risk` block with a banner, one line per
+  reason: `<source> — contested — party to 1 unresolved tension: t-…`,
+  `<source> — past its 30d TTL — expired 2026-12-18 …`, `validity ended …`,
+  `superseded`, or `retracted — status deprecated`.
+- `vault_search` and `vault_search_related` hits carry `groundingAtRisk`, and
+  the compact summary line ends `· grounding at risk: <source> — <reason>`.
+- `daftari sleep` wakes the dependent with that reason, including drafts
+  (decisions often stay drafts). A non-canonical document whose only risk is
+  a contested source is not woken: the tension is already on the docket, and
+  read, search, receipt and board still show it. Retired and generative
+  documents are not woken for it.
+- The board shows a `grounding-at-risk` card on the dependent, so
+  `vault_board_list` with `document=<decision>` finds it.
+
+A source is at risk when it is party to an unresolved tension (a contested
+`derives_from` edge always logs one), past its `ttl_days` since `updated`,
+past its `valid_until`, superseded, or deprecated/archived. A retired source
+reports only its retirement. One hop only. Sources the caller cannot read are
+left out entirely: no path, title or state. The state is derived on every
+call and never stored. It does not yet apply `series` TTL exemptions to
+sources.
 
 When a receipt must leave the running vault as a signed artifact, use the
 attestation CLI:
