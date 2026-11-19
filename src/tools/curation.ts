@@ -43,6 +43,7 @@ import {
 } from "../curation/lint-page.js";
 import { renderLedgerKeeper } from "../curation/lint-voice.js";
 import { type ProvenanceEntry, readProvenanceLog } from "../curation/provenance.js";
+import { principalKindForVault } from "../curation/review-log.js";
 import type { ReviewThroughputSummary } from "../curation/review-throughput.js";
 import type { ShadowLintSummary } from "../curation/shadow.js";
 import { STAGED_ACTION_TYPES, sweepExpiredActions } from "../curation/staged-actions.js";
@@ -262,7 +263,9 @@ export async function vaultTensionResolve(
   if (rationale !== undefined) resolution.rationale = rationale;
   if (references !== undefined) resolution.references = references;
 
-  return resolveTension(vaultRoot, id.trim(), resolution);
+  return resolveTension(vaultRoot, id.trim(), resolution, {
+    decidedByKind: principalKindForVault(vaultRoot, access?.user),
+  });
 }
 
 // ---------------------------------------------------------------------------

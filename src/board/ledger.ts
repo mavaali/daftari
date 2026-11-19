@@ -72,6 +72,7 @@ export async function appendEvent(
     // descriptor — display snapshot stamped by U11's dispose/resolve tools so
     // resolved-and-absent findings can be rendered without the live finding (U4).
     ...(event.descriptor !== undefined ? { descriptor: event.descriptor } : {}),
+    ...(event.decided_by_kind !== undefined ? { decided_by_kind: event.decided_by_kind } : {}),
   };
   try {
     mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });

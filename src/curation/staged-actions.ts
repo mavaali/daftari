@@ -58,6 +58,7 @@ import {
   upsertStagedAction,
 } from "../storage/index-db.js";
 import { toSecondISO } from "../utils/dates.js";
+import { appendReviewEvents, type DecidedByKind, principalKindForVault } from "./review-log.js";
 import { addTension } from "./tension.js";
 
 // The action verbs the queue understands. Each dispatches to a write tool on
@@ -124,6 +125,10 @@ export interface StagedAction {
   // decision. Recorded in the JSONL decision record and carried on the in-memory
   // row. NOT stored in the sqlite staged_actions table (no schema bump needed).
   decidedByPrincipal: string | null;
+  // Bead 9mpe: who decided, as a kind — derived from decidedByPrincipal (the
+  // authenticated identity), never from ratifiedBy (the caller's claim).
+  // "unknown" for pending rows and for decision records that predate it.
+  decidedByKind: DecidedByKind;
   // Caller-supplied trace/run identifier stamped at stage time (#235). Like
   // decidedByPrincipal, JSONL-only — not in the sqlite staged_actions table.
   runId: string | null;
@@ -173,6 +178,9 @@ export interface DecisionInput {
   // The authenticated identity that issued the decision (access.user, §11.6).
   // Optional — omitted when no AccessContext is present.
   decidedByPrincipal?: string;
+  // Override for decisions Daftari makes itself (the expiry sweep). When
+  // absent, the kind is derived from decidedByPrincipal via the vault config.
+  decidedByKind?: DecidedByKind;
 }
 
 export function stagedActionsPath(vaultRoot: string): string {
@@ -222,6 +230,7 @@ interface RawRecord {
   ratified_by?: string | null;
   ratification_reason?: string | null;
   decided_by_principal?: string | null;
+  decided_by_kind?: string | null;
   run_id?: string | null;
   base_version?: string | null;
   // Forensic note on a reopening `pending` record (8i1l); collapse ignores it.
@@ -273,6 +282,7 @@ function collapse(records: RawRecord[]): Map<string, StagedActionRow> {
         ratified_by: null,
         ratification_reason: null,
         decided_by_principal: null,
+        decided_by_kind: null,
         run_id: rec.run_id ?? null,
         base_version: rec.base_version ?? null,
       });
@@ -285,6 +295,7 @@ function collapse(records: RawRecord[]): Map<string, StagedActionRow> {
       existing.ratified_by = rec.ratified_by ?? null;
       existing.ratification_reason = rec.ratification_reason ?? null;
       existing.decided_by_principal = rec.decided_by_principal ?? null;
+      existing.decided_by_kind = rec.decided_by_kind ?? null;
     }
   }
   return byId;
@@ -314,9 +325,25 @@ function rowToStagedAction(row: StagedActionRow): StagedAction {
     // staged_actions; SQLite-backed reads (rebuildStagedActionsIndex) always
     // yield null here.
     decidedByPrincipal: row.decided_by_principal ?? null,
+    decidedByKind: asKind(row.decided_by_kind),
     runId: row.run_id ?? null,
     baseVersion: row.base_version ?? null,
   };
+}
+
+function asKind(v: string | null | undefined): DecidedByKind {
+  return v === "human" || v === "agent" ? v : "unknown";
+}
+
+// Terminal dispositions — the ones a reviewer (or the sweep) made. `applying`
+// and a reopening `pending` are bookkeeping, not decisions.
+function isTerminal(status: string): boolean {
+  return (
+    status === "ratified" ||
+    status === "rejected" ||
+    status === "expired" ||
+    status === "ratified-pending-tool"
+  );
 }
 
 // Reads the log and returns current state as parsed actions, id order. A
@@ -603,6 +630,10 @@ function appendDecisionChecked(
     );
   }
 
+  const terminal = isTerminal(decision.status);
+  const kind: DecidedByKind | null = terminal
+    ? (decision.decidedByKind ?? principalKindForVault(vaultRoot, decision.decidedByPrincipal))
+    : null;
   const record: RawRecord =
     decision.status === "pending"
       ? { id, status: "pending", ...(decision.reason ? { reopen_reason: decision.reason } : {}) }
@@ -615,9 +646,25 @@ function appendDecisionChecked(
           ...(decision.decidedByPrincipal != null
             ? { decided_by_principal: decision.decidedByPrincipal }
             : {}),
+          ...(kind !== null ? { decided_by_kind: kind } : {}),
         };
   mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
   appendFileSync(stagedActionsPath(vaultRoot), `${JSON.stringify(record)}\n`);
+  if (kind !== null) {
+    // A `ratified` record lands only after the dispatched write applied (a
+    // failed or shadow dispatch reopens to pending), so ratified ⇔ changed.
+    appendReviewEvents(vaultRoot, [
+      {
+        ev: "decision",
+        surface: "staged",
+        item: id,
+        action: decision.status,
+        decided_by_kind: kind,
+        changed_anything: decision.status === "ratified",
+        at: decision.ratifiedAt,
+      },
+    ]);
+  }
 
   // Mirror the append onto the in-memory row (same field mapping collapse()
   // applies to a decision record) so the returned row is the post-write state.
@@ -626,6 +673,7 @@ function appendDecisionChecked(
   existing.ratified_by = record.ratified_by ?? null;
   existing.ratification_reason = record.ratification_reason ?? null;
   existing.decided_by_principal = record.decided_by_principal ?? null;
+  existing.decided_by_kind = record.decided_by_kind ?? null;
   return ok(existing);
 }
 
@@ -766,7 +814,12 @@ export async function sweepExpiredActions(
           const decided = appendDecisionChecked(
             vaultRoot,
             row.id,
-            { status: "expired", ratifiedAt: at, ratifiedBy: SWEEP_PRINCIPAL },
+            {
+              status: "expired",
+              ratifiedAt: at,
+              ratifiedBy: SWEEP_PRINCIPAL,
+              decidedByKind: "agent",
+            },
             "pending",
           );
           if (decided.ok) expired.push(row.id);

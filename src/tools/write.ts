@@ -28,6 +28,11 @@ import {
 } from "../curation/leak-ledger.js";
 import { foreignPositionViolation } from "../curation/positions.js";
 import { frontmatterDiff, recordProvenance } from "../curation/provenance.js";
+import {
+  appendReviewEvents,
+  docReviewItem,
+  principalKindForVault,
+} from "../curation/review-log.js";
 import { recordShadowAction } from "../curation/shadow.js";
 import { resolveVaultSourceRef } from "../curation/source-refs.js";
 import { stageActionWithConflictCheck } from "../curation/staged-actions.js";
@@ -4069,7 +4074,26 @@ export const writeTools: ToolDefinition[] = [
       actions: ["promote"],
       statuses: ["canonical"],
     }),
-    handler: (vaultRoot, args, access) => vaultPromote(vaultRoot, args, access),
+    // The review-journal decision is recorded here, at the tool entry point,
+    // not inside vaultPromote: vault_ratify dispatches vaultPromote directly
+    // and records its own staged decision, so a ratified promote counts once.
+    handler: async (vaultRoot, args, access) => {
+      const result = await vaultPromote(vaultRoot, args, access);
+      if (result.ok) {
+        appendReviewEvents(vaultRoot, [
+          {
+            ev: "decision",
+            surface: "promote",
+            item: docReviewItem(result.value.path),
+            action: "promote",
+            decided_by_kind: principalKindForVault(vaultRoot, access?.user),
+            changed_anything: result.value.shadow !== true,
+            at: new Date().toISOString(),
+          },
+        ]);
+      }
+      return result;
+    },
   },
   {
     name: "vault_deprecate",

@@ -34,6 +34,12 @@ import { appendEvent, loadLedger } from "../board/ledger.js";
 import { isConfiguredPrincipal } from "../board/principals.js";
 import { resolveAdapterForIdentity } from "../board/sources/index.js";
 import type { Finding, FindingDescriptor, LedgerEvent } from "../board/types.js";
+import {
+  appendReviewEvents,
+  boardReviewItem,
+  principalKindForVault,
+  recordShown,
+} from "../curation/review-log.js";
 import { sourceReadable } from "../curation/tension-access.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import type { DaftariConfig } from "../utils/config.js";
@@ -112,6 +118,7 @@ export async function vaultBoardList(
 ): Promise<Result<BoardListResult, Error>> {
   try {
     const result = await listBoard(vaultRoot, access, filters, now);
+    recordBoardShown(vaultRoot, access, result, now);
     return ok(result);
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
@@ -256,14 +263,19 @@ export async function vaultBoardDispose(
   };
 
   // -------------------------------------------------------------------
-  // Append the human event (principal_type "human").
+  // Append the human event (principal_type "human"). decided_by_kind is the
+  // measured kind of the authenticated principal (bead 9mpe): the dispose
+  // grant is a role capability, and an agent can run under a dispose role.
   // -------------------------------------------------------------------
+  const decidedByKind = principalKindForVault(vaultRoot, access.user);
+  const at = (now ?? new Date()).toISOString();
   const eventRecord: Omit<LedgerEvent, "identity_scheme_version"> = {
     finding_id,
     event,
     by: access.user,
     principal_type: "human",
-    at: (now ?? new Date()).toISOString(),
+    decided_by_kind: decidedByKind,
+    at,
     against_fingerprint: liveFinding.fingerprint,
     descriptor,
     ...(rationale !== undefined ? { rationale } : {}),
@@ -278,7 +290,37 @@ export async function vaultBoardDispose(
     );
   }
 
+  // A disposition writes only the board ledger — never a vault document.
+  appendReviewEvents(vaultRoot, [
+    {
+      ev: "decision",
+      surface: "board",
+      item: boardReviewItem(liveFinding),
+      action: event,
+      decided_by_kind: decidedByKind,
+      changed_anything: false,
+      at,
+    },
+  ]);
+
   return ok({ event: appendResult.value });
+}
+
+// Records the first surfacing of every visible finding to this viewer's kind
+// (bead 9mpe). Shared by vault_board_list and the HTTP board routes.
+export function recordBoardShown(
+  vaultRoot: string,
+  access: AccessContext,
+  result: BoardListResult,
+  now?: Date,
+): void {
+  recordShown(
+    vaultRoot,
+    "board",
+    result.all.map((f) => boardReviewItem(f)),
+    principalKindForVault(vaultRoot, access.user),
+    (now ?? new Date()).toISOString(),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -571,6 +613,7 @@ const ledgerEventSchema: Record<string, unknown> = {
     rationale: { type: "string" },
     expiry: { type: "string" },
     owner: { type: "string" },
+    decided_by_kind: { type: "string", enum: ["human", "agent", "unknown"] },
     descriptor: {
       type: "object",
       properties: {
