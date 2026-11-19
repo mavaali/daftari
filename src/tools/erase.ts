@@ -31,6 +31,7 @@ import {
   buildReverseLinkMap,
   buildReverseSourceMap,
   computeBlast,
+  computeBlastForReader,
   type HiddenDownstream,
 } from "../curation/tension-blast.js";
 import { loadDocuments } from "../curation/vault-docs.js";
@@ -150,27 +151,26 @@ export async function vaultErasePlan(
     return err(new Error(`vault_erase: no documents cite source_ref '${target.value.value}'`));
   }
 
-  const blast = computeBlast({
-    seeds: paths,
-    reverseSource: buildReverseSourceMap(loaded.value),
-    reverseLink: buildReverseLinkMap(loaded.value),
-  });
+  const reverseSource = buildReverseSourceMap(loaded.value);
+  const reverseLink = buildReverseLinkMap(loaded.value);
+  // The plan hash binds the FULL closure (it is never shown); the reported
+  // list goes through the shared reader filter (#217 / #84q6) so distances
+  // come from the readable subgraph. An explicitly named path target is the
+  // caller's own input, so it seeds the walk even when unreadable.
+  const blast = computeBlast({ seeds: paths, reverseSource, reverseLink });
+  const visible = computeBlastForReader(
+    { seeds: paths, reverseSource, reverseLink },
+    (p) =>
+      (target.value.kind === "path" && paths.includes(p)) ||
+      sourceReadable(null, authorized.value, p),
+  );
   const head = await headFullSha(vaultRoot);
   if (!head.ok) return head;
 
-  const visibleDownstream = blast.downstream.filter((entry) =>
-    sourceReadable(null, authorized.value, entry.path),
-  );
   const visibleTargets =
     target.value.kind === "path"
       ? paths
       : paths.filter((path) => sourceReadable(null, authorized.value, path));
-  let primaryBlast = 0;
-  let advisoryBlast = 0;
-  for (const entry of visibleDownstream) {
-    if (entry.dependency_type === "source") primaryBlast += 1;
-    else advisoryBlast += 1;
-  }
 
   const hashPayload = {
     version: 1,
@@ -188,10 +188,10 @@ export async function vaultErasePlan(
     target: target.value,
     target_paths: visibleTargets,
     hidden_targets: bucketHiddenDownstream(paths.length - visibleTargets.length),
-    downstream: visibleDownstream,
-    primary_blast: primaryBlast,
-    advisory_blast: advisoryBlast,
-    hidden_downstream: bucketHiddenDownstream(blast.downstream.length - visibleDownstream.length),
+    downstream: visible.downstream,
+    primary_blast: visible.primary_blast,
+    advisory_blast: visible.advisory_blast,
+    hidden_downstream: visible.hidden_downstream,
     vault_head: head.value,
     plan_hash: planHash,
   });
