@@ -65,7 +65,7 @@
     "better-sqlite3": "^12.10.0",
     "chokidar": "^4.0.3",
     "fflate": "^0.8.3",
-    "glob": "^13.0.6",
+    "glob": "^14.0.2",
     "gray-matter": "^4.0.3",
     "jose": "^6.2.4",
     "js-yaml": "^4.1.1",
