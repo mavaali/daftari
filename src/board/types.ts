@@ -164,6 +164,13 @@ export interface LedgerEvent {
    * the real source/check/target/label without access to the live finding.
    */
   descriptor?: FindingDescriptor;
+  /**
+   * Bead 9mpe: human | agent | unknown, derived from `by` (the authenticated
+   * principal) and the vault's principal_kinds config. Stamped on human
+   * disposition events; absent on system events and on events that predate
+   * it (read as unknown).
+   */
+  decided_by_kind?: "human" | "agent" | "unknown";
 }
 
 // ---------------------------------------------------------------------------

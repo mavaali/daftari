@@ -58,7 +58,7 @@ import { createServer, resolveToolExposure, SERVER_VERSION } from "../server.js"
 import { createBackend, type StorageBackend } from "../storage/backend.js";
 import { directoryExists } from "../storage/local.js";
 import { syncVault } from "../storage/sync.js";
-import { vaultBoardDispose, vaultBoardResolve } from "../tools/board.js";
+import { recordBoardShown, vaultBoardDispose, vaultBoardResolve } from "../tools/board.js";
 import { type DaftariConfig, loadConfig } from "../utils/config.js";
 import { ensureVaultGitignore } from "../utils/vault-gitignore.js";
 import { renderBoardPage } from "../view/board-page.js";
@@ -1184,6 +1184,7 @@ export function startHttpServer(
       if (url.pathname === "/api/board" && req.method === "GET") {
         // GET /api/board → JSON board result
         const result = await listBoard(vaultRoot, boardAccess, hasFilters ? filters : undefined);
+        recordBoardShown(vaultRoot, boardAccess, result);
         writeJson(res, 200, result);
         return;
       }
@@ -1191,6 +1192,7 @@ export function startHttpServer(
       if (url.pathname === "/board" && req.method === "GET") {
         // GET /board → rendered HTML page
         const result = await listBoard(vaultRoot, boardAccess, hasFilters ? filters : undefined);
+        recordBoardShown(vaultRoot, boardAccess, result);
         const html = renderBoardPage(result, hasFilters ? filters : undefined);
         writeHtml(res, 200, html);
         return;

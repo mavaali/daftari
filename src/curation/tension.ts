@@ -23,6 +23,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { acquireLock, mintLeaseHolder, openLockDb, releaseLock } from "../access/locks.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import { appendReviewEvents, type DecidedByKind } from "./review-log.js";
 import { ageInDays } from "./staleness.js";
 
 // Reserved lock key for the tension-log read-modify-write (S3-b). Lock keys
@@ -353,6 +354,11 @@ export async function addTension(
       };
       // A leading blank line keeps this block separated from the previous one.
       appendFileSync(tensionsPath(vaultRoot), `\n${renderEntry(entry)}`);
+      // Bead 9mpe: lifecycle event, so backlog is computable without diffing
+      // tensions.md. Id + timestamp only.
+      appendReviewEvents(vaultRoot, [
+        { ev: "tension_open", item: entry.id as string, at: new Date().toISOString() },
+      ]);
       return ok(entry);
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
@@ -513,10 +519,14 @@ export async function listTensions(
 // or if the tension is already resolved. The whole tensions.md file is read,
 // the matched entry is updated, and the file is rewritten in place. The
 // leading-blank-line convention of the append path is preserved.
+// `opts.decidedByKind` is the kind of the AUTHENTICATED caller, derived by the
+// tool layer (principalKindForVault) — resolution.resolved_by may be a
+// caller-supplied claim, so it never feeds the kind. Absent ⇒ "unknown".
 export async function resolveTension(
   vaultRoot: string,
   id: string,
   resolution: TensionResolution,
+  opts: { decidedByKind?: DecidedByKind } = {},
 ): Promise<Result<TensionEntry, Error>> {
   const lockDbResult = openLockDb(vaultRoot);
   if (!lockDbResult.ok) return lockDbResult;
@@ -586,6 +596,20 @@ export async function resolveTension(
 
     try {
       await writeFile(tensionsPath(vaultRoot), next);
+      // A ruling never edits the disputed documents, so it changes nothing.
+      appendReviewEvents(vaultRoot, [
+        {
+          ev: "decision",
+          surface: "tension",
+          item: id,
+          action: resolution.kind,
+          decided_by_kind: opts.decidedByKind ?? "unknown",
+          changed_anything: false,
+          at: Number.isFinite(Date.parse(resolution.resolved_at))
+            ? resolution.resolved_at
+            : new Date().toISOString(),
+        },
+      ]);
       return ok(updated);
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);

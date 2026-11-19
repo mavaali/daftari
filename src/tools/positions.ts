@@ -20,6 +20,7 @@ import {
   qualifyingDissentTensions,
   unsuperseded,
 } from "../curation/positions.js";
+import { principalKindForVault } from "../curation/review-log.js";
 import { stageActionWithConflictCheck } from "../curation/staged-actions.js";
 import {
   addTension,
@@ -653,6 +654,7 @@ export async function vaultConsolidate(
   // The doc write commits FIRST; a resolve failure afterward is reported as
   // resolve_error, not rolled back (LD-19 — mirror of Slice 1's tension_error
   // channel). Resolutions ride the §3.5 bounded tension-lease retry.
+  const decidedByKind = principalKindForVault(vaultRoot, access?.user);
   let resolvedTensionId: string | null = null;
   let resolveError: string | undefined;
   if (resolveTensionArg) {
@@ -665,7 +667,7 @@ export async function vaultConsolidate(
         : {}),
     };
     const resolved = await retryOnTensionLease(
-      () => resolveTension(vaultRoot, resolveTensionArg.id, resolution),
+      () => resolveTension(vaultRoot, resolveTensionArg.id, resolution, { decidedByKind }),
       leaseDeps,
     );
     if (resolved.ok) resolvedTensionId = resolveTensionArg.id;
@@ -682,15 +684,20 @@ export async function vaultConsolidate(
   for (const id of batchIds) {
     const resolved = await retryOnTensionLease(
       () =>
-        resolveTension(vaultRoot, id, {
-          resolved_at: new Date().toISOString(),
-          resolved_by: ratifier,
-          kind: "consolidated",
-          rationale:
-            `org_position ratified ${stanceRaw.value} by ${ratifier} ${todayISO()}; ` +
-            `dissent carried: ${dissent.join(", ")}`,
-          references: [relPath],
-        }),
+        resolveTension(
+          vaultRoot,
+          id,
+          {
+            resolved_at: new Date().toISOString(),
+            resolved_by: ratifier,
+            kind: "consolidated",
+            rationale:
+              `org_position ratified ${stanceRaw.value} by ${ratifier} ${todayISO()}; ` +
+              `dissent carried: ${dissent.join(", ")}`,
+            references: [relPath],
+          },
+          { decidedByKind },
+        ),
       leaseDeps,
     );
     if (resolved.ok) resolvedTensionIds.push(id);

@@ -39,6 +39,7 @@ export const VAULT_GITIGNORE = `# Daftari rebuilds these from the markdown files
 .daftari/tensions.md
 .daftari/board-dispositions.jsonl
 .daftari/distill-receipts.jsonl
+.daftari/review-log.jsonl
 # vault_erase receipt — its 'paths' field NAMES the erased file, which can
 # itself be the sensitive breadcrumb; must never be committed into the freshly
 # scrubbed history (R12).
