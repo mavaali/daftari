@@ -73,11 +73,15 @@ export interface AsofSnapshot {
     transitions: BeliefTransition[];
     bodiesChanged: number; // same path, body text differs
   };
+  // The "then" side is null when the tension log cannot be read from git at
+  // the commit (it is a gitignored governance journal — ozor): unknown is
+  // reported as unknown, never as a confident zero. `thenUnavailable` says why.
   tensions: {
-    openThen: number;
+    openThen: number | null;
     openNow: number;
-    openedSince: { title: string; date: string; kind: string }[];
-    resolvedSince: { title: string; date: string; kind: string; resolutionKind: string }[];
+    openedSince: { title: string; date: string; kind: string }[] | null;
+    resolvedSince: { title: string; date: string; kind: string; resolutionKind: string }[] | null;
+    thenUnavailable: string | null;
   };
   // The second temporal axis, present only when --valid was supplied.
   // Reading: "at this commit, the vault believed N documents' claims held on
@@ -138,13 +142,25 @@ export function computeTransitions(then: LoadedDoc[], now: LoadedDoc[]): BeliefT
   return transitions;
 }
 
-// The tension log at a past commit, parsed with the live parser. A vault
-// with no committed log at that point reads as zero tensions.
-async function tensionsAt(vaultRoot: string, commit: string): Promise<TensionEntry[]> {
+// The tension log at a past commit, parsed with the live parser. The log is
+// a gitignored governance journal (ozor), so on most vaults it is in no
+// commit at all; absence is "cannot know", not "zero tensions" — reading it
+// as zero printed a confident "open then: 0" over tensions that were open.
+async function tensionsAt(
+  vaultRoot: string,
+  commit: string,
+): Promise<Result<TensionEntry[], string>> {
   const blob = await readBlobsAt(vaultRoot, commit, [TENSIONS_LOG]);
-  if (!blob.ok) return [];
+  if (!blob.ok)
+    return err(`cannot read ${TENSIONS_LOG} at ${commit.slice(0, 8)}: ${blob.error.message}`);
   const raw = blob.value.get(TENSIONS_LOG);
-  return raw === undefined ? [] : parseTensionLog(raw);
+  if (raw === undefined) {
+    return err(
+      `${TENSIONS_LOG} is not in git at ${commit.slice(0, 8)} — the tension log is a ` +
+        "gitignored governance journal, so past tension state cannot be derived from history",
+    );
+  }
+  return ok(parseTensionLog(raw));
 }
 
 export async function beliefSnapshot(
@@ -171,19 +187,38 @@ export async function beliefSnapshot(
   }
 
   const thenTensions = await tensionsAt(vaultRoot, commit.hash);
-  const thenIds = new Set(thenTensions.map(tensionIdentity));
-  const thenUnresolvedIds = new Set(thenTensions.filter((t) => !t.resolved).map(tensionIdentity));
-  const openedSince = tensionsNow
-    .filter((t) => !thenIds.has(tensionIdentity(t)))
-    .map((t) => ({ title: t.title, date: t.date, kind: t.kind }));
-  const resolvedSince = tensionsNow
-    .filter((t) => t.resolved && thenUnresolvedIds.has(tensionIdentity(t)))
-    .map((t) => ({
-      title: t.title,
-      date: t.date,
-      kind: t.kind,
-      resolutionKind: t.resolution?.kind ?? "",
-    }));
+  let tensions: AsofSnapshot["tensions"];
+  const openNow = tensionsNow.filter((t) => !t.resolved).length;
+  if (!thenTensions.ok) {
+    tensions = {
+      openThen: null,
+      openNow,
+      openedSince: null,
+      resolvedSince: null,
+      thenUnavailable: thenTensions.error,
+    };
+  } else {
+    const thenIds = new Set(thenTensions.value.map(tensionIdentity));
+    const thenUnresolvedIds = new Set(
+      thenTensions.value.filter((t) => !t.resolved).map(tensionIdentity),
+    );
+    tensions = {
+      openThen: thenTensions.value.filter((t) => !t.resolved).length,
+      openNow,
+      openedSince: tensionsNow
+        .filter((t) => !thenIds.has(tensionIdentity(t)))
+        .map((t) => ({ title: t.title, date: t.date, kind: t.kind })),
+      resolvedSince: tensionsNow
+        .filter((t) => t.resolved && thenUnresolvedIds.has(tensionIdentity(t)))
+        .map((t) => ({
+          title: t.title,
+          date: t.date,
+          kind: t.kind,
+          resolutionKind: t.resolution?.kind ?? "",
+        })),
+      thenUnavailable: null,
+    };
+  }
 
   return ok({
     commit,
@@ -196,12 +231,7 @@ export async function beliefSnapshot(
       transitions: computeTransitions(thenDocs.value, nowDocs.value),
       bodiesChanged,
     },
-    tensions: {
-      openThen: thenTensions.filter((t) => !t.resolved).length,
-      openNow: tensionsNow.filter((t) => !t.resolved).length,
-      openedSince,
-      resolvedSince,
-    },
+    tensions,
     // A pure post-filter over the documents already loaded at the ref. Drift
     // and the status rollup are deliberately untouched: drift is a
     // transaction-time notion (what the vault RECORDED between then and now),

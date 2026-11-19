@@ -1,8 +1,9 @@
 // Operator-side persistence for distill receipts (#423). Append-only JSONL at
 // .daftari/distill-receipts.jsonl, keyed by the artifact runId so a run's
-// provider/ZDR/cost facts join to the claims it produced. Machine-local and
-// gitignored — these are operator telemetry (R10), NEVER exposed through an MCP
-// tool or CLI read path.
+// provider/ZDR/cost facts join to the claims it produced. Gitignored by the
+// vault template (a governance journal: never committed, carried by `daftari
+// sync`, ozor) — these are operator telemetry (R10), NEVER exposed through an
+// MCP tool or CLI read path.
 import { mkdirSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { join } from "node:path";

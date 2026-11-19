@@ -105,14 +105,15 @@ export function renderMarkdown(report: AsofReport): string {
 
   const tn = snapshot.tensions;
   lines.push("## Tensions");
-  lines.push(`- open then: **${tn.openThen}** · open now: **${tn.openNow}**`);
-  if (tn.openedSince.length > 0) {
+  lines.push(`- open then: **${tn.openThen ?? "unknown"}** · open now: **${tn.openNow}**`);
+  if (tn.thenUnavailable !== null) lines.push(`- then-state unavailable: ${tn.thenUnavailable}`);
+  if (tn.openedSince && tn.openedSince.length > 0) {
     lines.push(`- opened since: **${tn.openedSince.length}**`);
     for (const t of tn.openedSince.slice(0, LIST_CAP)) {
       lines.push(`  - ${t.date} · ${t.kind} · ${t.title}`);
     }
   }
-  if (tn.resolvedSince.length > 0) {
+  if (tn.resolvedSince && tn.resolvedSince.length > 0) {
     lines.push(`- resolved since: **${tn.resolvedSince.length}**`);
     for (const t of tn.resolvedSince.slice(0, LIST_CAP)) {
       lines.push(`  - ${t.date} · ${t.kind} · ${t.title} → ${t.resolutionKind}`);
