@@ -1,0 +1,3100 @@
+{
+  "meta": {
+    "date": "2026-07-01",
+    "model": "openai/gpt-4o",
+    "temperature": 0,
+    "route": "openrouter",
+    "embedder": "BAAI/bge-small-en-v1.5",
+    "vector_store": "qdrant (path=':memory:')",
+    "mock": false,
+    "run_started_at_utc": "2026-07-02T03:48:17.581571+00:00",
+    "mem0ai_version": "2.0.11"
+  },
+  "traps": [
+    {
+      "id": "trap-01",
+      "kind": "trap",
+      "governingNum": 76,
+      "revid": 1361093698,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "ae7dff6a-bdcf-4615-8a17-4d61136dbf81",
+            "memory": "During his second presidency, Donald Trump initiated mass layoffs of federal workers, imposed tariffs on nearly all countries at the highest level since the Great Depression, and signed the One Big Beautiful Bill Act.",
+            "event": "ADD"
+          },
+          {
+            "id": "08c7f6a8-0466-4d3e-a8a1-580d953b14dd",
+            "memory": "The second Trump administration targeted political opponents and civil society, persecuted transgender people, deported undocumented immigrants, and extensively used executive orders, resulting in over 550 lawsuits challenging their legality.",
+            "event": "ADD"
+          },
+          {
+            "id": "e2f2f3e5-a5a7-4e73-9f37-396e77340bee",
+            "memory": "In Latin America, during his second presidency, Donald Trump pursued a campaign to attack alleged drug traffickers and ordered a military raid into Venezuela to capture the country's president.",
+            "event": "ADD"
+          },
+          {
+            "id": "44a2318b-41f7-47b2-a8c8-c00b3cc5218e",
+            "memory": "In the Middle East, Donald Trump authorized joint U.S.\u2013Israeli strikes on Iran, which began the 2026 Iran war during his second presidency.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "08c7f6a8-0466-4d3e-a8a1-580d953b14dd",
+          "memory": "The second Trump administration targeted political opponents and civil society, persecuted transgender people, deported undocumented immigrants, and extensively used executive orders, resulting in over 550 lawsuits challenging their legality.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "e2786c61-7b92-494b-8ca7-4e95e38c984e",
+              "memory_id": "08c7f6a8-0466-4d3e-a8a1-580d953b14dd",
+              "old_memory": null,
+              "new_memory": "The second Trump administration targeted political opponents and civil society, persecuted transgender people, deported undocumented immigrants, and extensively used executive orders, resulting in over 550 lawsuits challenging their legality.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:19.979157+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "44a2318b-41f7-47b2-a8c8-c00b3cc5218e",
+          "memory": "In the Middle East, Donald Trump authorized joint U.S.\u2013Israeli strikes on Iran, which began the 2026 Iran war during his second presidency.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "6c9fa0c9-cd2a-4842-8303-6f75f4dbc227",
+              "memory_id": "44a2318b-41f7-47b2-a8c8-c00b3cc5218e",
+              "old_memory": null,
+              "new_memory": "In the Middle East, Donald Trump authorized joint U.S.\u2013Israeli strikes on Iran, which began the 2026 Iran war during his second presidency.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:19.979177+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "ae7dff6a-bdcf-4615-8a17-4d61136dbf81",
+          "memory": "During his second presidency, Donald Trump initiated mass layoffs of federal workers, imposed tariffs on nearly all countries at the highest level since the Great Depression, and signed the One Big Beautiful Bill Act.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "fd7e9be6-b154-45d6-841f-ba2ec9e1dbfb",
+              "memory_id": "ae7dff6a-bdcf-4615-8a17-4d61136dbf81",
+              "old_memory": null,
+              "new_memory": "During his second presidency, Donald Trump initiated mass layoffs of federal workers, imposed tariffs on nearly all countries at the highest level since the Great Depression, and signed the One Big Beautiful Bill Act.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:19.979131+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "e2f2f3e5-a5a7-4e73-9f37-396e77340bee",
+          "memory": "In Latin America, during his second presidency, Donald Trump pursued a campaign to attack alleged drug traffickers and ordered a military raid into Venezuela to capture the country's president.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "928705c6-3e66-41a5-b641-3da411cfa45b",
+              "memory_id": "e2f2f3e5-a5a7-4e73-9f37-396e77340bee",
+              "old_memory": null,
+              "new_memory": "In Latin America, during his second presidency, Donald Trump pursued a campaign to attack alleged drug traffickers and ordered a military raid into Venezuela to capture the country's president.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:19.979169+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 4,
+      "outcome": "multiple_kept_4",
+      "elapsed_s": 4.83
+    },
+    {
+      "id": "trap-02",
+      "kind": "trap",
+      "governingNum": 70,
+      "revid": 1360778518,
+      "add_stale_result": {
+        "results": []
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [],
+      "n_survivors": 0,
+      "outcome": "no_memories_survived",
+      "elapsed_s": 2.46
+    },
+    {
+      "id": "trap-03",
+      "kind": "trap",
+      "governingNum": 25,
+      "revid": 1360306490,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "3ea1a42f-f237-417b-b8f3-353019760c18",
+            "memory": "Donald Trump began his career with a 'small loan of a million dollars' from his father, which he claimed to have repaid with interest. However, he borrowed at least $60 million from his father and did not repay many of the loans, receiving $413 million (2018 equivalent) from his father's real estate company.",
+            "event": "ADD"
+          },
+          {
+            "id": "76066e3b-a9db-430c-989e-754554ce773e",
+            "memory": "In 1984, Donald Trump posed as a Trump Organization official named John Barron to call journalist Jonathan Greenberg, attempting to get a higher ranking on the Forbes 400 list of wealthiest Americans.",
+            "event": "ADD"
+          },
+          {
+            "id": "a9cab443-5350-4d1c-907d-28bd788d5c0e",
+            "memory": "Donald Trump self-reported his net worth from minus $900 million in 1990 to $10 billion in 2015. After business bankruptcies in the 1990s, his lenders forgave over 80% of his personal debt and allowed him to retain some real estate.",
+            "event": "ADD"
+          },
+          {
+            "id": "4b463eda-21f9-439b-a87e-94d4885ea275",
+            "memory": "In 2015, Forbes estimated Donald Trump's net worth at $4.5 billion based on interviews with over 80 sources. In 2026, Forbes set his net worth at $6.5 billion, ranking him the 645th wealthiest person in the world.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "3ea1a42f-f237-417b-b8f3-353019760c18",
+          "memory": "Donald Trump began his career with a 'small loan of a million dollars' from his father, which he claimed to have repaid with interest. However, he borrowed at least $60 million from his father and did not repay many of the loans, receiving $413 million (2018 equivalent) from his father's real estate company.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "868c440c-c39d-4f53-b93e-2ee5562f1a11",
+              "memory_id": "3ea1a42f-f237-417b-b8f3-353019760c18",
+              "old_memory": null,
+              "new_memory": "Donald Trump began his career with a 'small loan of a million dollars' from his father, which he claimed to have repaid with interest. However, he borrowed at least $60 million from his father and did not repay many of the loans, receiving $413 million (2018 equivalent) from his father's real estate company.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:27.817662+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "4b463eda-21f9-439b-a87e-94d4885ea275",
+          "memory": "In 2015, Forbes estimated Donald Trump's net worth at $4.5 billion based on interviews with over 80 sources. In 2026, Forbes set his net worth at $6.5 billion, ranking him the 645th wealthiest person in the world.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "3a04c48b-c9c1-450f-b00f-44a4fdd3f41b",
+              "memory_id": "4b463eda-21f9-439b-a87e-94d4885ea275",
+              "old_memory": null,
+              "new_memory": "In 2015, Forbes estimated Donald Trump's net worth at $4.5 billion based on interviews with over 80 sources. In 2026, Forbes set his net worth at $6.5 billion, ranking him the 645th wealthiest person in the world.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:27.817705+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "76066e3b-a9db-430c-989e-754554ce773e",
+          "memory": "In 1984, Donald Trump posed as a Trump Organization official named John Barron to call journalist Jonathan Greenberg, attempting to get a higher ranking on the Forbes 400 list of wealthiest Americans.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "02aedcea-65eb-4073-b4b4-dd5099e62937",
+              "memory_id": "76066e3b-a9db-430c-989e-754554ce773e",
+              "old_memory": null,
+              "new_memory": "In 1984, Donald Trump posed as a Trump Organization official named John Barron to call journalist Jonathan Greenberg, attempting to get a higher ranking on the Forbes 400 list of wealthiest Americans.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:27.817686+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "a9cab443-5350-4d1c-907d-28bd788d5c0e",
+          "memory": "Donald Trump self-reported his net worth from minus $900 million in 1990 to $10 billion in 2015. After business bankruptcies in the 1990s, his lenders forgave over 80% of his personal debt and allowed him to retain some real estate.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "8e310638-1144-403c-b991-395715596bb6",
+              "memory_id": "a9cab443-5350-4d1c-907d-28bd788d5c0e",
+              "old_memory": null,
+              "new_memory": "Donald Trump self-reported his net worth from minus $900 million in 1990 to $10 billion in 2015. After business bankruptcies in the 1990s, his lenders forgave over 80% of his personal debt and allowed him to retain some real estate.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:27.817697+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 4,
+      "outcome": "multiple_kept_4",
+      "elapsed_s": 4.46
+    },
+    {
+      "id": "trap-04",
+      "kind": "trap",
+      "governingNum": 70,
+      "revid": 1358996228,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "16db8b80-d515-42a5-82e0-2518db6f28cb",
+            "memory": "Donald John Trump, born June 14, 1946, is an American politician, media personality, businessman, and author. He is the 47th president of the United States and a member of the Republican Party. He previously served as the 45th president from 2017 to 2021.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "16db8b80-d515-42a5-82e0-2518db6f28cb",
+          "memory": "Donald John Trump, born June 14, 1946, is an American politician, media personality, businessman, and author. He is the 47th president of the United States and a member of the Republican Party. He previously served as the 45th president from 2017 to 2021.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "b80d6d5f-b254-48b7-acda-d14c68a86d46",
+              "memory_id": "16db8b80-d515-42a5-82e0-2518db6f28cb",
+              "old_memory": null,
+              "new_memory": "Donald John Trump, born June 14, 1946, is an American politician, media personality, businessman, and author. He is the 47th president of the United States and a member of the Republican Party. He previously served as the 45th president from 2017 to 2021.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:29.882907+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 1,
+      "outcome": "one_value_kept_other",
+      "elapsed_s": 3.06
+    },
+    {
+      "id": "trap-05",
+      "kind": "trap",
+      "governingNum": 70,
+      "revid": 1355848676,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "cbe54cd0-4a94-4ec0-8faa-978dc3f62522",
+            "memory": "Donald John Trump, born June 14, 1946, is an American politician, media personality, and billionaire businessman. He is the 47th president of the United States and a member of the Republican Party. He previously served as the 45th president from 2017 to 2021.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "cbe54cd0-4a94-4ec0-8faa-978dc3f62522",
+          "memory": "Donald John Trump, born June 14, 1946, is an American politician, media personality, and billionaire businessman. He is the 47th president of the United States and a member of the Republican Party. He previously served as the 45th president from 2017 to 2021.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "b471851e-8330-47cd-9550-1807053b24a1",
+              "memory_id": "cbe54cd0-4a94-4ec0-8faa-978dc3f62522",
+              "old_memory": null,
+              "new_memory": "Donald John Trump, born June 14, 1946, is an American politician, media personality, and billionaire businessman. He is the 47th president of the United States and a member of the Republican Party. He previously served as the 45th president from 2017 to 2021.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:33.364215+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 1,
+      "outcome": "one_value_kept_other",
+      "elapsed_s": 2.52
+    },
+    {
+      "id": "trap-06",
+      "kind": "trap",
+      "governingNum": 30,
+      "revid": 1351239842,
+      "add_stale_result": {
+        "results": []
+      },
+      "add_governing_result": {
+        "results": [
+          {
+            "id": "b09d803f-08a5-428f-bdf8-7d6020594c6b",
+            "memory": "Since 2015, Trump's leadership style and political agenda, often referred to as Trumpism, have reshaped the Republican Party's identity. His comments and actions have been characterized as racist or misogynistic, and he has made many false or misleading statements during his campaigns and presidency, promoting conspiracy theories. Researchers describe his actions as authoritarian and contributing to democratic backsliding. After his first term, scholars and historians ranked him as one of the worst presidents in American history.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "survivors": [
+        {
+          "id": "b09d803f-08a5-428f-bdf8-7d6020594c6b",
+          "memory": "Since 2015, Trump's leadership style and political agenda, often referred to as Trumpism, have reshaped the Republican Party's identity. His comments and actions have been characterized as racist or misogynistic, and he has made many false or misleading statements during his campaigns and presidency, promoting conspiracy theories. Researchers describe his actions as authoritarian and contributing to democratic backsliding. After his first term, scholars and historians ranked him as one of the worst presidents in American history.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "e347998a-b008-43fc-83c5-a3ece19a141c",
+              "memory_id": "b09d803f-08a5-428f-bdf8-7d6020594c6b",
+              "old_memory": null,
+              "new_memory": "Since 2015, Trump's leadership style and political agenda, often referred to as Trumpism, have reshaped the Republican Party's identity. His comments and actions have been characterized as racist or misogynistic, and he has made many false or misleading statements during his campaigns and presidency, promoting conspiracy theories. Researchers describe his actions as authoritarian and contributing to democratic backsliding. After his first term, scholars and historians ranked him as one of the worst presidents in American history.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:36.460607+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 1,
+      "outcome": "one_value_kept_other",
+      "elapsed_s": 2.21
+    },
+    {
+      "id": "trap-07",
+      "kind": "trap",
+      "governingNum": 51,
+      "revid": 1351239842,
+      "add_stale_result": {
+        "results": []
+      },
+      "add_governing_result": {
+        "results": [
+          {
+            "id": "a1fdaa37-0e00-4d27-98cf-d30ebf4c70a7",
+            "memory": "Since 2015, Trump's leadership style and political agenda, often referred to as Trumpism, have reshaped the Republican Party's identity. His comments and actions have been characterized as racist or misogynistic, and he has made many false or misleading statements during his campaigns and presidency. Trump promotes conspiracy theories and his actions have been described as authoritarian, contributing to democratic backsliding in the United States. After his first term, scholars and historians ranked him as one of the worst presidents in American history.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "survivors": [
+        {
+          "id": "a1fdaa37-0e00-4d27-98cf-d30ebf4c70a7",
+          "memory": "Since 2015, Trump's leadership style and political agenda, often referred to as Trumpism, have reshaped the Republican Party's identity. His comments and actions have been characterized as racist or misogynistic, and he has made many false or misleading statements during his campaigns and presidency. Trump promotes conspiracy theories and his actions have been described as authoritarian, contributing to democratic backsliding in the United States. After his first term, scholars and historians ranked him as one of the worst presidents in American history.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "cef51235-77ce-4e50-8de6-0499e4dede81",
+              "memory_id": "a1fdaa37-0e00-4d27-98cf-d30ebf4c70a7",
+              "old_memory": null,
+              "new_memory": "Since 2015, Trump's leadership style and political agenda, often referred to as Trumpism, have reshaped the Republican Party's identity. His comments and actions have been characterized as racist or misogynistic, and he has made many false or misleading statements during his campaigns and presidency. Trump promotes conspiracy theories and his actions have been described as authoritarian, contributing to democratic backsliding in the United States. After his first term, scholars and historians ranked him as one of the worst presidents in American history.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:39.541939+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 1,
+      "outcome": "one_value_kept_other",
+      "elapsed_s": 2.99
+    },
+    {
+      "id": "trap-08",
+      "kind": "trap",
+      "governingNum": 27,
+      "revid": 1346635421,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "cc4618c0-9500-4cb0-8902-c37f0b7b9b67",
+            "memory": "Donald Trump has been accused of racism for running full-page newspaper advertisements in the 1989 Central Park jogger case, insisting on the guilt of five black and Latino teenagers even after they were cleared in 2002.",
+            "event": "ADD"
+          },
+          {
+            "id": "fa5936bc-6894-4e53-b929-9696624bb334",
+            "memory": "Donald Trump's comments on the 2017 Unite the Right rally were criticized for implying moral equivalence between white supremacist demonstrators and counter-protesters.",
+            "event": "ADD"
+          },
+          {
+            "id": "dd99023f-864f-424e-9fdc-a5058ad7891a",
+            "memory": "In January 2018, Donald Trump reportedly referred to El Salvador, Haiti, Honduras, and African nations as 'shithole countries,' remarks that were condemned as racist.",
+            "event": "ADD"
+          },
+          {
+            "id": "0f4e5aec-80fd-4cd0-aadf-71861a88b6bd",
+            "memory": "In July 2019, the House of Representatives passed a resolution condemning Donald Trump for racist remarks about four minority Democratic congresswomen.",
+            "event": "ADD"
+          },
+          {
+            "id": "d7bc3c6e-0bc9-4089-a1d4-e8ea77f8a769",
+            "memory": "Donald Trump's 2024 campaign made extensive use of dehumanizing language and racial stereotypes.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": [
+          {
+            "id": "ae2d9a56-6d8e-457e-a202-75c1fe436968",
+            "memory": "In September 2016, Donald Trump publicly acknowledged Obama's birthplace and falsely claimed that the rumors had been started by Hillary Clinton during her 2008 presidential campaign.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "survivors": [
+        {
+          "id": "0f4e5aec-80fd-4cd0-aadf-71861a88b6bd",
+          "memory": "In July 2019, the House of Representatives passed a resolution condemning Donald Trump for racist remarks about four minority Democratic congresswomen.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "f73f9bda-ff49-493e-a36d-42f28d6b1acf",
+              "memory_id": "0f4e5aec-80fd-4cd0-aadf-71861a88b6bd",
+              "old_memory": null,
+              "new_memory": "In July 2019, the House of Representatives passed a resolution condemning Donald Trump for racist remarks about four minority Democratic congresswomen.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:42.188708+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "ae2d9a56-6d8e-457e-a202-75c1fe436968",
+          "memory": "In September 2016, Donald Trump publicly acknowledged Obama's birthplace and falsely claimed that the rumors had been started by Hillary Clinton during her 2008 presidential campaign.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "26036ff5-6bc6-4450-90a2-385acb105de8",
+              "memory_id": "ae2d9a56-6d8e-457e-a202-75c1fe436968",
+              "old_memory": null,
+              "new_memory": "In September 2016, Donald Trump publicly acknowledged Obama's birthplace and falsely claimed that the rumors had been started by Hillary Clinton during her 2008 presidential campaign.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:43.344102+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "cc4618c0-9500-4cb0-8902-c37f0b7b9b67",
+          "memory": "Donald Trump has been accused of racism for running full-page newspaper advertisements in the 1989 Central Park jogger case, insisting on the guilt of five black and Latino teenagers even after they were cleared in 2002.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "55221025-d811-48df-9c17-dc602750bc34",
+              "memory_id": "cc4618c0-9500-4cb0-8902-c37f0b7b9b67",
+              "old_memory": null,
+              "new_memory": "Donald Trump has been accused of racism for running full-page newspaper advertisements in the 1989 Central Park jogger case, insisting on the guilt of five black and Latino teenagers even after they were cleared in 2002.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:42.188668+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "d7bc3c6e-0bc9-4089-a1d4-e8ea77f8a769",
+          "memory": "Donald Trump's 2024 campaign made extensive use of dehumanizing language and racial stereotypes.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "e2bc4284-e66e-4678-8e92-8004133280af",
+              "memory_id": "d7bc3c6e-0bc9-4089-a1d4-e8ea77f8a769",
+              "old_memory": null,
+              "new_memory": "Donald Trump's 2024 campaign made extensive use of dehumanizing language and racial stereotypes.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:42.188716+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "dd99023f-864f-424e-9fdc-a5058ad7891a",
+          "memory": "In January 2018, Donald Trump reportedly referred to El Salvador, Haiti, Honduras, and African nations as 'shithole countries,' remarks that were condemned as racist.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "ffa71ba4-fffd-41c2-a343-b5ce46c76c3d",
+              "memory_id": "dd99023f-864f-424e-9fdc-a5058ad7891a",
+              "old_memory": null,
+              "new_memory": "In January 2018, Donald Trump reportedly referred to El Salvador, Haiti, Honduras, and African nations as 'shithole countries,' remarks that were condemned as racist.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:42.188699+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "fa5936bc-6894-4e53-b929-9696624bb334",
+          "memory": "Donald Trump's comments on the 2017 Unite the Right rally were criticized for implying moral equivalence between white supremacist demonstrators and counter-protesters.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "ded42b82-1501-46f1-9efe-f8e22d03dec9",
+              "memory_id": "fa5936bc-6894-4e53-b929-9696624bb334",
+              "old_memory": null,
+              "new_memory": "Donald Trump's comments on the 2017 Unite the Right rally were criticized for implying moral equivalence between white supremacist demonstrators and counter-protesters.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:42.188689+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 6,
+      "outcome": "multiple_kept_6",
+      "elapsed_s": 3.65
+    },
+    {
+      "id": "trap-09",
+      "kind": "trap",
+      "governingNum": 54,
+      "revid": 1341340120,
+      "add_stale_result": {
+        "results": []
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [],
+      "n_survivors": 0,
+      "outcome": "no_memories_survived",
+      "elapsed_s": 2.36
+    },
+    {
+      "id": "trap-10",
+      "kind": "trap",
+      "governingNum": 37,
+      "revid": 1340952005,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "c2b56880-3d31-4875-bc36-54b9a74c3404",
+            "memory": "In 2025, Trump maintained a pro-Israel stance, supporting Israel in the Gaza war and ordering U.S. strikes on Iranian nuclear sites in June as part of the Iran-Israel war.",
+            "event": "ADD"
+          },
+          {
+            "id": "f4892082-b5e6-48e9-b6b1-876ebb03ce49",
+            "memory": "Trump's Gaza peace plan, aimed at a ceasefire between Israel and Hamas, was signed in October 2025.",
+            "event": "ADD"
+          },
+          {
+            "id": "bb6eee28-2c67-4016-8dbd-c95fb9af7199",
+            "memory": "On February 28, 2026, Trump announced a major U.S. attack on Iran alongside Israel, targeting Iran's missile and military capabilities, with the goal of regime change.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "bb6eee28-2c67-4016-8dbd-c95fb9af7199",
+          "memory": "On February 28, 2026, Trump announced a major U.S. attack on Iran alongside Israel, targeting Iran's missile and military capabilities, with the goal of regime change.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "b979e701-a715-4f94-8e3d-1d152dd1debc",
+              "memory_id": "bb6eee28-2c67-4016-8dbd-c95fb9af7199",
+              "old_memory": null,
+              "new_memory": "On February 28, 2026, Trump announced a major U.S. attack on Iran alongside Israel, targeting Iran's missile and military capabilities, with the goal of regime change.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:48.205430+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "c2b56880-3d31-4875-bc36-54b9a74c3404",
+          "memory": "In 2025, Trump maintained a pro-Israel stance, supporting Israel in the Gaza war and ordering U.S. strikes on Iranian nuclear sites in June as part of the Iran-Israel war.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "90cda042-3779-411a-9616-ba1569f07714",
+              "memory_id": "c2b56880-3d31-4875-bc36-54b9a74c3404",
+              "old_memory": null,
+              "new_memory": "In 2025, Trump maintained a pro-Israel stance, supporting Israel in the Gaza war and ordering U.S. strikes on Iranian nuclear sites in June as part of the Iran-Israel war.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:48.205392+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "f4892082-b5e6-48e9-b6b1-876ebb03ce49",
+          "memory": "Trump's Gaza peace plan, aimed at a ceasefire between Israel and Hamas, was signed in October 2025.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "db288dee-69b7-48bb-9578-6dada6c7e0a6",
+              "memory_id": "f4892082-b5e6-48e9-b6b1-876ebb03ce49",
+              "old_memory": null,
+              "new_memory": "Trump's Gaza peace plan, aimed at a ceasefire between Israel and Hamas, was signed in October 2025.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:48.205420+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 3,
+      "outcome": "multiple_kept_3",
+      "elapsed_s": 3.0
+    },
+    {
+      "id": "trap-11",
+      "kind": "trap",
+      "governingNum": 67,
+      "revid": 1337872519,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "f546b34e-116f-498d-8523-4fb7684d9762",
+            "memory": "Donald Trump has stated that he has never drunk alcohol, smoked cigarettes, or used other recreational drugs.",
+            "event": "ADD"
+          },
+          {
+            "id": "63f111ba-ecea-4daf-af09-869a7d0162b0",
+            "memory": "Donald Trump reportedly sleeps about four or five hours a night.",
+            "event": "ADD"
+          },
+          {
+            "id": "8fcb36b8-8b59-439e-8a31-900e8abb1718",
+            "memory": "Donald Trump has called golfing his primary form of exercise but usually does not walk the course.",
+            "event": "ADD"
+          },
+          {
+            "id": "b32d3a20-6bbc-451a-ac82-8d2a53f0813c",
+            "memory": "Donald Trump considers exercise a waste of energy, believing the body is like a battery with a finite amount of energy that is depleted by exercise.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "63f111ba-ecea-4daf-af09-869a7d0162b0",
+          "memory": "Donald Trump reportedly sleeps about four or five hours a night.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "3427d1fb-723d-4f2f-986f-d3c0ede9db1a",
+              "memory_id": "63f111ba-ecea-4daf-af09-869a7d0162b0",
+              "old_memory": null,
+              "new_memory": "Donald Trump reportedly sleeps about four or five hours a night.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:51.017689+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "8fcb36b8-8b59-439e-8a31-900e8abb1718",
+          "memory": "Donald Trump has called golfing his primary form of exercise but usually does not walk the course.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "18fa0b32-edfd-4c09-bad6-052bbb74ac24",
+              "memory_id": "8fcb36b8-8b59-439e-8a31-900e8abb1718",
+              "old_memory": null,
+              "new_memory": "Donald Trump has called golfing his primary form of exercise but usually does not walk the course.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:51.017699+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "b32d3a20-6bbc-451a-ac82-8d2a53f0813c",
+          "memory": "Donald Trump considers exercise a waste of energy, believing the body is like a battery with a finite amount of energy that is depleted by exercise.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "b6e1b0cf-db6f-4a12-9545-bf5d4e3edc5b",
+              "memory_id": "b32d3a20-6bbc-451a-ac82-8d2a53f0813c",
+              "old_memory": null,
+              "new_memory": "Donald Trump considers exercise a waste of energy, believing the body is like a battery with a finite amount of energy that is depleted by exercise.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:51.017708+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "f546b34e-116f-498d-8523-4fb7684d9762",
+          "memory": "Donald Trump has stated that he has never drunk alcohol, smoked cigarettes, or used other recreational drugs.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "f46da25c-522a-4303-a9fe-87b5ef96727a",
+              "memory_id": "f546b34e-116f-498d-8523-4fb7684d9762",
+              "old_memory": null,
+              "new_memory": "Donald Trump has stated that he has never drunk alcohol, smoked cigarettes, or used other recreational drugs.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:51.017667+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 4,
+      "outcome": "multiple_kept_4",
+      "elapsed_s": 3.1
+    },
+    {
+      "id": "trap-12",
+      "kind": "trap",
+      "governingNum": 72,
+      "revid": 1335748675,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "c055ef1f-4169-496c-bd9a-83c520d55cfa",
+            "memory": "During Trump's second presidency, he pardoned around 1,500 January 6 rioters, initiated mass layoffs of federal workers, and imposed tariffs on nearly all countries at the highest level since the Great Depression.",
+            "event": "ADD"
+          },
+          {
+            "id": "c3f4747d-af0d-4c35-855d-799bcff67e79",
+            "memory": "Trump's administration signed the One Big Beautiful Bill Act and engaged in actions such as targeting political opponents and civil society, persecuting transgender people, mass deportation of immigrants, and extensive use of executive orders.",
+            "event": "ADD"
+          },
+          {
+            "id": "589611c4-9aa8-4ee9-a0d7-3802406b917d",
+            "memory": "Over 300 lawsuits have been filed challenging the legality of actions taken by Trump's administration during his second presidency.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "589611c4-9aa8-4ee9-a0d7-3802406b917d",
+          "memory": "Over 300 lawsuits have been filed challenging the legality of actions taken by Trump's administration during his second presidency.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "df04c295-8db7-4f5e-ac62-dd5b5f3da58a",
+              "memory_id": "589611c4-9aa8-4ee9-a0d7-3802406b917d",
+              "old_memory": null,
+              "new_memory": "Over 300 lawsuits have been filed challenging the legality of actions taken by Trump's administration during his second presidency.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:54.570025+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "c055ef1f-4169-496c-bd9a-83c520d55cfa",
+          "memory": "During Trump's second presidency, he pardoned around 1,500 January 6 rioters, initiated mass layoffs of federal workers, and imposed tariffs on nearly all countries at the highest level since the Great Depression.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "bc66fe2e-3e52-4608-8ccf-86c3fb60fd26",
+              "memory_id": "c055ef1f-4169-496c-bd9a-83c520d55cfa",
+              "old_memory": null,
+              "new_memory": "During Trump's second presidency, he pardoned around 1,500 January 6 rioters, initiated mass layoffs of federal workers, and imposed tariffs on nearly all countries at the highest level since the Great Depression.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:54.569997+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "c3f4747d-af0d-4c35-855d-799bcff67e79",
+          "memory": "Trump's administration signed the One Big Beautiful Bill Act and engaged in actions such as targeting political opponents and civil society, persecuting transgender people, mass deportation of immigrants, and extensive use of executive orders.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "0a6ee850-4c6a-4426-8c3f-2df38141784b",
+              "memory_id": "c3f4747d-af0d-4c35-855d-799bcff67e79",
+              "old_memory": null,
+              "new_memory": "Trump's administration signed the One Big Beautiful Bill Act and engaged in actions such as targeting political opponents and civil society, persecuting transgender people, mass deportation of immigrants, and extensive use of executive orders.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:54.570016+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 3,
+      "outcome": "multiple_kept_3",
+      "elapsed_s": 3.93
+    },
+    {
+      "id": "trap-13",
+      "kind": "trap",
+      "governingNum": 67,
+      "revid": 1334631684,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "44d7ed86-11b3-482d-809e-53ea8e7cb684",
+            "memory": "Donald Trump claims he has never drunk alcohol, smoked cigarettes, or used drugs.",
+            "event": "ADD"
+          },
+          {
+            "id": "71dcd557-fb85-49d4-87f0-d0565d6cf4d2",
+            "memory": "Donald Trump reportedly sleeps about four or five hours a night.",
+            "event": "ADD"
+          },
+          {
+            "id": "5dbc1a19-4e4b-4949-b697-a2c703b33982",
+            "memory": "Donald Trump has called golfing his primary form of exercise but usually does not walk the course.",
+            "event": "ADD"
+          },
+          {
+            "id": "0c98900b-ecca-44db-b60b-c7234616ec40",
+            "memory": "Donald Trump considers exercise a waste of energy, believing the body is like a battery with a finite amount of energy that is depleted by exercise.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "0c98900b-ecca-44db-b60b-c7234616ec40",
+          "memory": "Donald Trump considers exercise a waste of energy, believing the body is like a battery with a finite amount of energy that is depleted by exercise.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "a6740e65-927b-46af-aa04-9699e308c49c",
+              "memory_id": "0c98900b-ecca-44db-b60b-c7234616ec40",
+              "old_memory": null,
+              "new_memory": "Donald Trump considers exercise a waste of energy, believing the body is like a battery with a finite amount of energy that is depleted by exercise.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:58.295093+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "44d7ed86-11b3-482d-809e-53ea8e7cb684",
+          "memory": "Donald Trump claims he has never drunk alcohol, smoked cigarettes, or used drugs.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "66b50633-f664-4636-aa87-3dbae5a02d65",
+              "memory_id": "44d7ed86-11b3-482d-809e-53ea8e7cb684",
+              "old_memory": null,
+              "new_memory": "Donald Trump claims he has never drunk alcohol, smoked cigarettes, or used drugs.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:58.295045+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "5dbc1a19-4e4b-4949-b697-a2c703b33982",
+          "memory": "Donald Trump has called golfing his primary form of exercise but usually does not walk the course.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "8dc56373-915a-46e1-bd4e-f3e855932575",
+              "memory_id": "5dbc1a19-4e4b-4949-b697-a2c703b33982",
+              "old_memory": null,
+              "new_memory": "Donald Trump has called golfing his primary form of exercise but usually does not walk the course.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:58.295082+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "71dcd557-fb85-49d4-87f0-d0565d6cf4d2",
+          "memory": "Donald Trump reportedly sleeps about four or five hours a night.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "d6b5f00d-4ea5-4315-9787-c5cb03ad90ba",
+              "memory_id": "71dcd557-fb85-49d4-87f0-d0565d6cf4d2",
+              "old_memory": null,
+              "new_memory": "Donald Trump reportedly sleeps about four or five hours a night.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:46:58.295071+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 4,
+      "outcome": "multiple_kept_4",
+      "elapsed_s": 3.13
+    },
+    {
+      "id": "trap-14",
+      "kind": "trap",
+      "governingNum": 40,
+      "revid": 1334531111,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "08fbb2f0-fdf8-4cc4-94d2-733e952cae0b",
+            "memory": "Donald Trump claims he has never drunk alcohol, smoked cigarettes, or used drugs, and he sleeps about four to five hours a night.",
+            "event": "ADD"
+          },
+          {
+            "id": "98934730-1878-4c31-9068-4969bf428467",
+            "memory": "Donald Trump considers golfing his primary form of exercise but usually does not walk the course, using a cart instead.",
+            "event": "ADD"
+          },
+          {
+            "id": "362b5b1b-e66d-4787-9f03-91d58385a3ed",
+            "memory": "Donald Trump believes in the battery theory, a fringe belief that human beings are born with a finite amount of energy that is depleted by physical activity, which leads him to consider exercise a waste of energy.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "08fbb2f0-fdf8-4cc4-94d2-733e952cae0b",
+          "memory": "Donald Trump claims he has never drunk alcohol, smoked cigarettes, or used drugs, and he sleeps about four to five hours a night.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "76a580f2-bfe4-4437-82c8-42e5de460ced",
+              "memory_id": "08fbb2f0-fdf8-4cc4-94d2-733e952cae0b",
+              "old_memory": null,
+              "new_memory": "Donald Trump claims he has never drunk alcohol, smoked cigarettes, or used drugs, and he sleeps about four to five hours a night.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:01.185831+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "362b5b1b-e66d-4787-9f03-91d58385a3ed",
+          "memory": "Donald Trump believes in the battery theory, a fringe belief that human beings are born with a finite amount of energy that is depleted by physical activity, which leads him to consider exercise a waste of energy.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "e0b2aac7-113e-4859-9880-aef7f64916e0",
+              "memory_id": "362b5b1b-e66d-4787-9f03-91d58385a3ed",
+              "old_memory": null,
+              "new_memory": "Donald Trump believes in the battery theory, a fringe belief that human beings are born with a finite amount of energy that is depleted by physical activity, which leads him to consider exercise a waste of energy.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:01.185865+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "98934730-1878-4c31-9068-4969bf428467",
+          "memory": "Donald Trump considers golfing his primary form of exercise but usually does not walk the course, using a cart instead.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "815139d3-69c0-4425-9da0-91e08af94d9a",
+              "memory_id": "98934730-1878-4c31-9068-4969bf428467",
+              "old_memory": null,
+              "new_memory": "Donald Trump considers golfing his primary form of exercise but usually does not walk the course, using a cart instead.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:01.185854+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 3,
+      "outcome": "multiple_kept_3",
+      "elapsed_s": 2.98
+    },
+    {
+      "id": "trap-15",
+      "kind": "trap",
+      "governingNum": 71,
+      "revid": 1334447176,
+      "add_stale_result": {
+        "results": []
+      },
+      "add_governing_result": {
+        "results": [
+          {
+            "id": "6113e113-8f6b-434c-ba7e-beabd874fe64",
+            "memory": "During his first presidency, Trump imposed a travel ban on seven Muslim-majority countries, expanded the Mexico\u2013United States border wall, and enforced a family separation policy on the border. He rolled back environmental and business regulations, signed the Tax Cuts and Jobs Act, and appointed three Supreme Court justices.",
+            "event": "ADD"
+          },
+          {
+            "id": "33f2b3fa-423b-44fe-9184-4c567128ee12",
+            "memory": "In foreign policy, Trump withdrew the U.S. from agreements on climate, trade, and Iran's nuclear program, and initiated a trade war with China.",
+            "event": "ADD"
+          },
+          {
+            "id": "b9f075e7-2e21-4a46-8edf-7d844431be3a",
+            "memory": "In response to the COVID-19 pandemic from 2020, Trump downplayed its severity, contradicted health officials, and signed the CARES Act.",
+            "event": "ADD"
+          },
+          {
+            "id": "5c1c243e-f2f8-4dc5-8c85-9f146f1f67f7",
+            "memory": "After losing the 2020 presidential election to Joe Biden, Trump attempted to overturn the result, culminating in the January 6 Capitol attack in 2021.",
+            "event": "ADD"
+          },
+          {
+            "id": "82956206-105c-4e1c-b482-57f8e9356f96",
+            "memory": "Trump was impeached in 2019 for abuse of power and obstruction of Congress, and in 2021 for incitement of insurrection; the Senate acquitted him both times.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "survivors": [
+        {
+          "id": "33f2b3fa-423b-44fe-9184-4c567128ee12",
+          "memory": "In foreign policy, Trump withdrew the U.S. from agreements on climate, trade, and Iran's nuclear program, and initiated a trade war with China.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "814feab1-fac3-42b8-9c23-5c3d643bda9a",
+              "memory_id": "33f2b3fa-423b-44fe-9184-4c567128ee12",
+              "old_memory": null,
+              "new_memory": "In foreign policy, Trump withdrew the U.S. from agreements on climate, trade, and Iran's nuclear program, and initiated a trade war with China.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:05.722552+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "5c1c243e-f2f8-4dc5-8c85-9f146f1f67f7",
+          "memory": "After losing the 2020 presidential election to Joe Biden, Trump attempted to overturn the result, culminating in the January 6 Capitol attack in 2021.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "58dcc9a9-cd20-430b-9c4a-761670f863b1",
+              "memory_id": "5c1c243e-f2f8-4dc5-8c85-9f146f1f67f7",
+              "old_memory": null,
+              "new_memory": "After losing the 2020 presidential election to Joe Biden, Trump attempted to overturn the result, culminating in the January 6 Capitol attack in 2021.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:05.722572+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "6113e113-8f6b-434c-ba7e-beabd874fe64",
+          "memory": "During his first presidency, Trump imposed a travel ban on seven Muslim-majority countries, expanded the Mexico\u2013United States border wall, and enforced a family separation policy on the border. He rolled back environmental and business regulations, signed the Tax Cuts and Jobs Act, and appointed three Supreme Court justices.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "389d353f-ad2a-44af-a761-5bc18abeb0ac",
+              "memory_id": "6113e113-8f6b-434c-ba7e-beabd874fe64",
+              "old_memory": null,
+              "new_memory": "During his first presidency, Trump imposed a travel ban on seven Muslim-majority countries, expanded the Mexico\u2013United States border wall, and enforced a family separation policy on the border. He rolled back environmental and business regulations, signed the Tax Cuts and Jobs Act, and appointed three Supreme Court justices.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:05.722529+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "82956206-105c-4e1c-b482-57f8e9356f96",
+          "memory": "Trump was impeached in 2019 for abuse of power and obstruction of Congress, and in 2021 for incitement of insurrection; the Senate acquitted him both times.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "256fb050-9da8-454a-bb9b-8b1e4a527692",
+              "memory_id": "82956206-105c-4e1c-b482-57f8e9356f96",
+              "old_memory": null,
+              "new_memory": "Trump was impeached in 2019 for abuse of power and obstruction of Congress, and in 2021 for incitement of insurrection; the Senate acquitted him both times.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:05.722579+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "b9f075e7-2e21-4a46-8edf-7d844431be3a",
+          "memory": "In response to the COVID-19 pandemic from 2020, Trump downplayed its severity, contradicted health officials, and signed the CARES Act.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "591e4733-16c6-4d33-8410-94ddfcde1bdc",
+              "memory_id": "b9f075e7-2e21-4a46-8edf-7d844431be3a",
+              "old_memory": null,
+              "new_memory": "In response to the COVID-19 pandemic from 2020, Trump downplayed its severity, contradicted health officials, and signed the CARES Act.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:05.722563+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 5,
+      "outcome": "multiple_kept_5",
+      "elapsed_s": 3.47
+    },
+    {
+      "id": "trap-16",
+      "kind": "trap",
+      "governingNum": 53,
+      "revid": 1332739464,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "9993e72d-0603-4b96-bea1-984edb167032",
+            "memory": "Since 2015, Trump's leadership style and political agenda, often referred to as Trumpism, have reshaped the Republican Party's identity. His comments and actions have been characterized as racist or misogynistic, and he has made many false or misleading statements during his campaigns and presidency. He has promoted numerous conspiracy theories, and his actions, especially in his second term, have been described as authoritarian and contributing to democratic backsliding. After his first term, scholars and historians ranked him as one of the worst presidents in American history.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "9993e72d-0603-4b96-bea1-984edb167032",
+          "memory": "Since 2015, Trump's leadership style and political agenda, often referred to as Trumpism, have reshaped the Republican Party's identity. His comments and actions have been characterized as racist or misogynistic, and he has made many false or misleading statements during his campaigns and presidency. He has promoted numerous conspiracy theories, and his actions, especially in his second term, have been described as authoritarian and contributing to democratic backsliding. After his first term, scholars and historians ranked him as one of the worst presidents in American history.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "d9b86c3b-a685-4c59-8443-0f4d6cb1c3db",
+              "memory_id": "9993e72d-0603-4b96-bea1-984edb167032",
+              "old_memory": null,
+              "new_memory": "Since 2015, Trump's leadership style and political agenda, often referred to as Trumpism, have reshaped the Republican Party's identity. His comments and actions have been characterized as racist or misogynistic, and he has made many false or misleading statements during his campaigns and presidency. He has promoted numerous conspiracy theories, and his actions, especially in his second term, have been described as authoritarian and contributing to democratic backsliding. After his first term, scholars and historians ranked him as one of the worst presidents in American history.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:07.589467+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 1,
+      "outcome": "one_value_kept_other",
+      "elapsed_s": 2.37
+    },
+    {
+      "id": "trap-17",
+      "kind": "trap",
+      "governingNum": 37,
+      "revid": 1329700366,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "98b26cbf-37fe-4625-8432-f57bdbaeda5b",
+            "memory": "Trump had a 15-year friendship with Jeffrey Epstein, during which they frequently hit on and competed for women, according to people who knew them at the time.",
+            "event": "ADD"
+          },
+          {
+            "id": "5da2d34b-7682-4a91-a885-e8e980f3c6d0",
+            "memory": "In 2025, media attention and public pressure increased when Trump's administration did not release files relating to Epstein, despite his campaign promise in 2024. Some files were released in December 2025, mostly heavily redacted.",
+            "event": "ADD"
+          },
+          {
+            "id": "afd65aa3-9466-422b-9e1c-1896305266a8",
+            "memory": "Files released in December 2025 alleged that Trump had sexually abused several young girls trafficked by Epstein in the 1980s and 1990s. One girl who tried to come forward was later found dead, with police ruling it not a suicide, but the coroner ruled it a suicide.",
+            "event": "ADD"
+          },
+          {
+            "id": "abb2366f-2864-4ce4-b468-38bbcd51b3d2",
+            "memory": "A file released in December 2025 alleged that Trump was present for the murder of a trafficking victim's baby, with the remains being dumped into Lake Michigan.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "5da2d34b-7682-4a91-a885-e8e980f3c6d0",
+          "memory": "In 2025, media attention and public pressure increased when Trump's administration did not release files relating to Epstein, despite his campaign promise in 2024. Some files were released in December 2025, mostly heavily redacted.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "53473a85-1e13-4c26-9dee-215973851748",
+              "memory_id": "5da2d34b-7682-4a91-a885-e8e980f3c6d0",
+              "old_memory": null,
+              "new_memory": "In 2025, media attention and public pressure increased when Trump's administration did not release files relating to Epstein, despite his campaign promise in 2024. Some files were released in December 2025, mostly heavily redacted.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:12.286128+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "98b26cbf-37fe-4625-8432-f57bdbaeda5b",
+          "memory": "Trump had a 15-year friendship with Jeffrey Epstein, during which they frequently hit on and competed for women, according to people who knew them at the time.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "4ee00dc3-7269-486b-a997-9a3fea5ee2b8",
+              "memory_id": "98b26cbf-37fe-4625-8432-f57bdbaeda5b",
+              "old_memory": null,
+              "new_memory": "Trump had a 15-year friendship with Jeffrey Epstein, during which they frequently hit on and competed for women, according to people who knew them at the time.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:12.286106+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "abb2366f-2864-4ce4-b468-38bbcd51b3d2",
+          "memory": "A file released in December 2025 alleged that Trump was present for the murder of a trafficking victim's baby, with the remains being dumped into Lake Michigan.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "99ef8873-2cf1-4341-9108-fdd8ecac71cd",
+              "memory_id": "abb2366f-2864-4ce4-b468-38bbcd51b3d2",
+              "old_memory": null,
+              "new_memory": "A file released in December 2025 alleged that Trump was present for the murder of a trafficking victim's baby, with the remains being dumped into Lake Michigan.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:12.286145+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "afd65aa3-9466-422b-9e1c-1896305266a8",
+          "memory": "Files released in December 2025 alleged that Trump had sexually abused several young girls trafficked by Epstein in the 1980s and 1990s. One girl who tried to come forward was later found dead, with police ruling it not a suicide, but the coroner ruled it a suicide.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "bf439c49-e7df-499d-8ff6-d668ff9c719b",
+              "memory_id": "afd65aa3-9466-422b-9e1c-1896305266a8",
+              "old_memory": null,
+              "new_memory": "Files released in December 2025 alleged that Trump had sexually abused several young girls trafficked by Epstein in the 1980s and 1990s. One girl who tried to come forward was later found dead, with police ruling it not a suicide, but the coroner ruled it a suicide.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:12.286138+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 4,
+      "outcome": "multiple_kept_4",
+      "elapsed_s": 5.41
+    },
+    {
+      "id": "trap-18",
+      "kind": "trap",
+      "governingNum": 49,
+      "revid": 1328782048,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "9c741752-0547-4cb5-a84c-4f1283fa8b06",
+            "memory": "Since 2015, Trump's leadership style and political agenda, often referred to as Trumpism, have reshaped the Republican Party's identity. His comments and actions have been characterized as racist or misogynistic, and he has made many false, misleading, or conspiracy theory-promoting statements during his campaigns and presidency. His actions, especially in his second term, have been described as authoritarian and contributing to democratic backsliding. After his first term, scholars and historians ranked him as one of the worst presidents in American history.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "9c741752-0547-4cb5-a84c-4f1283fa8b06",
+          "memory": "Since 2015, Trump's leadership style and political agenda, often referred to as Trumpism, have reshaped the Republican Party's identity. His comments and actions have been characterized as racist or misogynistic, and he has made many false, misleading, or conspiracy theory-promoting statements during his campaigns and presidency. His actions, especially in his second term, have been described as authoritarian and contributing to democratic backsliding. After his first term, scholars and historians ranked him as one of the worst presidents in American history.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "51e56f65-c899-4cb9-89d2-55b276941834",
+              "memory_id": "9c741752-0547-4cb5-a84c-4f1283fa8b06",
+              "old_memory": null,
+              "new_memory": "Since 2015, Trump's leadership style and political agenda, often referred to as Trumpism, have reshaped the Republican Party's identity. His comments and actions have been characterized as racist or misogynistic, and he has made many false, misleading, or conspiracy theory-promoting statements during his campaigns and presidency. His actions, especially in his second term, have been described as authoritarian and contributing to democratic backsliding. After his first term, scholars and historians ranked him as one of the worst presidents in American history.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:15.733852+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 1,
+      "outcome": "one_value_kept_other",
+      "elapsed_s": 2.56
+    },
+    {
+      "id": "trap-19",
+      "kind": "trap",
+      "governingNum": 25,
+      "revid": 1328733892,
+      "add_stale_result": {
+        "results": []
+      },
+      "add_governing_result": {
+        "results": [
+          {
+            "id": "5c44b06f-597a-4756-a4e1-49805a2d5377",
+            "memory": "Donald Trump was inaugurated as President of the United States on January 20, 2017. The day after his inauguration, an estimated 2.6 million people worldwide, including 500,000 in Washington, D.C., protested against him in the Women's Marches.",
+            "event": "ADD"
+          },
+          {
+            "id": "02f1b157-96f1-4e32-836d-65dac1657ffb",
+            "memory": "During his first week in office, Donald Trump signed six executive orders, including authorizing procedures for repealing the Patient Protection and Affordable Care Act, withdrawing from the Trans-Pacific Partnership negotiations, advancing the Keystone XL and Dakota Access Pipeline projects, and planning for a wall along the U.S. border with Mexico.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "survivors": [
+        {
+          "id": "02f1b157-96f1-4e32-836d-65dac1657ffb",
+          "memory": "During his first week in office, Donald Trump signed six executive orders, including authorizing procedures for repealing the Patient Protection and Affordable Care Act, withdrawing from the Trans-Pacific Partnership negotiations, advancing the Keystone XL and Dakota Access Pipeline projects, and planning for a wall along the U.S. border with Mexico.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "0242d0e1-de77-4888-9213-fda35648b6a2",
+              "memory_id": "02f1b157-96f1-4e32-836d-65dac1657ffb",
+              "old_memory": null,
+              "new_memory": "During his first week in office, Donald Trump signed six executive orders, including authorizing procedures for repealing the Patient Protection and Affordable Care Act, withdrawing from the Trans-Pacific Partnership negotiations, advancing the Keystone XL and Dakota Access Pipeline projects, and planning for a wall along the U.S. border with Mexico.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:19.997059+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "5c44b06f-597a-4756-a4e1-49805a2d5377",
+          "memory": "Donald Trump was inaugurated as President of the United States on January 20, 2017. The day after his inauguration, an estimated 2.6 million people worldwide, including 500,000 in Washington, D.C., protested against him in the Women's Marches.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "6dcc5f59-462e-482c-b05e-434482f9cf56",
+              "memory_id": "5c44b06f-597a-4756-a4e1-49805a2d5377",
+              "old_memory": null,
+              "new_memory": "Donald Trump was inaugurated as President of the United States on January 20, 2017. The day after his inauguration, an estimated 2.6 million people worldwide, including 500,000 in Washington, D.C., protested against him in the Women's Marches.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:19.997035+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 2,
+      "outcome": "multiple_kept_2",
+      "elapsed_s": 3.67
+    },
+    {
+      "id": "trap-20",
+      "kind": "trap",
+      "governingNum": 37,
+      "revid": 1327058065,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "2de2af17-19fe-41a9-bf8b-66fbffe159c7",
+            "memory": "By October 2025, the Trump administration had cancelled $7.6 billion in funding for clean energy projects approved by the previous administration.",
+            "event": "ADD"
+          },
+          {
+            "id": "af7cc132-6866-460f-ba35-d68129102a7f",
+            "memory": "The Trump administration appointed oil, gas, and chemical lobbyists to the United States Environmental Protection Agency (EPA) to reverse climate regulations and pollution controls.",
+            "event": "ADD"
+          },
+          {
+            "id": "f8b86f91-3a64-4b26-b32d-4b19473ce1f8",
+            "memory": "The Trump administration promoted climate change denial and misinformation, as reported by The New York Times on July 31, 2025.",
+            "event": "ADD"
+          },
+          {
+            "id": "8657799a-b5bb-41dd-afc9-d87c3d779d6d",
+            "memory": "Countries responsible for more than two-thirds of US goods export entered the Open Coalition on Compliance Carbon Markets, which could significantly impact the American economy.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "2de2af17-19fe-41a9-bf8b-66fbffe159c7",
+          "memory": "By October 2025, the Trump administration had cancelled $7.6 billion in funding for clean energy projects approved by the previous administration.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "c1dfefd4-1c45-4caf-a879-7382b41de3a7",
+              "memory_id": "2de2af17-19fe-41a9-bf8b-66fbffe159c7",
+              "old_memory": null,
+              "new_memory": "By October 2025, the Trump administration had cancelled $7.6 billion in funding for clean energy projects approved by the previous administration.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:22.991915+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "8657799a-b5bb-41dd-afc9-d87c3d779d6d",
+          "memory": "Countries responsible for more than two-thirds of US goods export entered the Open Coalition on Compliance Carbon Markets, which could significantly impact the American economy.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "96f42286-bef1-4f6c-bfc3-90207e95df56",
+              "memory_id": "8657799a-b5bb-41dd-afc9-d87c3d779d6d",
+              "old_memory": null,
+              "new_memory": "Countries responsible for more than two-thirds of US goods export entered the Open Coalition on Compliance Carbon Markets, which could significantly impact the American economy.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:22.991953+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "af7cc132-6866-460f-ba35-d68129102a7f",
+          "memory": "The Trump administration appointed oil, gas, and chemical lobbyists to the United States Environmental Protection Agency (EPA) to reverse climate regulations and pollution controls.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "6aae6ca8-5d2e-467a-83f4-88ecb5d0d846",
+              "memory_id": "af7cc132-6866-460f-ba35-d68129102a7f",
+              "old_memory": null,
+              "new_memory": "The Trump administration appointed oil, gas, and chemical lobbyists to the United States Environmental Protection Agency (EPA) to reverse climate regulations and pollution controls.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:22.991936+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "f8b86f91-3a64-4b26-b32d-4b19473ce1f8",
+          "memory": "The Trump administration promoted climate change denial and misinformation, as reported by The New York Times on July 31, 2025.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "22429cf7-c573-41e1-b802-d191c91777e9",
+              "memory_id": "f8b86f91-3a64-4b26-b32d-4b19473ce1f8",
+              "old_memory": null,
+              "new_memory": "The Trump administration promoted climate change denial and misinformation, as reported by The New York Times on July 31, 2025.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:22.991945+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 4,
+      "outcome": "multiple_kept_4",
+      "elapsed_s": 3.59
+    },
+    {
+      "id": "trap-21",
+      "kind": "trap",
+      "governingNum": 70,
+      "revid": 1325217586,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "dc9a6e7c-8f7f-42a2-873d-cce8edfaae12",
+            "memory": "Donald John Trump, born June 14, 1946, is an American politician, media personality, and businessman currently serving as the 47th president of the United States. He is a member of the Republican Party and previously served as the 45th president from 2017 to 2021.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "dc9a6e7c-8f7f-42a2-873d-cce8edfaae12",
+          "memory": "Donald John Trump, born June 14, 1946, is an American politician, media personality, and businessman currently serving as the 47th president of the United States. He is a member of the Republican Party and previously served as the 45th president from 2017 to 2021.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "2d32d544-07f6-4e4a-8e36-2438930ff00c",
+              "memory_id": "dc9a6e7c-8f7f-42a2-873d-cce8edfaae12",
+              "old_memory": null,
+              "new_memory": "Donald John Trump, born June 14, 1946, is an American politician, media personality, and businessman currently serving as the 47th president of the United States. He is a member of the Republican Party and previously served as the 45th president from 2017 to 2021.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:25.197247+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 1,
+      "outcome": "one_value_kept_other",
+      "elapsed_s": 1.98
+    },
+    {
+      "id": "trap-22",
+      "kind": "trap",
+      "governingNum": 43,
+      "revid": 1322975812,
+      "add_stale_result": {
+        "results": []
+      },
+      "add_governing_result": {
+        "results": [
+          {
+            "id": "301f8f93-1085-4a56-bf19-3d913f9e3a39",
+            "memory": "Since 2015, Trump's leadership style and political agenda, often referred to as Trumpism, have reshaped the Republican Party's identity. His comments and actions have been characterized as racist or misogynistic, and he has made false or misleading statements and promoted conspiracy theories to an unprecedented degree in American politics. After his first term, scholars and historians ranked him as one of the worst presidents in American history.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "survivors": [
+        {
+          "id": "301f8f93-1085-4a56-bf19-3d913f9e3a39",
+          "memory": "Since 2015, Trump's leadership style and political agenda, often referred to as Trumpism, have reshaped the Republican Party's identity. His comments and actions have been characterized as racist or misogynistic, and he has made false or misleading statements and promoted conspiracy theories to an unprecedented degree in American politics. After his first term, scholars and historians ranked him as one of the worst presidents in American history.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "3998bbfe-d3f3-40c2-8c31-08c6a74a99ab",
+              "memory_id": "301f8f93-1085-4a56-bf19-3d913f9e3a39",
+              "old_memory": null,
+              "new_memory": "Since 2015, Trump's leadership style and political agenda, often referred to as Trumpism, have reshaped the Republican Party's identity. His comments and actions have been characterized as racist or misogynistic, and he has made false or misleading statements and promoted conspiracy theories to an unprecedented degree in American politics. After his first term, scholars and historians ranked him as one of the worst presidents in American history.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:28.734352+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 1,
+      "outcome": "one_value_kept_other",
+      "elapsed_s": 2.96
+    },
+    {
+      "id": "trap-23",
+      "kind": "trap",
+      "governingNum": 43,
+      "revid": 1322330950,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "792ff12c-8637-49d6-a839-a6e90d030776",
+            "memory": "In 2023, Donald Trump was found liable in civil cases for sexual abuse and defamation and for business fraud. He was found guilty of falsifying business records in 2024, making him the first U.S. president convicted of a felony.",
+            "event": "ADD"
+          },
+          {
+            "id": "2c631bd8-babc-4b70-884f-9c7e07b93766",
+            "memory": "Donald Trump won the 2024 United States presidential election against Kamala Harris. After the election, he was sentenced to a penalty-free discharge, and two felony indictments against him for retention of classified documents and obstruction of the 2020 election were dismissed without prejudice.",
+            "event": "ADD"
+          },
+          {
+            "id": "23bbecc3-13e8-44b0-899a-8190926545eb",
+            "memory": "A racketeering case related to the 2020 election in Georgia against Donald Trump is pending as of July 2026.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "23bbecc3-13e8-44b0-899a-8190926545eb",
+          "memory": "A racketeering case related to the 2020 election in Georgia against Donald Trump is pending as of July 2026.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "21e49c99-56cc-4f0f-a2f8-a790090bfcfa",
+              "memory_id": "23bbecc3-13e8-44b0-899a-8190926545eb",
+              "old_memory": null,
+              "new_memory": "A racketeering case related to the 2020 election in Georgia against Donald Trump is pending as of July 2026.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:31.835936+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "2c631bd8-babc-4b70-884f-9c7e07b93766",
+          "memory": "Donald Trump won the 2024 United States presidential election against Kamala Harris. After the election, he was sentenced to a penalty-free discharge, and two felony indictments against him for retention of classified documents and obstruction of the 2020 election were dismissed without prejudice.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "07934faa-caf5-4f25-bcc8-0a6f092d6052",
+              "memory_id": "2c631bd8-babc-4b70-884f-9c7e07b93766",
+              "old_memory": null,
+              "new_memory": "Donald Trump won the 2024 United States presidential election against Kamala Harris. After the election, he was sentenced to a penalty-free discharge, and two felony indictments against him for retention of classified documents and obstruction of the 2020 election were dismissed without prejudice.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:31.835928+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "792ff12c-8637-49d6-a839-a6e90d030776",
+          "memory": "In 2023, Donald Trump was found liable in civil cases for sexual abuse and defamation and for business fraud. He was found guilty of falsifying business records in 2024, making him the first U.S. president convicted of a felony.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "8dde8cb7-0709-4e20-ae82-dbc12e4ace1d",
+              "memory_id": "792ff12c-8637-49d6-a839-a6e90d030776",
+              "old_memory": null,
+              "new_memory": "In 2023, Donald Trump was found liable in civil cases for sexual abuse and defamation and for business fraud. He was found guilty of falsifying business records in 2024, making him the first U.S. president convicted of a felony.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:31.835908+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 3,
+      "outcome": "multiple_kept_3",
+      "elapsed_s": 4.03
+    },
+    {
+      "id": "trap-24",
+      "kind": "trap",
+      "governingNum": 70,
+      "revid": 1321344248,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "a656fecc-29ee-4741-af8f-5e1ef196c59e",
+            "memory": "Donald John Trump, born June 14, 1946, is an American politician, media personality, and businessman who is the 47th president of the United States as of July 2, 2026. He is a member of the Republican Party and previously served as the 45th president from 2017 to 2021.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "a656fecc-29ee-4741-af8f-5e1ef196c59e",
+          "memory": "Donald John Trump, born June 14, 1946, is an American politician, media personality, and businessman who is the 47th president of the United States as of July 2, 2026. He is a member of the Republican Party and previously served as the 45th president from 2017 to 2021.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "0ae4fccc-6401-4cb8-8174-8cb7f6e568a6",
+              "memory_id": "a656fecc-29ee-4741-af8f-5e1ef196c59e",
+              "old_memory": null,
+              "new_memory": "Donald John Trump, born June 14, 1946, is an American politician, media personality, and businessman who is the 47th president of the United States as of July 2, 2026. He is a member of the Republican Party and previously served as the 45th president from 2017 to 2021.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:34.652240+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 1,
+      "outcome": "one_value_kept_other",
+      "elapsed_s": 2.32
+    },
+    {
+      "id": "trap-25",
+      "kind": "trap",
+      "governingNum": 37,
+      "revid": 1319076913,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "58efc0d0-46a3-4f24-b340-7f8d09451e9a",
+            "memory": "Donald Trump began his second term as President of the United States on January 20, 2025, becoming the oldest individual to assume the presidency and the first president with a felony conviction. He is also the second person to serve two nonconsecutive terms as president.",
+            "event": "ADD"
+          },
+          {
+            "id": "fb7bae06-9889-4ffe-9a50-327f4f9e432b",
+            "memory": "A defining characteristic of Donald Trump's second term is his attempts to expand presidential power and his conflicts with the courts.",
+            "event": "ADD"
+          },
+          {
+            "id": "6f1fbe70-0d0b-4cfd-836d-01f6d576cd37",
+            "memory": "From October 20 to 23, 2025, Donald Trump had the East Wing of the White House demolished without prior announcement to make room for a 90,000-square-foot ballroom.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "58efc0d0-46a3-4f24-b340-7f8d09451e9a",
+          "memory": "Donald Trump began his second term as President of the United States on January 20, 2025, becoming the oldest individual to assume the presidency and the first president with a felony conviction. He is also the second person to serve two nonconsecutive terms as president.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "195b8064-4db6-4c1f-b7f5-5f0082d96df0",
+              "memory_id": "58efc0d0-46a3-4f24-b340-7f8d09451e9a",
+              "old_memory": null,
+              "new_memory": "Donald Trump began his second term as President of the United States on January 20, 2025, becoming the oldest individual to assume the presidency and the first president with a felony conviction. He is also the second person to serve two nonconsecutive terms as president.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:37.742618+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "6f1fbe70-0d0b-4cfd-836d-01f6d576cd37",
+          "memory": "From October 20 to 23, 2025, Donald Trump had the East Wing of the White House demolished without prior announcement to make room for a 90,000-square-foot ballroom.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "7316c5e1-40e3-44c9-9078-146629c9d3f3",
+              "memory_id": "6f1fbe70-0d0b-4cfd-836d-01f6d576cd37",
+              "old_memory": null,
+              "new_memory": "From October 20 to 23, 2025, Donald Trump had the East Wing of the White House demolished without prior announcement to make room for a 90,000-square-foot ballroom.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:37.742652+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "fb7bae06-9889-4ffe-9a50-327f4f9e432b",
+          "memory": "A defining characteristic of Donald Trump's second term is his attempts to expand presidential power and his conflicts with the courts.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "fcabc370-1dd2-4557-959a-30ef6ec58f86",
+              "memory_id": "fb7bae06-9889-4ffe-9a50-327f4f9e432b",
+              "old_memory": null,
+              "new_memory": "A defining characteristic of Donald Trump's second term is his attempts to expand presidential power and his conflicts with the courts.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:37.742642+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 3,
+      "outcome": "multiple_kept_3",
+      "elapsed_s": 3.11
+    },
+    {
+      "id": "trap-26",
+      "kind": "trap",
+      "governingNum": 63,
+      "revid": 1319062064,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "e4b53345-a02f-4ccc-830c-95aa46ab0319",
+            "memory": "User attended Fordham University and holds a Bachelor of Science degree from the University of Pennsylvania.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "e4b53345-a02f-4ccc-830c-95aa46ab0319",
+          "memory": "User attended Fordham University and holds a Bachelor of Science degree from the University of Pennsylvania.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "da89bc72-9d0a-4b22-884b-6d9b40ea68ed",
+              "memory_id": "e4b53345-a02f-4ccc-830c-95aa46ab0319",
+              "old_memory": null,
+              "new_memory": "User attended Fordham University and holds a Bachelor of Science degree from the University of Pennsylvania.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:39.641069+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 1,
+      "outcome": "one_value_kept_other",
+      "elapsed_s": 2.17
+    },
+    {
+      "id": "trap-27",
+      "kind": "trap",
+      "governingNum": 60,
+      "revid": 1314612261,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "25dd1bee-16b8-46b7-9140-de284dbe67ae",
+            "memory": "During his first presidency, Trump imposed a travel ban on seven Muslim-majority countries, expanded the Mexico\u2013United States border wall, and enforced a family separation policy on the border. He rolled back environmental and business regulations, signed the Tax Cuts and Jobs Act, and appointed three Supreme Court justices. In foreign policy, Trump withdrew the U.S. from agreements on climate, trade, and Iran's nuclear program, and initiated a trade war with China. In response to the COVID-19 pandemic from 2020, he downplayed its severity, contradicted health officials, and signed the CARES Act. After losing the 2020 presidential election to Joe Biden, Trump attempted to overturn the result, culminating in the January 6 Capitol attack in 2021. He was impeached in 2019 for abuse of power and obstruction of Congress, and in 2021 for incitement of insurrection; the Senate acquitted him both times.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "25dd1bee-16b8-46b7-9140-de284dbe67ae",
+          "memory": "During his first presidency, Trump imposed a travel ban on seven Muslim-majority countries, expanded the Mexico\u2013United States border wall, and enforced a family separation policy on the border. He rolled back environmental and business regulations, signed the Tax Cuts and Jobs Act, and appointed three Supreme Court justices. In foreign policy, Trump withdrew the U.S. from agreements on climate, trade, and Iran's nuclear program, and initiated a trade war with China. In response to the COVID-19 pandemic from 2020, he downplayed its severity, contradicted health officials, and signed the CARES Act. After losing the 2020 presidential election to Joe Biden, Trump attempted to overturn the result, culminating in the January 6 Capitol attack in 2021. He was impeached in 2019 for abuse of power and obstruction of Congress, and in 2021 for incitement of insurrection; the Senate acquitted him both times.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "17619cf1-bb33-4a3f-8b5b-176476c82e0b",
+              "memory_id": "25dd1bee-16b8-46b7-9140-de284dbe67ae",
+              "old_memory": null,
+              "new_memory": "During his first presidency, Trump imposed a travel ban on seven Muslim-majority countries, expanded the Mexico\u2013United States border wall, and enforced a family separation policy on the border. He rolled back environmental and business regulations, signed the Tax Cuts and Jobs Act, and appointed three Supreme Court justices. In foreign policy, Trump withdrew the U.S. from agreements on climate, trade, and Iran's nuclear program, and initiated a trade war with China. In response to the COVID-19 pandemic from 2020, he downplayed its severity, contradicted health officials, and signed the CARES Act. After losing the 2020 presidential election to Joe Biden, Trump attempted to overturn the result, culminating in the January 6 Capitol attack in 2021. He was impeached in 2019 for abuse of power and obstruction of Congress, and in 2021 for incitement of insurrection; the Senate acquitted him both times.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:42.743568+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 1,
+      "outcome": "one_value_kept_other",
+      "elapsed_s": 2.58
+    },
+    {
+      "id": "trap-28",
+      "kind": "trap",
+      "governingNum": 37,
+      "revid": 1310314503,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "645f6ef6-1136-4277-8df0-a496cdcd2490",
+            "memory": "Following his reelection, Trump launched lawsuits and created blacklists against certain media outlets, taking over the process run by the White House Correspondents' Association to choose what outlets have access to him, as reported by Axios on February 26, 2025.",
+            "event": "ADD"
+          },
+          {
+            "id": "a616e733-9bdb-4563-b22d-da5d1bf54f2c",
+            "memory": "The Trump White House made a policy of limited access for all wire services, including the Associated Press, rather than complying with a court order to restore AP access, as reported by CNN on April 16, 2025.",
+            "event": "ADD"
+          },
+          {
+            "id": "e2eece52-5f17-4324-a8a2-9dcabbcd187d",
+            "memory": "The Federal Communications Commission launched investigations into media outlets accused of bias against Trump, as reported by Ars Technica on January 23, 2025.",
+            "event": "ADD"
+          },
+          {
+            "id": "0b819d6a-80ae-4d59-8d18-72e95fa0b264",
+            "memory": "As a result of Trump's threats, media executives instructed journalists and their staff to self-censor and reduce criticism of Trump, with CBS agreeing to create an Ombudsman to monitor its news channels for bias, as reported by Axios on May 27, 2025, and CNN on July 23, 2025.",
+            "event": "ADD"
+          },
+          {
+            "id": "73011329-bbeb-4dd5-a61a-6d4773131d16",
+            "memory": "In July 2025, Trump sued The Wall Street Journal for publishing a story relating to his past friendship with Jeffrey Epstein, marking the first time a sitting president sued a media organization for alleged defamation, as reported by the Carnegie Endowment for International Peace on August 25, 2025.",
+            "event": "ADD"
+          },
+          {
+            "id": "c1d5b2a7-8985-4887-9a31-ffc961d973de",
+            "memory": "On September 8, 2025, a photograph related to the disputed birthday greeting issue was submitted by the Epstein estate to a congressional committee reviewing the Epstein Files, as reported by the Associated Press.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "0b819d6a-80ae-4d59-8d18-72e95fa0b264",
+          "memory": "As a result of Trump's threats, media executives instructed journalists and their staff to self-censor and reduce criticism of Trump, with CBS agreeing to create an Ombudsman to monitor its news channels for bias, as reported by Axios on May 27, 2025, and CNN on July 23, 2025.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "9d6a6715-1241-4cf1-b89c-5646b8aad1cd",
+              "memory_id": "0b819d6a-80ae-4d59-8d18-72e95fa0b264",
+              "old_memory": null,
+              "new_memory": "As a result of Trump's threats, media executives instructed journalists and their staff to self-censor and reduce criticism of Trump, with CBS agreeing to create an Ombudsman to monitor its news channels for bias, as reported by Axios on May 27, 2025, and CNN on July 23, 2025.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:46.688912+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "645f6ef6-1136-4277-8df0-a496cdcd2490",
+          "memory": "Following his reelection, Trump launched lawsuits and created blacklists against certain media outlets, taking over the process run by the White House Correspondents' Association to choose what outlets have access to him, as reported by Axios on February 26, 2025.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "7987bd8e-6d2d-4496-9f84-4caa59f2f903",
+              "memory_id": "645f6ef6-1136-4277-8df0-a496cdcd2490",
+              "old_memory": null,
+              "new_memory": "Following his reelection, Trump launched lawsuits and created blacklists against certain media outlets, taking over the process run by the White House Correspondents' Association to choose what outlets have access to him, as reported by Axios on February 26, 2025.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:46.688878+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "73011329-bbeb-4dd5-a61a-6d4773131d16",
+          "memory": "In July 2025, Trump sued The Wall Street Journal for publishing a story relating to his past friendship with Jeffrey Epstein, marking the first time a sitting president sued a media organization for alleged defamation, as reported by the Carnegie Endowment for International Peace on August 25, 2025.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "61bb0c9a-3f9f-44c1-9acd-b4c2e516a1d5",
+              "memory_id": "73011329-bbeb-4dd5-a61a-6d4773131d16",
+              "old_memory": null,
+              "new_memory": "In July 2025, Trump sued The Wall Street Journal for publishing a story relating to his past friendship with Jeffrey Epstein, marking the first time a sitting president sued a media organization for alleged defamation, as reported by the Carnegie Endowment for International Peace on August 25, 2025.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:46.688919+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "a616e733-9bdb-4563-b22d-da5d1bf54f2c",
+          "memory": "The Trump White House made a policy of limited access for all wire services, including the Associated Press, rather than complying with a court order to restore AP access, as reported by CNN on April 16, 2025.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "e864d8cc-726f-452a-804f-925a579018eb",
+              "memory_id": "a616e733-9bdb-4563-b22d-da5d1bf54f2c",
+              "old_memory": null,
+              "new_memory": "The Trump White House made a policy of limited access for all wire services, including the Associated Press, rather than complying with a court order to restore AP access, as reported by CNN on April 16, 2025.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:46.688898+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "c1d5b2a7-8985-4887-9a31-ffc961d973de",
+          "memory": "On September 8, 2025, a photograph related to the disputed birthday greeting issue was submitted by the Epstein estate to a congressional committee reviewing the Epstein Files, as reported by the Associated Press.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "4a931ed6-c917-4618-81b3-b78c285dad5f",
+              "memory_id": "c1d5b2a7-8985-4887-9a31-ffc961d973de",
+              "old_memory": null,
+              "new_memory": "On September 8, 2025, a photograph related to the disputed birthday greeting issue was submitted by the Epstein estate to a congressional committee reviewing the Epstein Files, as reported by the Associated Press.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:46.688925+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "e2eece52-5f17-4324-a8a2-9dcabbcd187d",
+          "memory": "The Federal Communications Commission launched investigations into media outlets accused of bias against Trump, as reported by Ars Technica on January 23, 2025.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "eb7fe3f7-9021-459f-a168-1a840ca10d33",
+              "memory_id": "e2eece52-5f17-4324-a8a2-9dcabbcd187d",
+              "old_memory": null,
+              "new_memory": "The Federal Communications Commission launched investigations into media outlets accused of bias against Trump, as reported by Ars Technica on January 23, 2025.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:46.688905+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 6,
+      "outcome": "multiple_kept_6",
+      "elapsed_s": 4.15
+    },
+    {
+      "id": "trap-29",
+      "kind": "trap",
+      "governingNum": 43,
+      "revid": 1309076410,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "10491d97-3513-409d-a915-1a0521cef7a9",
+            "memory": "During his second presidency, Trump initiated mass layoffs of federal workers, imposed tariffs at the highest level since the Great Depression, and signed the One Big Beautiful Bill Act. His administration's actions, including intimidation of political opponents, deportations, and extensive use of executive orders, have led to over 300 lawsuits challenging their legality.",
+            "event": "ADD"
+          },
+          {
+            "id": "68e1906b-f30f-4e45-bfcb-9deeadd2fbf9",
+            "memory": "High-profile legal cases during Trump's second presidency have highlighted his broad interpretation of the unitary executive theory, leading to significant conflicts with federal courts. Judges have found many of his administration's actions to be illegal, with several described as unconstitutional.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": [
+          {
+            "id": "b0bac5dd-58de-4e4f-a42a-16a9f6fb2b09",
+            "memory": "During his second presidency, Trump initiated mass layoffs of federal workers and aggressively moved against the rights of transgender people, targeting what he termed 'gender ideology'.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "survivors": [
+        {
+          "id": "10491d97-3513-409d-a915-1a0521cef7a9",
+          "memory": "During his second presidency, Trump initiated mass layoffs of federal workers, imposed tariffs at the highest level since the Great Depression, and signed the One Big Beautiful Bill Act. His administration's actions, including intimidation of political opponents, deportations, and extensive use of executive orders, have led to over 300 lawsuits challenging their legality.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "c1fbcc72-fec4-4b46-9464-e255a10b959f",
+              "memory_id": "10491d97-3513-409d-a915-1a0521cef7a9",
+              "old_memory": null,
+              "new_memory": "During his second presidency, Trump initiated mass layoffs of federal workers, imposed tariffs at the highest level since the Great Depression, and signed the One Big Beautiful Bill Act. His administration's actions, including intimidation of political opponents, deportations, and extensive use of executive orders, have led to over 300 lawsuits challenging their legality.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:49.704281+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "68e1906b-f30f-4e45-bfcb-9deeadd2fbf9",
+          "memory": "High-profile legal cases during Trump's second presidency have highlighted his broad interpretation of the unitary executive theory, leading to significant conflicts with federal courts. Judges have found many of his administration's actions to be illegal, with several described as unconstitutional.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "a36b464a-a2e9-4d87-ac0b-37409716e242",
+              "memory_id": "68e1906b-f30f-4e45-bfcb-9deeadd2fbf9",
+              "old_memory": null,
+              "new_memory": "High-profile legal cases during Trump's second presidency have highlighted his broad interpretation of the unitary executive theory, leading to significant conflicts with federal courts. Judges have found many of his administration's actions to be illegal, with several described as unconstitutional.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:49.704308+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "b0bac5dd-58de-4e4f-a42a-16a9f6fb2b09",
+          "memory": "During his second presidency, Trump initiated mass layoffs of federal workers and aggressively moved against the rights of transgender people, targeting what he termed 'gender ideology'.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "9c15acfe-5dab-43db-b363-103f5b5c1ede",
+              "memory_id": "b0bac5dd-58de-4e4f-a42a-16a9f6fb2b09",
+              "old_memory": null,
+              "new_memory": "During his second presidency, Trump initiated mass layoffs of federal workers and aggressively moved against the rights of transgender people, targeting what he termed 'gender ideology'.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:50.906334+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 3,
+      "outcome": "multiple_kept_3",
+      "elapsed_s": 3.25
+    },
+    {
+      "id": "trap-30",
+      "kind": "trap",
+      "governingNum": 49,
+      "revid": 1305381245,
+      "add_stale_result": {
+        "results": []
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [],
+      "n_survivors": 0,
+      "outcome": "no_memories_survived",
+      "elapsed_s": 1.42
+    },
+    {
+      "id": "trap-31",
+      "kind": "trap",
+      "governingNum": 70,
+      "revid": 1304677605,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "8c66d4e5-b35a-4445-9f36-70d90c10dc32",
+            "memory": "Donald John Trump, born June 14, 1946, is an American politician, media personality, and businessman who is the 47th president of the United States. He is a member of the Republican Party and previously served as the 45th president from 2017 to 2021.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "8c66d4e5-b35a-4445-9f36-70d90c10dc32",
+          "memory": "Donald John Trump, born June 14, 1946, is an American politician, media personality, and businessman who is the 47th president of the United States. He is a member of the Republican Party and previously served as the 45th president from 2017 to 2021.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "2085ff24-9fe3-4250-9ced-06e65f63aa7a",
+              "memory_id": "8c66d4e5-b35a-4445-9f36-70d90c10dc32",
+              "old_memory": null,
+              "new_memory": "Donald John Trump, born June 14, 1946, is an American politician, media personality, and businessman who is the 47th president of the United States. He is a member of the Republican Party and previously served as the 45th president from 2017 to 2021.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:54.022275+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 1,
+      "outcome": "one_value_kept_other",
+      "elapsed_s": 2.48
+    },
+    {
+      "id": "trap-32",
+      "kind": "trap",
+      "governingNum": 37,
+      "revid": 1298536180,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "610fc22b-3aa7-4b3a-a7f6-60d2fb9efa43",
+            "memory": "During the first Trump presidency, formal press briefings were reduced from about 100 in 2017 to about 50 in 2018, and to two in 2019. The press passes of two White House reporters were revoked but later restored by the courts.",
+            "event": "ADD"
+          },
+          {
+            "id": "b6791abd-6f48-434d-b84a-82af730cabb8",
+            "memory": "Trump's 2020 presidential campaign sued The New York Times, The Washington Post, and CNN for defamation regarding his stance on Russian election interference, but all suits were dismissed.",
+            "event": "ADD"
+          },
+          {
+            "id": "b58bb9be-b8d6-494b-9830-c922f1d3da02",
+            "memory": "By 2024, Trump voiced support for outlawing political dissent and criticism, and suggested prosecuting reporters for not divulging confidential sources and revoking media companies' broadcast licenses for unfavorable coverage.",
+            "event": "ADD"
+          },
+          {
+            "id": "9a3ae9b7-5657-43ba-9ca4-2d018af959a5",
+            "memory": "In July 2025, Paramount, the parent company of '60 Minutes', agreed to pay Trump $16 million for a story about Kamala Harris that published inaccurate information about him.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "610fc22b-3aa7-4b3a-a7f6-60d2fb9efa43",
+          "memory": "During the first Trump presidency, formal press briefings were reduced from about 100 in 2017 to about 50 in 2018, and to two in 2019. The press passes of two White House reporters were revoked but later restored by the courts.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "df0eb43c-8b93-4b4e-bf5e-0a189de94a74",
+              "memory_id": "610fc22b-3aa7-4b3a-a7f6-60d2fb9efa43",
+              "old_memory": null,
+              "new_memory": "During the first Trump presidency, formal press briefings were reduced from about 100 in 2017 to about 50 in 2018, and to two in 2019. The press passes of two White House reporters were revoked but later restored by the courts.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:57.636588+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "9a3ae9b7-5657-43ba-9ca4-2d018af959a5",
+          "memory": "In July 2025, Paramount, the parent company of '60 Minutes', agreed to pay Trump $16 million for a story about Kamala Harris that published inaccurate information about him.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "6914fb67-93be-4ce8-8a87-0b9561f92aa8",
+              "memory_id": "9a3ae9b7-5657-43ba-9ca4-2d018af959a5",
+              "old_memory": null,
+              "new_memory": "In July 2025, Paramount, the parent company of '60 Minutes', agreed to pay Trump $16 million for a story about Kamala Harris that published inaccurate information about him.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:57.636631+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "b58bb9be-b8d6-494b-9830-c922f1d3da02",
+          "memory": "By 2024, Trump voiced support for outlawing political dissent and criticism, and suggested prosecuting reporters for not divulging confidential sources and revoking media companies' broadcast licenses for unfavorable coverage.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "fc4dbf87-c620-4ff4-9682-fd790edff86d",
+              "memory_id": "b58bb9be-b8d6-494b-9830-c922f1d3da02",
+              "old_memory": null,
+              "new_memory": "By 2024, Trump voiced support for outlawing political dissent and criticism, and suggested prosecuting reporters for not divulging confidential sources and revoking media companies' broadcast licenses for unfavorable coverage.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:57.636623+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "b6791abd-6f48-434d-b84a-82af730cabb8",
+          "memory": "Trump's 2020 presidential campaign sued The New York Times, The Washington Post, and CNN for defamation regarding his stance on Russian election interference, but all suits were dismissed.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "a213ba8f-18aa-494d-b7ca-f47ed0546d75",
+              "memory_id": "b6791abd-6f48-434d-b84a-82af730cabb8",
+              "old_memory": null,
+              "new_memory": "Trump's 2020 presidential campaign sued The New York Times, The Washington Post, and CNN for defamation regarding his stance on Russian election interference, but all suits were dismissed.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:47:57.636613+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 4,
+      "outcome": "multiple_kept_4",
+      "elapsed_s": 3.72
+    },
+    {
+      "id": "trap-33",
+      "kind": "trap",
+      "governingNum": 70,
+      "revid": 1291684207,
+      "add_stale_result": {
+        "results": [
+          {
+            "id": "b2b926f0-b227-4ec5-8460-1eaadbbbdeb8",
+            "memory": "Donald John Trump, born June 14, 1946, is an American politician, media personality, and businessman currently serving as the 47th president of the United States. He is a member of the Republican Party and previously served as the 45th president from 2017 to 2021.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_governing_result": {
+        "results": []
+      },
+      "survivors": [
+        {
+          "id": "b2b926f0-b227-4ec5-8460-1eaadbbbdeb8",
+          "memory": "Donald John Trump, born June 14, 1946, is an American politician, media personality, and businessman currently serving as the 47th president of the United States. He is a member of the Republican Party and previously served as the 45th president from 2017 to 2021.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "c46b9af9-3b93-402e-b821-99784c6774ff",
+              "memory_id": "b2b926f0-b227-4ec5-8460-1eaadbbbdeb8",
+              "old_memory": null,
+              "new_memory": "Donald John Trump, born June 14, 1946, is an American politician, media personality, and businessman currently serving as the 47th president of the United States. He is a member of the Republican Party and previously served as the 45th president from 2017 to 2021.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:48:00.575166+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 1,
+      "outcome": "one_value_kept_other",
+      "elapsed_s": 2.54
+    }
+  ],
+  "tensions": [
+    {
+      "id": "tension-01",
+      "kind": "tension",
+      "article": "Donald Trump",
+      "num": 15,
+      "topic": "2016 election result phrasing in the lead",
+      "add_positionA_result": {
+        "results": []
+      },
+      "add_positionB_result": {
+        "results": []
+      },
+      "survivors": [],
+      "n_survivors": 0,
+      "outcome": "no_memories_survived",
+      "elapsed_s": 2.11
+    },
+    {
+      "id": "tension-02",
+      "kind": "tension",
+      "article": "Donald Trump",
+      "num": 48,
+      "topic": "COVID-19 response wording in the lead",
+      "add_positionA_result": {
+        "results": [
+          {
+            "id": "19a825fd-4c2d-4e0d-af58-508bf9b62fa2",
+            "memory": "User stated that Trump reacted slowly to the COVID-19 pandemic by minimizing the threat, ignoring or contradicting recommendations from health officials, and promoting false information about unproven treatments.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_positionB_result": {
+        "results": [
+          {
+            "id": "f31015ca-711c-4132-9562-f2f230ca9882",
+            "memory": "Under Trump's administration, the United States recorded more confirmed COVID-19 cases than any other country, and the crisis prompted the largest economic stimulus in U.S. history.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "survivors": [
+        {
+          "id": "19a825fd-4c2d-4e0d-af58-508bf9b62fa2",
+          "memory": "User stated that Trump reacted slowly to the COVID-19 pandemic by minimizing the threat, ignoring or contradicting recommendations from health officials, and promoting false information about unproven treatments.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "bc684c96-279f-4355-bf08-6e9cb0168ed6",
+              "memory_id": "19a825fd-4c2d-4e0d-af58-508bf9b62fa2",
+              "old_memory": null,
+              "new_memory": "User stated that Trump reacted slowly to the COVID-19 pandemic by minimizing the threat, ignoring or contradicting recommendations from health officials, and promoting false information about unproven treatments.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:48:04.846939+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "f31015ca-711c-4132-9562-f2f230ca9882",
+          "memory": "Under Trump's administration, the United States recorded more confirmed COVID-19 cases than any other country, and the crisis prompted the largest economic stimulus in U.S. history.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "0c3454b7-0fbd-4568-a94c-c2467f092ef0",
+              "memory_id": "f31015ca-711c-4132-9562-f2f230ca9882",
+              "old_memory": null,
+              "new_memory": "Under Trump's administration, the United States recorded more confirmed COVID-19 cases than any other country, and the crisis prompted the largest economic stimulus in U.S. history.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:48:06.156281+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 2,
+      "outcome": "multiple_kept_2_ambiguous",
+      "elapsed_s": 2.51
+    },
+    {
+      "id": "tension-03",
+      "kind": "tension",
+      "article": "Donald Trump",
+      "num": 56,
+      "topic": "Russian bounties wording",
+      "add_positionA_result": {
+        "results": [
+          {
+            "id": "fc75f336-4cf5-45c9-bdee-d681c59fa9d0",
+            "memory": "User mentioned that Trump never confronted Putin over Russia's alleged bounties for killing American soldiers in Afghanistan.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_positionB_result": {
+        "results": [
+          {
+            "id": "f5cf3e5a-336e-4be3-9dbd-8d72dab407f0",
+            "memory": "User mentioned that Trump did not confront Putin over Russia's alleged bounties on American soldiers in Afghanistan, which were later reported by the Biden administration to be held with only low-to-moderate confidence.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "survivors": [
+        {
+          "id": "f5cf3e5a-336e-4be3-9dbd-8d72dab407f0",
+          "memory": "User mentioned that Trump did not confront Putin over Russia's alleged bounties on American soldiers in Afghanistan, which were later reported by the Biden administration to be held with only low-to-moderate confidence.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "f7c59ca8-f807-4b88-9b0e-f5eff84c4e78",
+              "memory_id": "f5cf3e5a-336e-4be3-9dbd-8d72dab407f0",
+              "old_memory": null,
+              "new_memory": "User mentioned that Trump did not confront Putin over Russia's alleged bounties on American soldiers in Afghanistan, which were later reported by the Biden administration to be held with only low-to-moderate confidence.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:48:08.925188+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "fc75f336-4cf5-45c9-bdee-d681c59fa9d0",
+          "memory": "User mentioned that Trump never confronted Putin over Russia's alleged bounties for killing American soldiers in Afghanistan.",
+          "classification": "stale",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "4a0edc26-3806-40d9-965c-3826dd3194e4",
+              "memory_id": "fc75f336-4cf5-45c9-bdee-d681c59fa9d0",
+              "old_memory": null,
+              "new_memory": "User mentioned that Trump never confronted Putin over Russia's alleged bounties for killing American soldiers in Afghanistan.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:48:07.609830+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 2,
+      "outcome": "multiple_kept_2_ambiguous",
+      "elapsed_s": 2.7
+    },
+    {
+      "id": "tension-04",
+      "kind": "tension",
+      "article": "Donald Trump",
+      "num": 65,
+      "topic": "Abraham Accords framing",
+      "add_positionA_result": {
+        "results": [
+          {
+            "id": "96d3ef32-7893-498f-b633-9bf9e71fb432",
+            "memory": "The Abraham Accords were a significant diplomatic achievement of the Trump administration, under which Israel normalized relations with the UAE, Bahrain, Morocco, and Sudan.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_positionB_result": {
+        "results": [
+          {
+            "id": "c44643c6-b1fc-4d86-8ebc-c9f915ac4a3a",
+            "memory": "User believes the Abraham Accords were largely ceremonial agreements between states already at de facto peace, with limited personal involvement from Trump, and suggests they are better covered in dedicated foreign-policy articles.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "survivors": [
+        {
+          "id": "96d3ef32-7893-498f-b633-9bf9e71fb432",
+          "memory": "The Abraham Accords were a significant diplomatic achievement of the Trump administration, under which Israel normalized relations with the UAE, Bahrain, Morocco, and Sudan.",
+          "classification": "stale",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "1f1ae8e2-11a5-41bb-9def-c25e9ea04a60",
+              "memory_id": "96d3ef32-7893-498f-b633-9bf9e71fb432",
+              "old_memory": null,
+              "new_memory": "The Abraham Accords were a significant diplomatic achievement of the Trump administration, under which Israel normalized relations with the UAE, Bahrain, Morocco, and Sudan.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:48:10.840060+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "c44643c6-b1fc-4d86-8ebc-c9f915ac4a3a",
+          "memory": "User believes the Abraham Accords were largely ceremonial agreements between states already at de facto peace, with limited personal involvement from Trump, and suggests they are better covered in dedicated foreign-policy articles.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "f8759511-55b8-4e4e-809d-8b7de032000f",
+              "memory_id": "c44643c6-b1fc-4d86-8ebc-c9f915ac4a3a",
+              "old_memory": null,
+              "new_memory": "User believes the Abraham Accords were largely ceremonial agreements between states already at de facto peace, with limited personal involvement from Trump, and suggests they are better covered in dedicated foreign-policy articles.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:48:12.339593+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 2,
+      "outcome": "multiple_kept_2_ambiguous",
+      "elapsed_s": 3.36
+    },
+    {
+      "id": "tension-05",
+      "kind": "tension",
+      "article": "Joe Biden",
+      "num": 2,
+      "topic": "gaffes subsection inclusion",
+      "add_positionA_result": {
+        "results": [
+          {
+            "id": "27f17a7a-f163-4d0e-ad30-d5981c3a45fa",
+            "memory": "User believes that a dedicated subsection on Joe Biden's gaffes in his biography would give undue weight to the topic.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_positionB_result": {
+        "results": [
+          {
+            "id": "3c751a83-7159-438b-b118-e7da761ed835",
+            "memory": "User believes Joe Biden's biography should include a subsection on his gaffes, as his speech mistakes are extensively covered across the political spectrum and he has referred to himself as a 'gaffe machine'.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "survivors": [
+        {
+          "id": "27f17a7a-f163-4d0e-ad30-d5981c3a45fa",
+          "memory": "User believes that a dedicated subsection on Joe Biden's gaffes in his biography would give undue weight to the topic.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "6a2522b7-def8-401d-be4a-824ceeff8061",
+              "memory_id": "27f17a7a-f163-4d0e-ad30-d5981c3a45fa",
+              "old_memory": null,
+              "new_memory": "User believes that a dedicated subsection on Joe Biden's gaffes in his biography would give undue weight to the topic.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:48:13.871851+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "3c751a83-7159-438b-b118-e7da761ed835",
+          "memory": "User believes Joe Biden's biography should include a subsection on his gaffes, as his speech mistakes are extensively covered across the political spectrum and he has referred to himself as a 'gaffe machine'.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "d52fc2ff-b69f-4cc5-8014-92ddd9756268",
+              "memory_id": "3c751a83-7159-438b-b118-e7da761ed835",
+              "old_memory": null,
+              "new_memory": "User believes Joe Biden's biography should include a subsection on his gaffes, as his speech mistakes are extensively covered across the political spectrum and he has referred to himself as a 'gaffe machine'.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:48:15.118104+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 2,
+      "outcome": "multiple_kept_2_ambiguous",
+      "elapsed_s": 2.7
+    },
+    {
+      "id": "tension-06",
+      "kind": "tension",
+      "article": "COVID-19 pandemic",
+      "num": 7,
+      "topic": "lead infobox map prominence",
+      "add_positionA_result": {
+        "results": [
+          {
+            "id": "7b9ad703-5145-469b-b942-6f69497c825d",
+            "memory": "User prefers the confirmed-cases-per-capita map to be featured most prominently in the lead infobox, with the deaths-per-capita map as secondary.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "add_positionB_result": {
+        "results": [
+          {
+            "id": "ecdad1a0-3411-402e-88f6-90b6f73167f8",
+            "memory": "User prefers the deaths-per-capita map to be featured most prominently in the lead infobox, as they consider deaths the most significant measure of the pandemic's impact.",
+            "event": "ADD"
+          }
+        ]
+      },
+      "survivors": [
+        {
+          "id": "7b9ad703-5145-469b-b942-6f69497c825d",
+          "memory": "User prefers the confirmed-cases-per-capita map to be featured most prominently in the lead infobox, with the deaths-per-capita map as secondary.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "37b2b653-02d4-48b4-b984-901d78a57f6a",
+              "memory_id": "7b9ad703-5145-469b-b942-6f69497c825d",
+              "old_memory": null,
+              "new_memory": "User prefers the confirmed-cases-per-capita map to be featured most prominently in the lead infobox, with the deaths-per-capita map as secondary.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:48:16.362521+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        },
+        {
+          "id": "ecdad1a0-3411-402e-88f6-90b6f73167f8",
+          "memory": "User prefers the deaths-per-capita map to be featured most prominently in the lead infobox, as they consider deaths the most significant measure of the pandemic's impact.",
+          "classification": "other",
+          "history_events": [
+            "ADD"
+          ],
+          "history_raw": [
+            {
+              "id": "8c8e6517-77f7-4f8d-9813-9e68828d6541",
+              "memory_id": "ecdad1a0-3411-402e-88f6-90b6f73167f8",
+              "old_memory": null,
+              "new_memory": "User prefers the deaths-per-capita map to be featured most prominently in the lead infobox, as they consider deaths the most significant measure of the pandemic's impact.",
+              "event": "ADD",
+              "created_at": "2026-07-02T03:48:17.574635+00:00",
+              "updated_at": null,
+              "is_deleted": false,
+              "actor_id": null,
+              "role": null
+            }
+          ]
+        }
+      ],
+      "n_survivors": 2,
+      "outcome": "multiple_kept_2_ambiguous",
+      "elapsed_s": 2.39
+    }
+  ]
+}
