@@ -548,7 +548,9 @@ per-collection `read` / `write` permissions plus two verdict grants: `promote`
 (draft → canonical; the only grant that can set `canonical` on a new or
 non-canonical document, through `vault_promote`, `vault_write`, `vault_merge`,
 or a ratified write/merge — under ratify it is the ratifier's grant that
-counts) and `ratify` (§11.6 — approve/reject staged actions and
+counts; it is equally required to move a document out of `canonical`, through
+`vault_deprecate`, `vault_supersede`, `vault_merge`, a `vault_write` status
+change, `vault_unsupersede`, or their ratified forms) and `ratify` (§11.6 — approve/reject staged actions and
 contest derives_from edges; the curation-verdict tier). The server is started
 with `--user` and `--role`. There is no user-management system to administer:
 the policy lives in one file and the identity lives in one flag.
@@ -1229,8 +1231,8 @@ A **write** (`vault_write`, `vault_patch`, `vault_append`, `vault_promote`,
 `vault_set_confidence`):
 
 1. The server receives the tool call.
-2. **Layer 2** checks the role's `write` permission (and `promote` for
-   promotions).
+2. **Layer 2** checks the role's `write` permission (and `promote` for any
+   transition into or out of `canonical`).
 3. **Layer 3** acquires the file's write lock. If another holder owns it, the
    call fails cleanly here.
 4. On an update, the existing document's frontmatter is merged under the payload

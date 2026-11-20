@@ -392,7 +392,9 @@ describe("canonical status requires the promote grant", () => {
   });
 
   it("vault_merge with a draft result stays open to a role without promote", async () => {
-    await seedCanonical(vault, "pricing/src-a.md", "Src A");
+    // Draft sources: merging a CANONICAL source away retires it, which needs
+    // promote (w3wy — see write-canonical-retire.test.ts).
+    await seedDraft(vault, "pricing/src-a.md", "Src A");
     await seedDraft(vault, "pricing/src-b.md", "Src B");
     const r = await tool("vault_merge")(
       vault,

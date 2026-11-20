@@ -224,10 +224,12 @@ describe("dependents advisory (vault_deprecate) — T04 secret-middle", () => {
     expect(priv.value.dependents?.hidden_downstream).toBe("none");
 
     const vault = await seed(MIDDLE);
+    // E is canonical, and retiring a canonical doc needs promote (w3wy); the
+    // read restriction is what this test is about.
     const res = await vaultDeprecate(
       vault,
       { path: MIDDLE.E, reason: "retracted", agent: "agent:reader" },
-      RESTRICTED,
+      { ...RESTRICTED, role: { ...RESTRICTED.role, promote: true } as AccessContext["role"] },
     );
     expect(res.ok).toBe(true);
     if (!res.ok) return;

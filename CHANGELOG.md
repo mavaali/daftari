@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Retiring a canonical document now needs the `promote` grant** — `vault_deprecate` and `vault_supersede` checked only collection `write`, while `vault_unsupersede` (restoring a retired document) needed `promote`. A writer could retire canonical knowledge it could not restore. Any write whose prior status is `canonical` and whose post-state is not now needs `promote`, mirroring the 3.18.0 rule for entering canonical. That covers `vault_deprecate` and `vault_supersede` of a canonical document, `vault_merge` when either source is canonical (merging it away supersedes it) or when the result gives a canonical target a non-canonical status, and a `vault_write` status change away from `canonical` (to `deprecated`, `superseded`, `archived` or `draft`). Under `vault_ratify` of a staged deprecate, supersede, merge or write, the ratifier's grant counts. The refusal names the grant and the alternatives: stage it with `vault_stage_action` for a ratifier with `promote`, or ask a role with `promote`. Retiring a non-canonical document still needs only `write`, editing a canonical document without changing its status is unchanged, and operator servers (no `--role`) are unchanged. `vault_set_tier` and `vault_set_confidence` do not change status and are not affected. **Upgrade note:** roles with `write` but no `promote` — for example the `analyst` role in docs/deployment.md, agent or curation-loop roles, and `ratify`-only reviewer roles — are now refused when they deprecate, supersede or merge away canonical documents, directly or by ratifying a staged action. Grant `promote` to roles that should retire canonical knowledge, or route those changes through `vault_stage_action` to a ratifier that holds it. Roles with `promote` (the `curator` and `admin` examples) are unaffected.
+
 ## [3.19.1] - 2026-11-18
 
 ### Security

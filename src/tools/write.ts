@@ -797,20 +797,38 @@ export function requireWriteAccess(
 // counts. Editing an already-canonical doc without changing its status is not
 // a transition and stays open to writers. No access context (operator) passes.
 // Under vault_ratify, `access` is the ratifier's, so the ratifier needs it.
+//
+// The rule is symmetric (bead w3wy): moving a document OUT of canonical —
+// vault_deprecate, vault_supersede, a vault_merge that supersedes a canonical
+// source or rewrites a canonical target's status, or a vault_write status
+// change — withdraws the vault's vouching and needs the same grant, mirroring
+// vault_unsupersede. Retiring a non-canonical document needs only `write`.
 function requireCanonicalAuthority(
   access: AccessContext | undefined,
   oldStatus: unknown,
   newStatus: unknown,
   tool: string,
 ): Result<void, Error> {
-  if (!access || newStatus !== "canonical" || oldStatus === "canonical") return ok(undefined);
-  if (canPromote(access.role)) return ok(undefined);
-  return err(
-    new Error(
-      `access denied: role '${access.roleName}' cannot promote documents — ` +
-        `${tool} cannot set status 'canonical'; write it as draft and use vault_promote`,
-    ),
-  );
+  if (!access || canPromote(access.role)) return ok(undefined);
+  if (newStatus === "canonical" && oldStatus !== "canonical") {
+    return err(
+      new Error(
+        `access denied: role '${access.roleName}' cannot promote documents — ` +
+          `${tool} cannot set status 'canonical'; write it as draft and use vault_promote`,
+      ),
+    );
+  }
+  if (oldStatus === "canonical" && newStatus !== "canonical") {
+    return err(
+      new Error(
+        `access denied: role '${access.roleName}' cannot retire canonical documents — ` +
+          `${tool} would move a canonical document to '${String(newStatus ?? "draft")}', ` +
+          `which needs the 'promote' grant. Stage it with vault_stage_action for a ` +
+          `ratifier with promote, or ask a role with promote to apply it`,
+      ),
+    );
+  }
+  return ok(undefined);
 }
 
 // Git history is the attribution layer, and the caller-supplied `agent`
@@ -2363,6 +2381,13 @@ export async function vaultDeprecate(
     const oldFrontmatter = target.value.parsed.frontmatter;
     const rbac = requireWriteAccess(access, collectionOf(path.value, oldFrontmatter));
     if (!rbac.ok) return rbac;
+    const retireGate = requireCanonicalAuthority(
+      access,
+      oldFrontmatter.status,
+      "deprecated",
+      "vault_deprecate",
+    );
+    if (!retireGate.ok) return retireGate;
 
     // Same predecessor-only handoff as vault_supersede: this writes exactly
     // the document being deprecated, which it already locks and commits.
@@ -2685,6 +2710,13 @@ export async function vaultSupersede(
   const oldFrontmatter = parsed.value.frontmatter;
   const rbac = requireWriteAccess(access, collectionOf(oldPath.value, oldFrontmatter));
   if (!rbac.ok) return rbac;
+  const retireGate = requireCanonicalAuthority(
+    access,
+    oldFrontmatter.status,
+    "superseded",
+    "vault_supersede",
+  );
+  if (!retireGate.ok) return retireGate;
 
   // Valid-time handoff, opt-in. Predecessor only — see the boundary helpers.
   let validUntil: string | null = null;
@@ -3067,6 +3099,8 @@ export async function vaultMerge(
   // canonical — whether the status comes from an override or is inherited from
   // path_a into a new target. Merging into an already-canonical target is
   // allowed, matching vault_write: a writer may already edit canonical content.
+  // The same gate refuses a result that moves a canonical target OUT of
+  // canonical; superseded sources are gated in the write-set loop below.
   const canonicalGate = requireCanonicalAuthority(
     access,
     targetOldFrontmatter?.status ?? null,
@@ -3211,6 +3245,15 @@ export async function vaultMerge(
     // it. A symlink alias has a distinct absPath, so an absPath compare would
     // miss it and clobber the merged body with the superseded write (#127/#128).
     if (source.rel === resolvedTarget.value.relPath) continue;
+    // Merging a canonical source away retires it (w3wy). Checked before any
+    // file I/O, so a refusal leaves all three documents untouched.
+    const retireGate = requireCanonicalAuthority(
+      access,
+      source.parsed.frontmatter.status,
+      "superseded",
+      "vault_merge",
+    );
+    if (!retireGate.ok) return retireGate;
     // Valid-time handoff on BOTH sources. A conflict on either one refuses the
     // whole merge: a merge is already all-or-nothing, and a partial validity
     // write would leave the vault in a state no single call could produce.
@@ -4087,7 +4130,8 @@ export const writeTools: ToolDefinition[] = [
     annotations: { destructiveHint: true },
     description:
       "Mark a document deprecated. A reason is required; optionally record " +
-      "the document that supersedes it. Auto-commits." +
+      "the document that supersedes it. Deprecating a canonical document " +
+      "requires the promote grant. Auto-commits." +
       staleRetryNote +
       shadowNote,
     inputSchema: {
@@ -4213,7 +4257,8 @@ export const writeTools: ToolDefinition[] = [
     annotations: { destructiveHint: true },
     description:
       "Mark a document superseded by a named successor. Sets status=superseded " +
-      "and superseded_by; the successor must already exist. Refuses a write " +
+      "and superseded_by; the successor must already exist. Superseding a " +
+      "canonical document requires the promote grant. Refuses a write " +
       "that would close a superseded_by loop; a successor that is itself " +
       "superseded or deprecated returns a successor_warning. Distinct from " +
       "vault_deprecate (which sets status=deprecated with an optional " +
@@ -4314,7 +4359,8 @@ export const writeTools: ToolDefinition[] = [
       "point at it, all in one commit. The merged body is supplied by the caller " +
       "— vault_merge does not synthesize prose. target_path may equal path_a (to " +
       "fold B into A) or be a new path. The target's frontmatter inherits " +
-      "path_a's (provenance becomes 'synthesized') unless overridden. Auto-commits." +
+      "path_a's (provenance becomes 'synthesized') unless overridden. Merging " +
+      "a canonical source away requires the promote grant. Auto-commits." +
       shadowNote,
     inputSchema: {
       type: "object",
