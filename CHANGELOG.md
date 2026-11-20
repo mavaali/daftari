@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Run and trace journals are gitignored** — `runs.jsonl`, `birth-trace.jsonl`, `revision-trace.jsonl`, `tension-scan-state.json` and `morning-report.md` under `.daftari/` join the governance journals in the vault gitignore template (and its upgrade path). Like the others, they are carried by a Daftari backup, not Git. Already-tracked files stay tracked until `git rm --cached`.
+- **The MCPB no longer ships local caches or workspace packages** — `.mcpbignore` now excludes `packages/`, `examples/` and any `.cache/` directory. Packing in a tree where the test suite had run shipped the ~86 MB model cache that `@huggingface/transformers` downloads, and a locally installed `packages/router/node_modules` would have shipped dev tooling.
+
+
 ## [3.19.1] - 2026-11-18
 
 ### Security
