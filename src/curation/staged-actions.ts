@@ -558,9 +558,10 @@ function chainDecision<T>(key: string, fn: () => Promise<T>): Promise<T> {
 // the first finishes and re-reads the status itself. Across processes, the
 // decider holds a locks.db lease on stagedActionLockKey(id); a lease already
 // held by another process is refused, never waited on, so two processes can
-// never interleave check and decision. The lease has the usual 60s TTL, so a
-// crashed decider frees the action within a minute; whatever it left half-done
-// is visible as an `applying` status.
+// never interleave check and decision. The lease has the usual 60s TTL, and a
+// crashed decider's lease on this host is purged as soon as its pid is dead
+// (54pq, locks.ts); whatever it left half-done is visible as an `applying`
+// status.
 export function withStagedActionDecision<T>(
   vaultRoot: string,
   id: string,

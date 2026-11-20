@@ -5,12 +5,14 @@
 // findings: an all-chunks-failed run must exit non-zero and must not poison
 // the source's distill state for the next run (beads 4v1q, b4m3).
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { type ChildProcess, spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LlmClient } from "../../src/eval/llm.js";
 import { err, ok } from "../../src/frontmatter/types.js";
+import { holderMarkerPath, hostId, hostMacs, readLockfile } from "../../src/lifecycle/lock.js";
 
 // The fake client every runDistill call in this file gets. Each test sets
 // `completeJson` to the behavior it needs.
@@ -207,5 +209,88 @@ describe("distill --propose — claim cap scales with source size", () => {
     const summary = out.join("");
     expect(summary).toMatch(/claims:\s+50\b/);
     expect(summary).toMatch(/truncated:\s+true/);
+  });
+});
+
+// 54pq: --propose stages into the vault, so it takes the vault process lock
+// (mode `cli`) like --review --yes, and refuses with exit 6 — before any LLM
+// call is spent — while a live serve or stdio session holds the vault.
+describe("distill --propose — vault process lock (54pq)", () => {
+  let holder: ChildProcess | null = null;
+  let marker: string | null = null;
+
+  afterEach(() => {
+    holder?.kill("SIGKILL");
+    holder = null;
+    if (marker) rmSync(marker, { force: true });
+    marker = null;
+  });
+
+  // A fresh same-host lease naming a live (inert) pid: a live serve holder.
+  function holdVaultAsServe(): number {
+    holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    const pid = holder.pid;
+    if (pid === undefined) throw new Error("spawn failed");
+    const nonce = `n-${pid}`;
+    marker = holderMarkerPath(nonce) as string;
+    writeFileSync(marker, String(pid));
+    writeFileSync(
+      join(vault, ".daftari", "process.lock"),
+      JSON.stringify({
+        daftari: true,
+        pid,
+        vaultRoot: vault,
+        startedAt: new Date().toISOString(),
+        version: "test",
+        mode: "serve",
+        bind: "127.0.0.1:8787",
+        host: hostId(),
+        macs: hostMacs(),
+        nonce,
+        heartbeatAt: new Date().toISOString(),
+        heartbeatMs: 1_000,
+        leaseMs: 60_000,
+      }),
+    );
+    return pid;
+  }
+
+  it("exits 6 while a live serve holds the vault, stages nothing, and spends no LLM call", async () => {
+    let calls = 0;
+    fake.completeJson = async () => {
+      calls++;
+      return err({ kind: "llm", message: "should not be called", retryable: false });
+    };
+    const pid = holdVaultAsServe();
+    const code = await runDistill(["--vault", vault, "--propose", source]);
+    expect(code).toBe(6);
+    expect(calls).toBe(0);
+    expect(stagedCount()).toBe(0);
+    expect(errOut.join("")).toMatch(/daftari serve/);
+    const still = readLockfile(vault);
+    expect(still.ok && still.value?.pid).toBe(pid);
+  });
+
+  it("holds the lock while it stages and releases it when done", async () => {
+    let lockHeld = false;
+    fake.completeJson = async () => {
+      lockHeld = existsSync(join(vault, ".daftari", "process.lock"));
+      return ok({
+        text: "{}",
+        parsed: { claims: [{ statement: "The project deadline is end of Q2." }] },
+        input_tokens: 1,
+        output_tokens: 1,
+        stop_reason: "end_turn",
+      });
+    };
+    expect(await runDistill(["--vault", vault, "--propose", source])).toBe(0);
+    expect(lockHeld).toBe(true);
+    expect(stagedCount()).toBe(1);
+    expect(existsSync(join(vault, ".daftari", "process.lock"))).toBe(false);
+  });
+
+  it("documents exit code 6 for --propose in --help", async () => {
+    await runDistill(["--help"]);
+    expect(out.join("")).toMatch(/^\s+6\s+.*--propose/m);
   });
 });

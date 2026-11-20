@@ -18,6 +18,7 @@
 // between its write and its decision is refused — never re-applied — until a
 // human resolves it with resolve_interrupted.
 
+import { acquireLock, mintLeaseHolder, openLockDb, releaseLock } from "../access/locks.js";
 import { type AccessContext, canRatify, canRead, canWrite, isProposeOnly } from "../access/rbac.js";
 import {
   getStagedActionById,
@@ -37,11 +38,12 @@ import { validateFrontmatter } from "../frontmatter/schema.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import { loadConfig } from "../utils/config.js";
-import { log as gitLog } from "../utils/git.js";
+import { commit, log as gitLog, isGitRepo, statusPorcelain } from "../utils/git.js";
 import { readRunId } from "../utils/run-id.js";
 import type { ToolDefinition } from "./read.js";
 import { computeRepin } from "./repin.js";
 import {
+  commitIdentity,
   isStaleWriteError,
   vaultDeprecate,
   vaultMerge,
@@ -287,9 +289,129 @@ function interruptedError(action: StagedAction): Error {
       `(applying${since}${by}) — its ${action.actionType} of ${action.targetPath} may or ` +
       `may not have landed, so it is not applied again. Inspect ${action.targetPath} ` +
       `(vault_read, vault_provenance, git log), then call vault_ratify with ` +
-      `resolve_interrupted: "landed" (records it ratified, applies nothing) or ` +
+      `resolve_interrupted: "landed" (records it ratified and commits the write if it ` +
+      `never reached git; applies nothing again) or ` +
       `"not-landed" (returns it to pending to approve or reject again).`,
   );
+}
+
+// The vault-relative paths an action's dispatch writes: the target, plus a
+// merge's two sources (vault_merge rewrites them to point at the target).
+function actionWritePaths(action: StagedAction): string[] {
+  const diff =
+    action.proposedDiff && typeof action.proposedDiff === "object"
+      ? (action.proposedDiff as Record<string, unknown>)
+      : {};
+  const paths = [action.targetPath];
+  if (action.actionType === "merge" && Array.isArray(diff.merge_from)) {
+    for (const p of diff.merge_from) if (typeof p === "string") paths.push(p);
+  }
+  return paths;
+}
+
+// resolve_interrupted: "landed" (54pq). A crash can fall after the dispatched
+// write but before its git commit, leaving the file on disk and uncommitted;
+// recording that action ratified without committing would leave the landed
+// content out of history. So, under the action's decision lease and the
+// written paths' file leases:
+//   - the target must exist on disk, and for an action that carries the
+//     content it writes (write, merge) its body must match that payload —
+//     otherwise "landed" is refused and the human is pointed at "not-landed";
+//   - every written path that differs from HEAD (or is untracked) is
+//     committed through the normal commit path, authored as the approver
+//     whose interrupted write it was.
+// Returns the commit's short hash, or null when there was nothing to commit
+// (already in HEAD, or the vault sets auto_commit: false).
+async function settleLandedWrite(
+  vaultRoot: string,
+  action: StagedAction,
+  resolver: string,
+): Promise<Result<string | null, Error>> {
+  const refuse = (why: string): Error =>
+    new Error(
+      `vault_ratify: cannot resolve ${action.id} as "landed" — ${why}. If its ` +
+        `${action.actionType} did not land, resolve it with resolve_interrupted: "not-landed".`,
+    );
+  const absPaths = new Map<string, string>(); // relPath → absPath, target first
+  for (const p of actionWritePaths(action)) {
+    const resolved = resolveVaultPath(vaultRoot, p);
+    if (!resolved.ok) return err(refuse(`cannot resolve ${p}: ${resolved.error.message}`));
+    absPaths.set(resolved.value.relPath, resolved.value.absPath);
+  }
+  const paths = [...absPaths.keys()];
+  const target = paths[0] as string;
+
+  const opened = openLockDb(vaultRoot);
+  if (!opened.ok) return opened;
+  const db = opened.value;
+  const holder = mintLeaseHolder(resolver);
+  const held: string[] = [];
+  try {
+    for (const p of [...paths].sort()) {
+      const lease = acquireLock(db, p, holder);
+      if (!lease.ok) return lease;
+      held.push(p);
+    }
+
+    const onDisk = await readFile(absPaths.get(target) as string);
+    if (!onDisk.ok) return err(refuse(`${target} is not on disk`));
+    const diff =
+      action.proposedDiff && typeof action.proposedDiff === "object"
+        ? (action.proposedDiff as Record<string, unknown>)
+        : {};
+    if (
+      (action.actionType === "write" || action.actionType === "merge") &&
+      typeof diff.body === "string"
+    ) {
+      const parsed = parseDocument(onDisk.value);
+      if (!parsed.ok || parsed.value.content.trim() !== diff.body.trim()) {
+        return err(refuse(`${target} on disk differs from the action's proposed body`));
+      }
+    }
+
+    const config = loadConfig(vaultRoot);
+    if (!config.ok) return config;
+    if (!config.value.autoCommit) return ok(null);
+
+    // Only paths still on disk: a missing merge source is not this action's
+    // doing, and committing its deletion would put it in this action's name.
+    const present: string[] = [];
+    for (const p of paths) if ((await readFile(absPaths.get(p) as string)).ok) present.push(p);
+    let uncommitted = present;
+    if (await isGitRepo(vaultRoot)) {
+      uncommitted = [];
+      for (const p of present) {
+        const st = await statusPorcelain(vaultRoot, [p]);
+        if (!st.ok) return st;
+        if (st.value.length > 0) uncommitted.push(p);
+      }
+    }
+    if (uncommitted.length === 0) return ok(null);
+
+    const agent = action.ratifiedBy ?? resolver;
+    const identity = commitIdentity(agent, action.decidedByPrincipal ?? undefined);
+    const committed = await commit(
+      vaultRoot,
+      uncommitted,
+      `vault_ratify: ${action.actionType} ${target} landed (${action.id}, interrupted ` +
+        `approval resolved by ${resolver}) by ${agent}` +
+        identity.trailer,
+      identity.author,
+      { gitDir: config.value.gitDir },
+    );
+    if (!committed.ok) {
+      return err(
+        new Error(
+          `vault_ratify: ${action.id} could not be resolved as "landed" — committing ` +
+            `${uncommitted.join(", ")} failed (${committed.error.message}); it stays 'applying'`,
+        ),
+      );
+    }
+    return ok(committed.value.hash);
+  } finally {
+    for (const p of held) releaseLock(db, p, holder);
+    db.close();
+  }
 }
 
 function notPendingError(action: StagedAction): Error {
@@ -506,6 +628,15 @@ async function decideLocked(
         ),
       );
     }
+    // 54pq: "landed" is a claim about the working tree, so check it. The
+    // target must be on disk (and match the payload, for actions that carry
+    // one); a write that landed but never reached git is committed now.
+    let landedCommit: string | null = null;
+    if (resolution === "landed") {
+      const settledWrite = await settleLandedWrite(vaultRoot, action, principal.value);
+      if (!settledWrite.ok) return settledWrite;
+      landedCommit = settledWrite.value;
+    }
     const settled = await recordDecision(
       vaultRoot,
       id.value,
@@ -518,6 +649,7 @@ async function decideLocked(
       decision: "resolve",
       applied: false,
       resolved_interrupted: resolution,
+      ...(landedCommit ? { commit: landedCommit } : {}),
     });
   }
 
@@ -1160,8 +1292,10 @@ export const stagedActionTools: ToolDefinition[] = [
           description:
             "Settle an approval that was interrupted between its write and its " +
             "decision (status 'applying'), instead of passing a decision. Inspect " +
-            "the target first: 'landed' records the action ratified, 'not-landed' " +
-            "returns it to pending. Neither applies anything.",
+            "the target first: 'landed' records the action ratified (refused when " +
+            "the target is missing or differs from the proposed body; a landed but " +
+            "uncommitted write is committed), 'not-landed' returns it to pending. " +
+            "Neither re-applies the action.",
         },
       },
       required: ["id", "principal"],

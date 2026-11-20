@@ -277,8 +277,15 @@ export async function commit(
 // --- attestation plumbing (#298) -------------------------------------------
 
 // `git status --porcelain` lines, for the attest clean-tree gate. Read-only.
-export async function statusPorcelain(vaultRoot: string): Promise<Result<string[], Error>> {
-  const out = await git(vaultRoot, ["status", "--porcelain"]);
+// `paths`, when given, scopes the status to those vault-relative paths
+// (literal pathspecs, untracked files listed individually).
+export async function statusPorcelain(
+  vaultRoot: string,
+  paths?: string[],
+): Promise<Result<string[], Error>> {
+  const scope =
+    paths && paths.length > 0 ? ["--untracked-files=all", "--", ...literalPathspecs(paths)] : [];
+  const out = await git(vaultRoot, ["status", "--porcelain", ...scope]);
   if (!out.ok) return out;
   return ok(
     out.value

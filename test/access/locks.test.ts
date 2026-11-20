@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   acquireLock,
@@ -5,6 +6,7 @@ import {
   isLocked,
   LOCK_TTL_MS,
   type LockDb,
+  leaseHostTag,
   mintLeaseHolder,
   openLockDb,
   releaseLock,
@@ -127,6 +129,52 @@ describe("locks", () => {
       expect(second.ok).toBe(false);
       if (second.ok) return;
       expect(second.error.message).toContain(first.value.holder);
+    });
+  });
+
+  // 54pq: a decider that crashed mid-lease used to block every retry for the
+  // full 60s TTL. A lease whose holder ran on this host under a pid that is
+  // now dead is purged at once; anything else waits out the TTL as before.
+  describe("dead same-host holder (54pq)", () => {
+    // A pid that certainly existed on this host and has exited.
+    function deadPid(): number {
+      const child = spawnSync(process.execPath, ["-e", ""]);
+      if (child.pid === undefined) throw new Error("spawn failed");
+      return child.pid;
+    }
+
+    it("records this host's tag in every minted holder", () => {
+      expect(mintLeaseHolder(ALICE).startsWith(`${process.pid}@${leaseHostTag()}:`)).toBe(true);
+    });
+
+    it("purges a lease held by a dead pid on this host immediately, well inside the TTL", () => {
+      const crashed = `${deadPid()}@${leaseHostTag()}:00000000-dead:${ALICE}`;
+      expect(acquireLock(db, PATH, crashed, 1_000).ok).toBe(true);
+      const retry = acquireLock(db, PATH, mintLeaseHolder(BOB), 1_100);
+      expect(retry.ok).toBe(true);
+      if (!retry.ok) return;
+      expect(retry.value.holder.endsWith(`:${BOB}`)).toBe(true);
+    });
+
+    it("never purges a dead pid recorded by another host — its pid means nothing here", () => {
+      const foreign = `${deadPid()}@another-host-tag:00000000-dead:${ALICE}`;
+      expect(acquireLock(db, PATH, foreign, 1_000).ok).toBe(true);
+      const retry = acquireLock(db, PATH, mintLeaseHolder(BOB), 1_100);
+      expect(retry.ok).toBe(false);
+      // ...until the TTL lapses, as before.
+      expect(acquireLock(db, PATH, mintLeaseHolder(BOB), 1_000 + LOCK_TTL_MS).ok).toBe(true);
+    });
+
+    it("never purges a holder that records no host (older format or a raw agent string)", () => {
+      const legacy = `${deadPid()}:00000000-dead:${ALICE}`;
+      expect(acquireLock(db, PATH, legacy, 1_000).ok).toBe(true);
+      expect(acquireLock(db, PATH, mintLeaseHolder(BOB), 1_100).ok).toBe(false);
+    });
+
+    it("keeps a live same-host holder's lease", () => {
+      const live = mintLeaseHolder(ALICE); // this process: alive
+      expect(acquireLock(db, PATH, live, 1_000).ok).toBe(true);
+      expect(acquireLock(db, PATH, mintLeaseHolder(BOB), 1_100).ok).toBe(false);
     });
   });
 });
