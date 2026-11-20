@@ -89,9 +89,10 @@ Exit codes:
   4   Partial failure (some claims failed to stage, or some proposals failed to ratify).
   5   Extraction failed: every chunk errored, so nothing was staged and the
       source's distill state was left unchanged (re-run once the cause is fixed).
-  6   Vault busy: --review --yes/--auto-safe found another daftari holding the
-      vault (a running serve or stdio session) and ratified nothing. Approve
-      through that instance's vault_ratify, or stop it and re-run.
+  6   Vault busy: --propose or --review --yes/--auto-safe found another daftari
+      holding the vault (a running serve or stdio session) and staged or
+      ratified nothing. Stop it and re-run (for --review, or approve through
+      that instance's vault_ratify).
 `;
 
 /**
@@ -565,52 +566,139 @@ export async function runDistill(argv: string[]): Promise<number> {
 
   const budgetedClient = withCallBudget(clientRes.value.client, config.maxLlmCalls);
 
-  const runId = makeRunId();
-  const scope = senderFlag !== undefined ? `sender:${senderFlag}` : undefined;
-
-  // kphd: an unchanged source whose last run left failed chunks re-extracts
-  // only those chunks (anchors are content-derived, so they match).
-  const retryAnchors = new Set(pendingChunkRetry(vaultRoot, { sourceId, sourceContent, scope }));
-  const extractChunks =
-    retryAnchors.size > 0 ? chunks.filter((c) => retryAnchors.has(c.anchor)) : chunks;
-  if (retryAnchors.size > 0) {
-    process.stderr.write(
-      `daftari distill: re-extracting ${extractChunks.length} previously failed chunk(s)\n`,
-    );
-  }
-
-  process.stderr.write(
-    `daftari distill: extracting claims from ${sourceId} ` +
-      `(${extractChunks.length} chunks, max ${config.maxLlmCalls} LLM calls)...\n`,
-  );
-
-  const outcome = await extractClaims(extractChunks, budgetedClient, {
-    model: config.model,
-    maxClaims: runConfig.maxClaims,
-    inCallInputCap: config.inCallInputCap,
+  // 54pq: staging writes the vault, so --propose holds the vault process lock
+  // (mode `cli`) exactly as --review --yes does, and refuses with exit 6 while
+  // a live serve or stdio session holds the vault. Taken before extraction so
+  // a busy vault costs no LLM calls.
+  let leaseLost = false;
+  const locked = await acquireLock(vaultRoot, DAFTARI_VERSION, {
+    mode: "cli",
+    onLeaseLost: () => {
+      leaseLost = true;
+    },
   });
-
-  if (outcome.chunkErrors.length > 0) {
-    process.stderr.write(`daftari distill: ${outcome.chunkErrors.length} chunk error(s):\n`);
-    for (const ce of outcome.chunkErrors) {
-      process.stderr.write(`  [${ce.anchor}] ${ce.error}\n`);
-    }
+  if (!locked.ok) {
+    process.stderr.write(
+      `daftari distill: cannot propose — ${locked.error.message} Nothing was staged.\n`,
+    );
+    return 6;
+  }
+  try {
+    return await proposeLocked(() => leaseLost);
+  } finally {
+    releaseLock(vaultRoot);
   }
 
-  // Every attempted chunk errored (e.g. the model rejects a request parameter):
-  // there is nothing to stage, and calling distillUpsert would record this
-  // source as distilled. Persist the receipt (the calls were still spent) and
-  // fail loudly instead of printing a "complete" summary with claims: 0.
-  // A retry is exempt: the source's hash is already recorded from a partial
-  // run, so a retry that fails again is still a partial run (exit 0) and its
-  // chunks stay pending.
-  const attemptedChunks = outcome.llmCalls - (outcome.budget_exhausted ? 1 : 0);
-  if (
-    retryAnchors.size === 0 &&
-    attemptedChunks > 0 &&
-    outcome.chunkErrors.length === attemptedChunks
-  ) {
-    const failedReceipt = buildReceipt({
+  // The --propose pipeline proper, run while holding the vault lock.
+  async function proposeLocked(leaseLost: () => boolean): Promise<number> {
+    const runId = makeRunId();
+    const scope = senderFlag !== undefined ? `sender:${senderFlag}` : undefined;
+
+    // kphd: an unchanged source whose last run left failed chunks re-extracts
+    // only those chunks (anchors are content-derived, so they match).
+    const retryAnchors = new Set(pendingChunkRetry(vaultRoot, { sourceId, sourceContent, scope }));
+    const extractChunks =
+      retryAnchors.size > 0 ? chunks.filter((c) => retryAnchors.has(c.anchor)) : chunks;
+    if (retryAnchors.size > 0) {
+      process.stderr.write(
+        `daftari distill: re-extracting ${extractChunks.length} previously failed chunk(s)\n`,
+      );
+    }
+
+    process.stderr.write(
+      `daftari distill: extracting claims from ${sourceId} ` +
+        `(${extractChunks.length} chunks, max ${config.maxLlmCalls} LLM calls)...\n`,
+    );
+
+    const outcome = await extractClaims(extractChunks, budgetedClient, {
+      model: config.model,
+      maxClaims: runConfig.maxClaims,
+      inCallInputCap: config.inCallInputCap,
+    });
+
+    if (outcome.chunkErrors.length > 0) {
+      process.stderr.write(`daftari distill: ${outcome.chunkErrors.length} chunk error(s):\n`);
+      for (const ce of outcome.chunkErrors) {
+        process.stderr.write(`  [${ce.anchor}] ${ce.error}\n`);
+      }
+    }
+
+    // Every attempted chunk errored (e.g. the model rejects a request parameter):
+    // there is nothing to stage, and calling distillUpsert would record this
+    // source as distilled. Persist the receipt (the calls were still spent) and
+    // fail loudly instead of printing a "complete" summary with claims: 0.
+    // A retry is exempt: the source's hash is already recorded from a partial
+    // run, so a retry that fails again is still a partial run (exit 0) and its
+    // chunks stay pending.
+    const attemptedChunks = outcome.llmCalls - (outcome.budget_exhausted ? 1 : 0);
+    if (
+      retryAnchors.size === 0 &&
+      attemptedChunks > 0 &&
+      outcome.chunkErrors.length === attemptedChunks
+    ) {
+      const failedReceipt = buildReceipt({
+        outcome,
+        config: runConfig,
+        provider: transport,
+        zdr,
+        sourceId,
+        runId,
+      });
+      const persistedFailed = await appendDistillReceipt(vaultRoot, failedReceipt);
+      if (!persistedFailed.ok) {
+        process.stderr.write(
+          `warning: could not persist distill receipt: ${persistedFailed.error.message}\n`,
+        );
+      }
+      process.stderr.write(
+        `daftari distill: extraction failed — all ${attemptedChunks} chunk(s) failed; ` +
+          `nothing staged, source state unchanged (run-id ${runId})\n`,
+      );
+      return 5;
+    }
+
+    // U8: build the overlap-hinter from the vault's local search index.
+    // No AccessContext on the CLI path (single-user, no RBAC filter needed);
+    // vaultSearch tolerates undefined access — RBAC filter only applies when
+    // access is present.
+    const hinter = makeOverlapHinter(vaultRoot);
+
+    // Another daftari took the vault over during extraction: stage nothing.
+    if (leaseLost()) {
+      process.stderr.write(
+        `daftari distill: lost the vault process lock to another daftari during ` +
+          `extraction; nothing staged (run-id ${runId})\n`,
+      );
+      return 6;
+    }
+
+    // Stage proposals via distillUpsert (idempotent join).
+    const upsertRes = await distillUpsert(vaultRoot, {
+      sourceId,
+      sourceContent,
+      claims: outcome.claims,
+      runId,
+      overlapSearch: hinter,
+      extractionErrors: outcome.chunkErrors.length,
+      failedChunkAnchors: [
+        ...outcome.chunkErrors.map((ce) => ce.anchor),
+        // A retry cut short (call budget, claim cap) keeps the pending chunks it
+        // never reached; extraction walks chunks in order, so they are the tail.
+        ...(retryAnchors.size > 0
+          ? extractChunks.slice(Math.max(attemptedChunks, 0)).map((c) => c.anchor)
+          : []),
+      ],
+      ...(scope !== undefined ? { scope } : {}),
+    });
+
+    if (!upsertRes.ok) {
+      process.stderr.write(`daftari distill: staging error: ${upsertRes.error.message}\n`);
+      return 4;
+    }
+
+    const upsert = upsertRes.value;
+
+    const receipt = buildReceipt({
       outcome,
       config: runConfig,
       provider: transport,
@@ -618,130 +706,78 @@ export async function runDistill(argv: string[]): Promise<number> {
       sourceId,
       runId,
     });
-    const persistedFailed = await appendDistillReceipt(vaultRoot, failedReceipt);
-    if (!persistedFailed.ok) {
+
+    const persisted = await appendDistillReceipt(vaultRoot, receipt);
+    if (!persisted.ok) {
       process.stderr.write(
-        `warning: could not persist distill receipt: ${persistedFailed.error.message}\n`,
+        `warning: could not persist distill receipt: ${persisted.error.message}\n`,
       );
     }
-    process.stderr.write(
-      `daftari distill: extraction failed — all ${attemptedChunks} chunk(s) failed; ` +
-        `nothing staged, source state unchanged (run-id ${runId})\n`,
+
+    // Summary to stdout.
+    process.stdout.write(
+      [
+        `distill --propose complete`,
+        `  run-id:        ${runId}`,
+        `  source-id:     ${sourceId}`,
+        `  model:         ${receipt.model}`,
+        `  LLM calls:     ${receipt.llmCalls}`,
+        `  claims:        ${receipt.claimsProduced}`,
+        `  skipped:       ${upsert.skipped.length}`,
+        `  updated:       ${upsert.updated.length}`,
+        `  created:       ${upsert.created.length}`,
+        `  noop:          ${upsert.noop}`,
+        `  truncated:     ${receipt.truncated}`,
+        `  approx cost:   ~$${receipt.approxCostUSD.toFixed(4)}`,
+        `  state written: ${upsert.stateWritten}`,
+        ``,
+      ].join("\n"),
     );
-    return 5;
+
+    // I4: warn on stateWritten:false — the content-hash was not persisted, so the
+    // next run re-distills this source (a failed write, or a run whose extraction
+    // errored without producing claims).
+    if (!upsert.stateWritten) {
+      process.stderr.write(
+        `daftari distill: warning: source state not recorded` +
+          `${upsert.stateError ? ` (${upsert.stateError})` : ""} — next run will re-distill this source\n`,
+      );
+    }
+
+    // A no-op after a non-empty extraction discards those claims. Never silent:
+    // name the cause and the way out (e.g. a hash recorded by an older build's
+    // failed run, which this build no longer writes).
+    if (upsert.noop && outcome.claims.length > 0) {
+      process.stderr.write(
+        `daftari distill: source ${sourceId} is unchanged since its last recorded distill — ` +
+          `${outcome.claims.length} extracted claim(s) were not staged. To re-stage, remove ` +
+          `sources["${sourceId}"] from .daftari/distill-state.json and re-run.\n`,
+      );
+    }
+
+    const pendingRetry = upsert.pendingRetryAnchors ?? [];
+    if (pendingRetry.length > 0) {
+      process.stderr.write(
+        `daftari distill: ${pendingRetry.length} chunk(s) pending retry on the next run\n`,
+      );
+    }
+
+    if (outcome.budget_exhausted) {
+      process.stderr.write(
+        `daftari distill: LLM call budget exhausted — run is partial (increase --max-llm-calls to continue)\n`,
+      );
+    }
+
+    // Exit 4 when any proposals failed to stage.
+    if (upsert.propose !== null && upsert.propose.errors.length > 0) {
+      process.stderr.write(
+        `daftari distill: ${upsert.propose.errors.length} proposal(s) failed to stage\n`,
+      );
+      return 4;
+    }
+
+    return 0;
   }
-
-  // U8: build the overlap-hinter from the vault's local search index.
-  // No AccessContext on the CLI path (single-user, no RBAC filter needed);
-  // vaultSearch tolerates undefined access — RBAC filter only applies when
-  // access is present.
-  const hinter = makeOverlapHinter(vaultRoot);
-
-  // Stage proposals via distillUpsert (idempotent join).
-  const upsertRes = await distillUpsert(vaultRoot, {
-    sourceId,
-    sourceContent,
-    claims: outcome.claims,
-    runId,
-    overlapSearch: hinter,
-    extractionErrors: outcome.chunkErrors.length,
-    failedChunkAnchors: [
-      ...outcome.chunkErrors.map((ce) => ce.anchor),
-      // A retry cut short (call budget, claim cap) keeps the pending chunks it
-      // never reached; extraction walks chunks in order, so they are the tail.
-      ...(retryAnchors.size > 0
-        ? extractChunks.slice(Math.max(attemptedChunks, 0)).map((c) => c.anchor)
-        : []),
-    ],
-    ...(scope !== undefined ? { scope } : {}),
-  });
-
-  if (!upsertRes.ok) {
-    process.stderr.write(`daftari distill: staging error: ${upsertRes.error.message}\n`);
-    return 4;
-  }
-
-  const upsert = upsertRes.value;
-
-  const receipt = buildReceipt({
-    outcome,
-    config: runConfig,
-    provider: transport,
-    zdr,
-    sourceId,
-    runId,
-  });
-
-  const persisted = await appendDistillReceipt(vaultRoot, receipt);
-  if (!persisted.ok) {
-    process.stderr.write(
-      `warning: could not persist distill receipt: ${persisted.error.message}\n`,
-    );
-  }
-
-  // Summary to stdout.
-  process.stdout.write(
-    [
-      `distill --propose complete`,
-      `  run-id:        ${runId}`,
-      `  source-id:     ${sourceId}`,
-      `  model:         ${receipt.model}`,
-      `  LLM calls:     ${receipt.llmCalls}`,
-      `  claims:        ${receipt.claimsProduced}`,
-      `  skipped:       ${upsert.skipped.length}`,
-      `  updated:       ${upsert.updated.length}`,
-      `  created:       ${upsert.created.length}`,
-      `  noop:          ${upsert.noop}`,
-      `  truncated:     ${receipt.truncated}`,
-      `  approx cost:   ~$${receipt.approxCostUSD.toFixed(4)}`,
-      `  state written: ${upsert.stateWritten}`,
-      ``,
-    ].join("\n"),
-  );
-
-  // I4: warn on stateWritten:false — the content-hash was not persisted, so the
-  // next run re-distills this source (a failed write, or a run whose extraction
-  // errored without producing claims).
-  if (!upsert.stateWritten) {
-    process.stderr.write(
-      `daftari distill: warning: source state not recorded` +
-        `${upsert.stateError ? ` (${upsert.stateError})` : ""} — next run will re-distill this source\n`,
-    );
-  }
-
-  // A no-op after a non-empty extraction discards those claims. Never silent:
-  // name the cause and the way out (e.g. a hash recorded by an older build's
-  // failed run, which this build no longer writes).
-  if (upsert.noop && outcome.claims.length > 0) {
-    process.stderr.write(
-      `daftari distill: source ${sourceId} is unchanged since its last recorded distill — ` +
-        `${outcome.claims.length} extracted claim(s) were not staged. To re-stage, remove ` +
-        `sources["${sourceId}"] from .daftari/distill-state.json and re-run.\n`,
-    );
-  }
-
-  const pendingRetry = upsert.pendingRetryAnchors ?? [];
-  if (pendingRetry.length > 0) {
-    process.stderr.write(
-      `daftari distill: ${pendingRetry.length} chunk(s) pending retry on the next run\n`,
-    );
-  }
-
-  if (outcome.budget_exhausted) {
-    process.stderr.write(
-      `daftari distill: LLM call budget exhausted — run is partial (increase --max-llm-calls to continue)\n`,
-    );
-  }
-
-  // Exit 4 when any proposals failed to stage.
-  if (upsert.propose !== null && upsert.propose.errors.length > 0) {
-    process.stderr.write(
-      `daftari distill: ${upsert.propose.errors.length} proposal(s) failed to stage\n`,
-    );
-    return 4;
-  }
-
-  return 0;
 }
 
 // ---------------------------------------------------------------------------

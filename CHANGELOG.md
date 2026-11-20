@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Interrupted staged-action approvals recover cleanly** (54pq) — three gaps left by 3.18.0's exclusive decisions. `vault_ratify resolve_interrupted: "landed"` recorded the action ratified without committing a file written just before the crash (9 of 30 SIGKILLs left it on disk, uncommitted); it now commits every path the action writes that differs from `HEAD`, authored as the interrupted approver, and refuses "landed" — pointing at `"not-landed"` — when the target is missing or its body differs from a `write`/`merge` payload. A lease left in `.daftari/locks.db` by a crashed decider or writer blocked retries for up to 60s; holders now record a host tag, and a lease whose holder is on this host under a dead pid is purged at once (other hosts and older holders still expire by TTL). `daftari distill --propose` staged without the vault process lock; it now takes it (mode `cli`) before extraction, like `--review --yes`, and exits 6 without spending LLM calls when a serve or stdio session holds the vault.
+
 ## [3.19.1] - 2026-11-18
 
 ### Security

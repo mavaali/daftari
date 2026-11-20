@@ -855,10 +855,11 @@ made to wait, and the sweep skips that action until its next run. Under all of
 that, the log append itself re-checks the collapsed status and refuses to
 record a decision over anything but the status it expects, so the log stays
 single-disposition even for a writer that skipped the lock. `daftari distill
---review --yes` is the one batch writer outside the servers; it ratifies only
-while holding the vault process lock (mode `cli`), refuses with exit 6 when a
-live serve or stdio session holds the vault, and is never SIGTERMed by a stdio
-start.
+--review --yes` and `daftari distill --propose` are the batch writers outside
+the servers; each stages or ratifies only while holding the vault process lock
+(mode `cli`), refuses with exit 6 when a live serve or stdio session holds the
+vault, and is never SIGTERMed by a stdio start. `--propose` takes the lock
+before extraction, so a busy vault costs no LLM calls.
 
 **Interrupted approvals.** An approve appends an `applying` record before it
 dispatches and its terminal `ratified` record after. A dispatch that fails, a
@@ -870,13 +871,27 @@ apply twice), reject refuses it (it could stand over a landed write), the
 expiry sweep leaves it alone, and `vault_lint` lists it first with
 `interrupted: true`. A human inspects the target (`vault_read`,
 `vault_provenance`, `git log`) and calls `vault_ratify` with
-`resolve_interrupted: "landed"` — recorded as ratified, nothing applied — or
-`"not-landed"`, which returns it to `pending` to approve or reject again. Logs
-written before this change have no `applying` records and collapse as before; a
-daftari that predates it reads `applying` as a non-pending status, so it
-neither re-applies nor expires the action. A crash during a decision also
-leaves its lease for up to 60s, during which a retry is refused as "being
-decided by another process".
+`resolve_interrupted: "landed"` — recorded as ratified, nothing re-applied — or
+`"not-landed"`, which returns it to `pending` to approve or reject again.
+"Landed" is checked, not taken on faith. The target must be on disk, and for an
+action that carries the content it writes (`write`, `merge`) its body must
+match the proposed body; otherwise the resolution is refused and points at
+`"not-landed"`. A crash can also fall between the write and its git commit,
+leaving the file on disk but uncommitted; "landed" then commits every path the
+action writes that differs from `HEAD` (pathspec-scoped, so nothing else is
+swept in), authored as the approver whose write it was, under a `vault_ratify:`
+subject naming the action, before recording the decision. Vaults with
+`auto_commit: false` skip that commit. Logs written before this change have no
+`applying` records and collapse as before; a daftari that predates it reads
+`applying` as a non-pending status, so it neither re-applies nor expires the
+action. A crash during a decision leaves its lease behind, but a retry on the
+same host does not wait out the 60s TTL: each lease holder records its pid and
+a host tag (a hash of the process lock's host identity), and `acquireLock`
+purges a lease whose host tag is ours and whose pid is dead
+(`process.kill(pid, 0)` fails with ESRCH). A lease from another host, or one
+written by an older daftari without a host tag, still expires only by TTL —
+until then a retry is refused as "being decided by another process". The same
+rule frees file leases left by a crashed writer.
 
 #### derives_from edges
 

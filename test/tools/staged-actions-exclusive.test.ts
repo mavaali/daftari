@@ -14,10 +14,12 @@
 //     re-applied blindly — it must be resolved explicitly;
 //   - the decision is exclusive across processes too (locks.db lease).
 
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { acquireLock, openLockDb, releaseLock } from "../../src/access/locks.js";
+import { acquireLock, leaseHostTag, openLockDb, releaseLock } from "../../src/access/locks.js";
 import {
   getStagedActionById,
   stagedActionLockKey,
@@ -26,7 +28,7 @@ import {
 } from "../../src/curation/staged-actions.js";
 import { vaultRatify, vaultStageAction } from "../../src/tools/staged-actions.js";
 import { vaultWrite } from "../../src/tools/write.js";
-import { log as gitLog } from "../../src/utils/git.js";
+import { log as gitLog, statusPorcelain } from "../../src/utils/git.js";
 import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 
 const AGENT = "agent:curation-loop";
@@ -196,6 +198,22 @@ describe("vault_ratify — decision exclusivity (8i1l)", () => {
     expect(after.ok).toBe(true);
   }, 60_000);
 
+  it("a decision lease left by a crashed decider on this host does not block the retry (54pq)", async () => {
+    const id = await stageWrite(vault, "pricing/xproc-dead.md");
+    const db = openLockDb(vault);
+    if (!db.ok) throw db.error;
+    const child = spawnSync(process.execPath, ["-e", ""]);
+    const crashed = `${child.pid}@${leaseHostTag()}:00000000-dead:human:crashed`;
+    try {
+      expect(acquireLock(db.value, stagedActionLockKey(id), crashed).ok).toBe(true);
+      const r = await vaultRatify(vault, { id, decision: "approve", principal: HUMAN });
+      expect(r.ok).toBe(true);
+      expect(await commitsFor(vault, "pricing/xproc-dead.md")).toBe(1);
+    } finally {
+      db.value.close();
+    }
+  }, 60_000);
+
   it("the expiry sweep skips an action whose decision is in flight elsewhere", async () => {
     const id = await stageWrite(vault, "pricing/sweep-held.md");
     const db = openLockDb(vault);
@@ -345,6 +363,92 @@ describe("vault_ratify — interrupted approval (8i1l)", () => {
     const approved = await vaultRatify(vault, { id, decision: "approve", principal: HUMAN });
     expect(approved.ok).toBe(true);
     expect(await commitsFor(vault, path)).toBe(1);
+  }, 60_000);
+
+  // 54pq: the crash window between the file write and its git commit. The
+  // applying marker is logged and the file is on disk, but HEAD never saw it.
+  async function interruptedBeforeCommit(path: string, body: string): Promise<string> {
+    const id = await stageWrite(vault, path);
+    appendFileSync(
+      stagedActionsPath(vault),
+      `${JSON.stringify({
+        id,
+        status: "applying",
+        ratified_at: "2026-11-16T00:00:00Z",
+        ratified_by: "human:crashed",
+      })}\n`,
+    );
+    mkdirSync(join(vault, dirname(path)), { recursive: true });
+    const fm = frontmatter(path);
+    writeFileSync(
+      join(vault, path),
+      `---\ntitle: ${String(fm.title)}\ndomain: accumulation\ncollection: pricing\n` +
+        `status: draft\nconfidence: medium\ncreated: 2026-05-01\nupdated: 2026-11-16\n` +
+        `provenance: direct\nsources: []\nsuperseded_by: null\nttl_days: 90\ntags: [spec]\n---\n` +
+        body,
+    );
+    return id;
+  }
+
+  // Not in HEAD: untracked or modified (or no repository yet at all).
+  async function dirty(path: string): Promise<boolean> {
+    const st = await statusPorcelain(vault, [path]);
+    return !st.ok || st.value.length > 0;
+  }
+
+  it("resolve_interrupted: 'landed' commits a written-but-uncommitted file with the approver's attribution", async () => {
+    const path = "pricing/int-uncommitted.md";
+    const id = await interruptedBeforeCommit(path, `# ${path}\n\nBody.\n`);
+    expect(await commitsFor(vault, path)).toBe(0);
+    expect(await dirty(path)).toBe(true);
+
+    const r = await vaultRatify(vault, { id, resolve_interrupted: "landed", principal: HUMAN });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.applied).toBe(false);
+    expect(r.value.commit).toBeTruthy();
+
+    const commits = await gitLog(vault, { path, limit: 5 });
+    expect(commits.ok && commits.value).toHaveLength(1);
+    if (!commits.ok) return;
+    // Authored by the approver whose interrupted write it was, not the resolver.
+    expect(commits.value[0]?.author).toContain("crashed");
+    expect(commits.value[0]?.subject).toMatch(/^vault_ratify: /);
+    expect(commits.value[0]?.subject).toContain(id);
+    expect(await dirty(path)).toBe(false);
+    const state = await getStagedActionById(vault, id);
+    expect(state.ok && state.value?.status).toBe("ratified");
+  }, 60_000);
+
+  it("resolve_interrupted: 'landed' is refused when the target is not on disk", async () => {
+    const path = "pricing/int-missing.md";
+    const id = await stageWrite(vault, path);
+    appendFileSync(
+      stagedActionsPath(vault),
+      `${JSON.stringify({ id, status: "applying", ratified_by: "human:crashed" })}\n`,
+    );
+    const r = await vaultRatify(vault, { id, resolve_interrupted: "landed", principal: HUMAN });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toContain("not-landed");
+    expect(r.error.message).toContain(path);
+    const state = await getStagedActionById(vault, id);
+    expect(state.ok && state.value?.status).toBe("applying");
+  }, 60_000);
+
+  it("resolve_interrupted: 'landed' is refused when the file differs from the action's payload", async () => {
+    const path = "pricing/int-differs.md";
+    const id = await interruptedBeforeCommit(path, "# Someone else's edit\n\nNot the proposal.\n");
+    const r = await vaultRatify(vault, { id, resolve_interrupted: "landed", principal: HUMAN });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toContain("not-landed");
+    expect(r.error.message).toMatch(/differs|does not match/);
+    // Nothing committed, nothing decided.
+    expect(await commitsFor(vault, path)).toBe(0);
+    expect(await dirty(path)).toBe(true);
+    const state = await getStagedActionById(vault, id);
+    expect(state.ok && state.value?.status).toBe("applying");
   }, 60_000);
 
   it("resolve_interrupted is refused on an action that is not interrupted", async () => {
