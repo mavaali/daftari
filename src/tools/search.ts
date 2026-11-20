@@ -7,7 +7,7 @@
 // reindex first, so search works without an explicit setup step.
 
 import { type AccessContext, canRead, readableCollections } from "../access/rbac.js";
-import { currentConsumesEdges } from "../curation/consumes.js";
+import { currentConsumesEdges, unitHasher } from "../curation/consumes.js";
 import {
   compiledUpstreamStaleness,
   loadCompiledStaleContext,
@@ -241,6 +241,8 @@ async function annotateAndLogServedHits(
   const staleCtx = loaded
     ? { consumes: currentConsumesEdges(loaded.consumes), provenance: loaded.provenance }
     : null;
+  const hashOf = unitHasher(vaultRoot);
+  const seesAll = access ? readableCollections(access.role) === undefined : true;
   const entries: Parameters<typeof recordReads>[1] = [];
   for (const hit of hits) {
     let broken: number | undefined;
@@ -250,7 +252,13 @@ async function annotateAndLogServedHits(
       // by who read the doc. Computed from BARE rows (no predicate), mirroring
       // vault_read's split (#416). The predicate-enriched rows below drive only
       // the caller-facing display buckets.
-      const bareRows = compiledUpstreamStaleness(hit.path, staleCtx.consumes, staleCtx.provenance);
+      const bareRows = compiledUpstreamStaleness(
+        hit.path,
+        staleCtx.consumes,
+        staleCtx.provenance,
+        undefined,
+        hashOf,
+      );
       broken = bareRows.filter((r) => r.staleness === "pending-broken").length;
       const isVerifiable = (unit: string) => sourceVerifiable(db, access, unit);
       const rows = compiledUpstreamStaleness(
@@ -258,11 +266,12 @@ async function annotateAndLogServedHits(
         staleCtx.consumes,
         staleCtx.provenance,
         isVerifiable,
+        hashOf,
       );
       // `db` is the caller's already-open index handle — the same one the
       // other RBAC enrichments (resolveCurrentSource, contestedFor) read.
       const { visible, hiddenPending } = access
-        ? splitUpstreamVisibility(rows, (unit) => sourceReadable(db, access, unit))
+        ? splitUpstreamVisibility(rows, (unit) => sourceReadable(db, access, unit), seesAll)
         : { visible: rows, hiddenPending: "none" as const };
       const visibleBroken = visible.filter((r) => r.staleness === "pending-broken").length;
       const brokenBucket = bucketHiddenDownstream(visibleBroken);
