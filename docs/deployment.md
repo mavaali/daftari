@@ -72,6 +72,15 @@ non-canonical document — `vault_write`, `vault_merge` (including a status
 inherited from `path_a`), or approving such a staged action with
 `vault_ratify`. It may still edit documents that are already canonical.
 
+The grant also covers the way out. Retiring a canonical document —
+`vault_deprecate`, `vault_supersede`, `vault_merge` of a canonical source, or a
+`vault_write` that changes a canonical document's status — needs `promote`,
+matching `vault_unsupersede`, which restores one. Under `vault_ratify` it is the
+ratifier's grant that counts. A role with `write` alone can still retire drafts,
+and can stage a canonical retirement with `vault_stage_action` for a promoter to
+ratify. In the example above, `analyst` cannot retire canonical documents;
+`curator` and `admin` can.
+
 No `--role`, or a role name absent from config, becomes the deny-all guest.
 Create a separate role for unattended curation: grant the reads and writes it
 needs, but leave `ratify` off so the agent proposes and a human disposes.

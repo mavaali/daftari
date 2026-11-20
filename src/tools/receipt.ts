@@ -27,6 +27,7 @@ import {
   readableCollections,
 } from "../access/rbac.js";
 import { loadAttestKey, signBytes } from "../attest/sign.js";
+import { unitHasher } from "../curation/consumes.js";
 import { computeDecay, type DecayState } from "../curation/decay.js";
 import {
   type CompiledStaleContext,
@@ -372,8 +373,12 @@ async function upstreamFlagsFor(
   if (ctx.stale && ctx.stale.consumes.length > 0) {
     const db = ctx.db();
     const access = ctx.access;
-    const rows = compiledUpstreamStaleness(rel, ctx.stale.consumes, ctx.stale.provenance, (u) =>
-      sourceVerifiable(db, access, u),
+    const rows = compiledUpstreamStaleness(
+      rel,
+      ctx.stale.consumes,
+      ctx.stale.provenance,
+      (u) => sourceVerifiable(db, access, u),
+      unitHasher(ctx.vaultRoot),
     );
     const { visible, hiddenPending } =
       access && !ctx.seesAll

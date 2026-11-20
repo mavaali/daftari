@@ -20,3 +20,12 @@ docs/
 # Agent Plugins package (distributed via .agents/plugins/marketplace.json).
 plugins/
 .agents/
+
+# Workspace packages and examples are not part of the runtime (wtw8). Their
+# node_modules, if installed locally, would otherwise ship dev tooling.
+packages/
+examples/
+
+# Model/download caches populated by running the test suite in this tree
+# (e.g. @huggingface/transformers/.cache, ~86 MB) — never artifact content (wtw8).
+.cache/

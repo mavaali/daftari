@@ -9,10 +9,12 @@ import { cleanupVault, makeTempVault } from "../helpers/temp-vault.js";
 const AGENT = "agent:claude-code";
 
 // Reads and writes pricing only: competitive-intel is an unreadable collection.
+// Holds promote because the seeded docs are canonical, and retiring a canonical
+// doc needs it (w3wy); these tests are about what the caller can read.
 const PRICING_ONLY: AccessContext = {
   user: "pat",
   roleName: "pricing-editor",
-  role: { read: ["pricing"], write: ["pricing"] },
+  role: { read: ["pricing"], write: ["pricing"], promote: true },
 };
 
 async function seed(vault: string, path: string, overrides: Record<string, unknown> = {}) {

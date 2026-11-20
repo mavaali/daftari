@@ -4,12 +4,19 @@
 // plus an MCP ToolDefinition that wraps it. server.ts registers the
 // definitions; tests call the logic functions directly.
 
-import { type AccessContext, canRead, filterByReadPermission } from "../access/rbac.js";
+import {
+  type AccessContext,
+  canRead,
+  filterByReadPermission,
+  readableCollections,
+} from "../access/rbac.js";
 import { type DescribesPin, parseDescribesEntry } from "../audit/describes.js";
+import { unitHasher } from "../curation/consumes.js";
 import { computeDecay, type DecayState } from "../curation/decay.js";
 import {
   compiledUpstreamStaleness,
   loadCompiledStaleContext,
+  SOURCE_DELETED_REASON,
   splitUpstreamVisibility,
   type UpstreamStaleness,
 } from "../curation/edge-staleness.js";
@@ -373,8 +380,17 @@ export async function vaultRead(
   // of the logs (ephemeral, rebuildable — the edges.jsonl materialization
   // precedent), not caching bolted on here.
   const staleCtx = await loadCompiledStaleContext(vaultRoot);
+  // One memoized hasher per serve: both classifications below re-hash each
+  // compiled unit at most once (out-of-band edit detection, T06).
+  const hashOf = unitHasher(vaultRoot);
   const rows: UpstreamStaleness[] | null = staleCtx
-    ? compiledUpstreamStaleness(resolved.value.relPath, staleCtx.consumes, staleCtx.provenance)
+    ? compiledUpstreamStaleness(
+        resolved.value.relPath,
+        staleCtx.consumes,
+        staleCtx.provenance,
+        undefined,
+        hashOf,
+      )
     : null;
 
   // Every served read is logged — the broken-read rate needs its denominator
@@ -470,17 +486,25 @@ export async function vaultRead(
             staleCtx.consumes,
             staleCtx.provenance,
             isVerifiable,
+            hashOf,
           )
         : rows;
       const {
         visible,
         hiddenPending,
       }: { visible: UpstreamStaleness[]; hiddenPending: HiddenDownstream } = access
-        ? splitUpstreamVisibility(verifiedRows, (unit) => sourceReadable(db, access, unit))
+        ? splitUpstreamVisibility(
+            verifiedRows,
+            (unit) => sourceReadable(db, access, unit),
+            readableCollections(access.role) === undefined,
+          )
         : { visible: verifiedRows, hiddenPending: "none" };
       if (visible.length > 0 || hiddenPending !== "none") {
         const pendingBroken = visible.filter((r) => r.staleness === "pending-broken").length;
         const unverifiable = visible.filter((r) => r.staleness === "unverifiable").length;
+        const deleted = visible.filter(
+          (r) => r.staleness === "unverifiable" && r.reason === SOURCE_DELETED_REASON,
+        ).length;
         const clauses: string[] = [];
         if (pendingBroken > 0) {
           clauses.push(
@@ -488,9 +512,15 @@ export async function vaultRead(
               `changed incompatibly since this document was compiled — this content may predate them`,
           );
         }
-        if (unverifiable > 0) {
+        if (deleted > 0) {
           clauses.push(
-            `${unverifiable} upstream input${unverifiable === 1 ? "" : "s"} can no longer be ` +
+            `${deleted} upstream input${deleted === 1 ? " was" : "s were"} deleted from the ` +
+              `vault since this document was compiled`,
+          );
+        }
+        if (unverifiable - deleted > 0) {
+          clauses.push(
+            `${unverifiable - deleted} upstream input${unverifiable - deleted === 1 ? "" : "s"} can no longer be ` +
               `verified (source not in your readable vault)`,
           );
         }
