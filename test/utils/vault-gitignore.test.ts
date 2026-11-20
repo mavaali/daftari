@@ -127,6 +127,12 @@ describe("governance journals (ozor)", () => {
     ".daftari/tensions.md",
     ".daftari/board-dispositions.jsonl",
     ".daftari/distill-receipts.jsonl",
+    // qoez: run and trace journals
+    ".daftari/runs.jsonl",
+    ".daftari/birth-trace.jsonl",
+    ".daftari/revision-trace.jsonl",
+    ".daftari/tension-scan-state.json",
+    ".daftari/morning-report.md",
   ];
 
   beforeEach(() => {
