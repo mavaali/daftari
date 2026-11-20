@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A source edited or deleted outside Daftari no longer reads as `current`** — compiled-edge staleness read only Daftari's own write log, so a source changed in Obsidian, an editor or a `git pull` kept reporting `current: unchanged since baseline` on `vault_read`, `vault_search`, `vault_staleness` and `vault_receipt`. Each new `consumes` edge now records the source's content hash at compile time (`unit_hash`: sha256 of the file text, CRLF folded to LF). At query time each compiled source is re-hashed from disk, at most once per request. A different hash with no logged Daftari write gives the same `pending-broken` an in-Daftari edit gives, with a reason saying the change was made outside Daftari. A whitespace-only edit counts as a change; a CRLF-only re-checkout does not. A source missing from disk is `unverifiable` with a "deleted" reason, with or without a reindex. Edges minted before this release have no hash and keep the old behaviour for edits until their artifact is recompiled. Grounding at risk (#676) is unchanged: it reads `sources` frontmatter state, not compiled-edge staleness.
+- **A deleted source is named as deleted to a reader who can read everything** — `vault_read`, `vault_search` and `vault_staleness` folded every unverifiable upstream into "upstream inputs outside your read scope have pending changes", even for a role with `read: ['*']`. Such a reader now gets the named row and a "deleted from the vault since this document was compiled" banner. A restricted reader still gets only the coarse bucket, so a deleted source stays indistinguishable from a hidden one (#416).
+
 ## [3.19.1] - 2026-11-18
 
 ### Security

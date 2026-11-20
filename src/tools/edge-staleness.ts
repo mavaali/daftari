@@ -24,11 +24,12 @@
 // none/some/many bucket, never an exact count. An unreadable anchor yields
 // the empty report, indistinguishable from a nonexistent one.
 
-import { type AccessContext, hasAnyRead } from "../access/rbac.js";
+import { type AccessContext, hasAnyRead, readableCollections } from "../access/rbac.js";
 import {
   type CompiledEdgeCoverageSummary,
   compiledEdgeCoverageSummary,
   listConsumesEdges,
+  unitHasher,
 } from "../curation/consumes.js";
 import {
   splitUpstreamVisibility,
@@ -145,10 +146,15 @@ async function artifactReport(
       earned,
       verdicts: verdicts.value,
       isVerifiable: (unit) => sourceVerifiable(db, access, unit),
+      unitHash: unitHasher(vaultRoot),
     });
 
     const { visible, hiddenPending } = access
-      ? splitUpstreamVisibility(rows, (unit) => sourceReadable(db, access, unit))
+      ? splitUpstreamVisibility(
+          rows,
+          (unit) => sourceReadable(db, access, unit),
+          readableCollections(access.role) === undefined,
+        )
       : { visible: rows, hiddenPending: "none" as const };
 
     return ok({
