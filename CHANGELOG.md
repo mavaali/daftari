@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.20.1] - 2026-11-26
+
+### Security
+
+- **Sync restore normalizes manifest paths before exclusion checks and matches exclusions case-insensitively** — `restoreVault` previously ran `isExcluded()` on raw manifest keys before resolving them, allowing non-canonical forms (`./.git/config`, `.git//config`, `a/../.git/hooks/pre-commit`, backslash separators) or mixed-case paths (`.GIT/config`, `.Git/Hooks/pre-commit`) on case-insensitive filesystems to bypass the `.git/config`, `.git/hooks/`, `.daftari/`, and `node_modules` exclusions. Restore now normalizes and confines every manifest path first, refuses non-canonical manifest paths, and evaluates exclusions case-insensitively.
+- **Lifecycle write tools enforce collection RBAC on canonical paths and gate `vault_promote` on collection write access** — `vault_append`, `vault_deprecate`, `vault_set_confidence`, `vault_set_tier`, `vault_supersede`, `vault_unsupersede`, and `vault_merge` now pass the canonical `relPath` (rather than the raw caller string) to `collectionOf()` and enforce a pre-load physical `targetCollection` write check, closing aliased-path (`allowed/../restricted/doc.md`) collection bypasses and pre-load existence oracles. `vault_promote` now also checks collection `write` permission in addition to `promote`.
+
 ## [3.20.0] - 2026-11-19
 
 ### Security

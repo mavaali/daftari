@@ -1,6 +1,7 @@
 // The sync engine (#6): incremental push against the remote manifest,
 // exclusion of rebuildable state, and restore into an empty directory.
 
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -253,6 +254,58 @@ describe("storage sync engine (#6)", () => {
     const restored = await restoreVault(join(target, "vault"), backend);
     expect(restored.ok).toBe(false);
     if (!restored.ok) expect(restored.error.message).toContain("escapes restore root");
+    rmSync(target, { recursive: true, force: true });
+  });
+
+  it("restore refuses non-canonical manifest paths that would smuggle excluded files", async () => {
+    const payload = Buffer.from("[core]\n\tfsmonitor = evil\n");
+    const hash = createHash("sha256").update(payload).digest("hex");
+    for (const poisoned of [
+      "./.git/config",
+      ".git//config",
+      "notes/../.git/hooks/pre-commit",
+      ".git\\config",
+    ]) {
+      await backend.put(
+        MANIFEST_KEY,
+        Buffer.from(JSON.stringify({ version: 1, files: { [poisoned]: hash } })),
+      );
+      const target = join(mkdtempSync(join(tmpdir(), "daftari-restore-noncanon-t-")), "vault");
+      const restored = await restoreVault(target, backend);
+      expect(restored.ok).toBe(false);
+      if (!restored.ok) expect(restored.error.message).toContain("not canonical");
+      expect(existsSync(join(target, ".git", "config"))).toBe(false);
+      expect(existsSync(join(target, ".git", "hooks", "pre-commit"))).toBe(false);
+      rmSync(target, { recursive: true, force: true });
+    }
+  });
+
+  it("restore excludes mixed-case git/daftari/node_modules paths (case-insensitive FS defense)", async () => {
+    expect((await syncVault(vault, backend)).ok).toBe(true);
+    const raw = await backend.get(MANIFEST_KEY);
+    if (!raw.ok || raw.value === null) throw new Error("manifest missing");
+    const manifest = JSON.parse(raw.value.toString("utf-8"));
+    for (const mixed of [
+      ".GIT/config",
+      ".Git/Hooks/pre-commit",
+      ".DAFTARI/index.db",
+      "NODE_MODULES/pkg/readme.md",
+    ]) {
+      await backend.put(`tree/${mixed}`, Buffer.from("evil\n"));
+      manifest.files[mixed] = "00";
+    }
+    await backend.put(MANIFEST_KEY, Buffer.from(JSON.stringify(manifest)));
+
+    const target = join(mkdtempSync(join(tmpdir(), "daftari-restore-case-")), "vault");
+    const restored = await restoreVault(target, backend);
+    expect(restored.ok).toBe(true);
+    if (!restored.ok) return;
+    expect(restored.value.skippedExcluded).toBe(4);
+    expect(existsSync(join(target, ".GIT", "config"))).toBe(false);
+    expect(existsSync(join(target, ".git", "config"))).toBe(false);
+    expect(existsSync(join(target, ".Git", "Hooks", "pre-commit"))).toBe(false);
+    expect(existsSync(join(target, ".DAFTARI", "index.db"))).toBe(false);
+    expect(existsSync(join(target, "NODE_MODULES", "pkg", "readme.md"))).toBe(false);
     rmSync(target, { recursive: true, force: true });
   });
 

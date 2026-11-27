@@ -1,10 +1,20 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccessContext } from "../../src/access/rbac.js";
 import { DOC_URI_PREFIX, readResource } from "../../src/resources.js";
 import { vaultRead } from "../../src/tools/read.js";
+import {
+  vaultAppend,
+  vaultDeprecate,
+  vaultMerge,
+  vaultPromote,
+  vaultSetConfidence,
+  vaultSetTier,
+  vaultSupersede,
+  vaultUnsupersede,
+} from "../../src/tools/write.js";
 
 // Finding F1 (mavaali-beads-3p4.1): RBAC read bypass through noncanonical
 // paths. The filesystem read canonicalizes `..` (public/../restricted →
@@ -90,4 +100,97 @@ describe("F1: canonical-path RBAC on resources/read", () => {
       expect(aliased.ok).toBe(false);
     });
   }
+});
+
+const PUBLIC_WRITER_PROMOTER: AccessContext = {
+  user: "human:test",
+  roleName: "public-writer",
+  role: { read: ["public"], write: ["public"], promote: true, ratify: false },
+};
+
+describe("canonical-path & collection RBAC on write lifecycle tools", () => {
+  it("denies aliased public/../restricted writes across all lifecycle write tools", async () => {
+    const secretContent =
+      '---\ntitle: Secret\ndomain: accumulation\ncollection: ""\nstatus: draft\nconfidence: medium\ncreated: 2026-01-01\nupdated: 2026-01-01\nupdated_by: human:admin\nprovenance: direct\nsources: []\nsuperseded_by: null\nttl_days: null\n---\n\nsecret body\n';
+    const supersededContent = secretContent.replace("status: draft", "status: superseded");
+    writeFileSync(join(vault, "restricted", "secret.md"), secretContent, "utf-8");
+    writeFileSync(join(vault, "restricted", "superseded.md"), supersededContent, "utf-8");
+    writeFileSync(
+      join(vault, "public", "successor.md"),
+      secretContent.replace('collection: ""', 'collection: "public"'),
+      "utf-8",
+    );
+
+    const alias = "public/../restricted/secret.md";
+    const supersededAlias = "public/../restricted/superseded.md";
+
+    const results = await Promise.all([
+      vaultAppend(
+        vault,
+        { path: alias, section: "injected", agent: "human:test" },
+        PUBLIC_WRITER_PROMOTER,
+      ),
+      vaultPromote(vault, { path: alias, agent: "human:test" }, PUBLIC_WRITER_PROMOTER),
+      vaultDeprecate(
+        vault,
+        { path: alias, agent: "human:test", reason: "test" },
+        PUBLIC_WRITER_PROMOTER,
+      ),
+      vaultSetConfidence(
+        vault,
+        { path: alias, confidence: "high", agent: "human:test", reason: "test" },
+        PUBLIC_WRITER_PROMOTER,
+      ),
+      vaultSetTier(
+        vault,
+        { path: alias, tier: "source", agent: "human:test", reason: "test" },
+        PUBLIC_WRITER_PROMOTER,
+      ),
+      vaultSupersede(
+        vault,
+        { old_path: alias, new_path: "public/successor.md", agent: "human:test" },
+        PUBLIC_WRITER_PROMOTER,
+      ),
+      vaultUnsupersede(
+        vault,
+        { path: supersededAlias, agent: "human:test", reason: "test" },
+        PUBLIC_WRITER_PROMOTER,
+      ),
+      vaultMerge(
+        vault,
+        {
+          path_a: alias,
+          path_b: "public/successor.md",
+          target_path: "public/merged.md",
+          body: "merged",
+          agent: "human:test",
+        },
+        PUBLIC_WRITER_PROMOTER,
+      ),
+    ]);
+
+    for (const r of results) {
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.message).toContain("access denied");
+    }
+    expect(readFileSync(join(vault, "restricted", "secret.md"), "utf-8")).toBe(secretContent);
+    expect(readFileSync(join(vault, "restricted", "superseded.md"), "utf-8")).toBe(
+      supersededContent,
+    );
+  });
+
+  it("denies vault_promote on a direct path in a collection the role cannot write", async () => {
+    const restrictedDraft =
+      "---\ntitle: Restricted Draft\ndomain: accumulation\ncollection: restricted\nstatus: draft\nconfidence: medium\ncreated: 2026-01-01\nupdated: 2026-01-01\nupdated_by: human:admin\nprovenance: direct\nsources: []\nsuperseded_by: null\nttl_days: null\n---\n\nbody\n";
+    writeFileSync(join(vault, "restricted", "draft.md"), restrictedDraft, "utf-8");
+
+    const res = await vaultPromote(
+      vault,
+      { path: "restricted/draft.md", agent: "human:test" },
+      PUBLIC_WRITER_PROMOTER,
+    );
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.message).toContain("access denied");
+    expect(readFileSync(join(vault, "restricted", "draft.md"), "utf-8")).toBe(restrictedDraft);
+  });
 });

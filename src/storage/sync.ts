@@ -55,13 +55,19 @@ const SYNC_EXCLUDED = new Set([
   ".daftari/consolidate-state.json",
 ]);
 
+const SYNC_EXCLUDED_LOWER = new Set([...SYNC_EXCLUDED].map((p) => p.toLowerCase()));
+
 function isExcluded(relPath: string): boolean {
-  if (SYNC_EXCLUDED.has(relPath)) return true;
+  // Compare case-insensitively so mixed-case manifest paths (`.GIT/config`,
+  // `.Git/Hooks/pre-commit`) cannot bypass exclusions on case-insensitive
+  // filesystems (macOS APFS, Windows).
+  const lower = relPath.toLowerCase();
+  if (SYNC_EXCLUDED_LOWER.has(lower)) return true;
   // The lease lock's machine-local side files (heartbeat process.lock.hb-*,
   // its .tmp, succession claims .succ-*, removals in flight .gone-*): as
   // ephemeral as process.lock itself, rewritten every heartbeat, and liable to
   // vanish mid-walk.
-  if (relPath.startsWith(".daftari/process.lock.")) return true;
+  if (lower.startsWith(".daftari/process.lock.")) return true;
   // Git EXECUTES what these declare — filter/fsmonitor command lines in
   // config, hook scripts in hooks/ — and a `git clone` deliberately never
   // transmits them from a remote for exactly that reason. Carrying them
@@ -70,7 +76,7 @@ function isExcluded(relPath: string): boolean {
   // directions; the restore side re-enforces this against a poisoned
   // manifest. After a restore, remotes and local config are re-added by the
   // operator.
-  if (relPath === ".git/config" || relPath.startsWith(".git/hooks/")) return true;
+  if (lower === ".git/config" || lower.startsWith(".git/hooks/")) return true;
   // Vault hooks (.daftari/config.yaml → hooks.pre_write*) are ESM modules the
   // server dynamic-imports on write. Carrying them through the backing would
   // turn backend write access — or a poisoned restore manifest — into code
@@ -79,10 +85,9 @@ function isExcluded(relPath: string): boolean {
   // extension rather than a fixed directory; a restored config that references
   // one then fails closed (hook file not found) until trusted local
   // reprovisioning. A markdown knowledge vault never needs to back up JS.
-  const lower = relPath.toLowerCase();
   if (lower.endsWith(".mjs") || lower.endsWith(".cjs") || lower.endsWith(".js")) return true;
   // Defensive: a vault should never contain one, but never ship it if it does.
-  return relPath.split("/").includes("node_modules");
+  return lower.split("/").includes("node_modules");
 }
 
 export interface SyncManifest {
@@ -356,22 +361,37 @@ export async function restoreVault(
   // would never have uploaded (git config/hooks — code execution on the
   // next auto-commit).
   const allPaths = Object.keys(manifest.value.files);
-  const paths = allPaths.filter((p) => !isExcluded(p));
-  const skippedExcluded = allPaths.length - paths.length;
   if (allPaths.length === 0) {
     return err(new Error(`backing at ${backend.id} holds no manifest — nothing to restore`));
   }
 
-  const ownerOnly = new Set([...OWNER_ONLY_KNOWN, ...(manifest.value.ownerOnly ?? [])]);
-  let bytesTotal = 0;
-  const tasks = paths.map((relPath) => async (): Promise<Result<void, Error>> => {
-    // Confine each manifest path to the restore root — the manifest is data
-    // from the backing, not trusted input.
-    const target = resolve(root, relPath);
+  // Normalize, confine, and reject non-canonical manifest paths BEFORE running
+  // exclusion checks: a poisoned manifest entry like `./.git/config`,
+  // `.git//config`, `a/../.git/hooks/pre-commit`, or backslash-separated paths
+  // must never bypass isExcluded() and land on disk.
+  const entries: Array<{ relPath: string; target: string }> = [];
+  let skippedExcluded = 0;
+  for (const relPath of allPaths) {
+    const posixInput = relPath.replace(/\\/g, "/");
+    const target = resolve(root, posixInput);
     const rel = relative(root, target);
-    if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+    if (rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
       return err(new Error(`manifest path escapes restore root: ${relPath}`));
     }
+    const canonicalRel = rel.split(sep).join("/");
+    if (canonicalRel !== relPath) {
+      return err(new Error(`manifest path is not canonical: ${relPath}`));
+    }
+    if (isExcluded(canonicalRel)) {
+      skippedExcluded += 1;
+      continue;
+    }
+    entries.push({ relPath: canonicalRel, target });
+  }
+
+  const ownerOnly = new Set([...OWNER_ONLY_KNOWN, ...(manifest.value.ownerOnly ?? [])]);
+  let bytesTotal = 0;
+  const tasks = entries.map(({ relPath, target }) => async (): Promise<Result<void, Error>> => {
     const got = await backend.get(TREE_PREFIX + relPath);
     if (!got.ok) return got;
     if (got.value === null) {
@@ -408,5 +428,5 @@ export async function restoreVault(
   const ran = await runPool(tasks);
   if (!ran.ok) return ran;
 
-  return ok({ restored: paths.length, bytes: bytesTotal, skippedExcluded });
+  return ok({ restored: entries.length, bytes: bytesTotal, skippedExcluded });
 }
