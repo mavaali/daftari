@@ -51,6 +51,9 @@ import type { DistillConfig } from "../utils/config.js";
 import type { Chunk } from "./chunk.js";
 import type { ExtractOutcome } from "./extract.js";
 
+/** A DistillConfig whose claim cap has been resolved for this run (resolveMaxClaims). */
+export type RunDistillConfig = DistillConfig & { maxClaims: number };
+
 // ---------------------------------------------------------------------------
 // Token estimation constants (pre-flight heuristic)
 // ---------------------------------------------------------------------------
@@ -108,8 +111,8 @@ export interface DistillPlan {
 export interface BuildReceiptOpts {
   /** The outcome from a completed extractClaims run. */
   outcome: ExtractOutcome;
-  /** The distill config that governed this run. */
-  config: DistillConfig;
+  /** The distill config that governed this run, with its resolved claim cap. */
+  config: RunDistillConfig;
   /**
    * Transport that made the LLM calls: "anthropic" | "openrouter" | "ollama".
    * Passed explicitly by the CLI (U7) from resolveDistillClient's transport.
@@ -183,7 +186,7 @@ export interface DistillReceipt {
  * @param chunks   - Pre-computed chunks from chunkMessages().
  * @param config   - DistillConfig for this vault.
  */
-export function planDistill(chunks: Chunk[], config: DistillConfig): DistillPlan {
+export function planDistill(chunks: Chunk[], config: RunDistillConfig): DistillPlan {
   const chunkCount = chunks.length;
 
   if (chunkCount === 0) {

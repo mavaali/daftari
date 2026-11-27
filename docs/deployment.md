@@ -66,6 +66,21 @@ configured `repo_root`; it does not grant arbitrary file reads.
 verification management for vault-wide source integrations. Leave it off agent
 and reader roles.
 
+`promote` is the only grant that can make a document `canonical`. A role
+without it is refused when any write would set `canonical` on a new or
+non-canonical document — `vault_write`, `vault_merge` (including a status
+inherited from `path_a`), or approving such a staged action with
+`vault_ratify`. It may still edit documents that are already canonical.
+
+The grant also covers the way out. Retiring a canonical document —
+`vault_deprecate`, `vault_supersede`, `vault_merge` of a canonical source, or a
+`vault_write` that changes a canonical document's status — needs `promote`,
+matching `vault_unsupersede`, which restores one. Under `vault_ratify` it is the
+ratifier's grant that counts. A role with `write` alone can still retire drafts,
+and can stage a canonical retirement with `vault_stage_action` for a promoter to
+ratify. In the example above, `analyst` cannot retire canonical documents;
+`curator` and `admin` can.
+
 No `--role`, or a role name absent from config, becomes the deny-all guest.
 Create a separate role for unattended curation: grant the reads and writes it
 needs, but leave `ratify` off so the agent proposes and a human disposes.
@@ -136,6 +151,25 @@ server:
           user: human:alice
           role: analyst
 ```
+
+### Browser board login
+
+For the `/board` UI in a browser, a password login issues a signed, HttpOnly
+session cookie:
+
+```yaml
+server:
+  auth:
+    session:
+      signing_key_env: DAFTARI_SESSION_KEY    # >= 32 bytes, random
+      credential_env: DAFTARI_BOARD_PASSWORD
+      maps_to: { user: human:alice, role: admin }
+      lifetime_hours: 12
+```
+
+A cookie is accepted only by the server that minted it: it is bound to this
+vault and to the configured `maps_to` identity. Still, **use a unique signing
+key per deployment** — never reuse one key across vaults, ports, or hosts.
 
 Daftari resolves the bearer on every request. A missing or invalid credential
 is a 401; a valid JWT whose subject is not mapped is a 403. Neither falls back
@@ -316,6 +350,38 @@ Credentials come from each SDK's standard environment chain, never from vault
 config. Restore refuses a non-empty target and rebuilds the index after
 materializing the vault.
 
+### What Git carries vs what a Daftari backup carries
+
+**Git carries your knowledge; a Daftari backup carries your governance.**
+
+A `git clone` reproduces every document with its status, tier and confidence,
+the supersession chain, per-principal positions, ratified org positions, and
+the commit history of every applied write and approved proposal. It does not
+carry the governance journals in `.daftari/`: open and resolved tensions
+(`tensions.md`), pending and rejected proposals, derived and contested edges,
+the consumes graph, the provenance log, board dispositions, read/auth
+telemetry and distill receipts. `--reindex` cannot regenerate them. On a clone,
+reindex warns that the journals are absent, because new `stage-` and
+`tension-` IDs restart at `001` and reuse IDs already named in the history.
+
+To move or recover a vault with its governance intact, use `daftari sync` and
+`daftari sync --restore`. They carry the markdown, `.git` (minus config and
+hooks) and every durable journal, keep owner-only (`0600`) files owner-only,
+and rebuild the index.
+
+The rebuildable index and locks are gitignored and never synced; the
+governance journals, including `tensions.md`, `board-dispositions.jsonl` and
+`distill-receipts.jsonl`, are gitignored and synced; `.daftari/config.yaml` is
+yours to commit. The vault `.gitignore` template lists the ignored files.
+`daftari import`, and `daftari serve` with integrations configured, append any
+rule an older vault `.gitignore` lacks. Appending a rule never untracks a file
+that is already committed. If you committed journals before this, stop
+tracking them with `git rm --cached .daftari/tensions.md` (and the same for any
+other journal), then commit.
+
+`daftari asof` reads past state from git, so it reports tension state at an
+older commit as unknown unless that commit contains `.daftari/tensions.md`.
+
 ## Connect Google Docs or Notion
 
 Source integrations are a `daftari serve` capability. They use deployment-owned
@@ -338,6 +404,7 @@ the list empty.
 - Define the least-privileged role each client needs.
 - Keep `ratify` off unattended agent roles.
 - Keep bearer-token values out of config and version control.
+- Give every deployment its own session signing key.
 - Terminate TLS upstream before any non-loopback bind.
 - Test a bad credential and an unmapped OAuth subject before exposing the
   service.

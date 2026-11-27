@@ -280,8 +280,9 @@ export async function loadMounts(
   // Mount-time collision scan (spec Decision 5): a canonical file whose path
   // begins with a declared alias plus ':' would be ambiguous with the
   // addressing scheme. The scan is against declared aliases only — ordinary
-  // ':'-containing POSIX filenames remain untouched.
-  const canonicalFiles = await listFiles(vaultRoot);
+  // ':'-containing POSIX filenames remain untouched. Raw listing: collision
+  // safety covers what is on disk, including files `ignore` hides from walkers.
+  const canonicalFiles = await listFiles(vaultRoot, undefined, { raw: true });
   if (!canonicalFiles.ok) return canonicalFiles;
   for (const relPath of canonicalFiles.value) {
     for (const alias of mounts.keys()) {

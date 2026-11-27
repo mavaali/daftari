@@ -63,10 +63,13 @@ always valid even though you never typed those two fields.
 | `sources` | list of strings | `[]` | Source identifiers the document was built from. |
 | `superseded_by` | string or `null` | `null` | Vault-relative path of the document that replaces this one. Set by `vault_deprecate`. |
 | `ttl_days` | number or `null` | `null` | Review horizon. After `ttl_days` past `updated`, the document is flagged stale by `vault_lint`. `null` means it never goes stale. |
+| `series` | string, or absent | absent | Names a run of dated snapshots. Staleness is judged on the newest member only — see [below](#series--dated-snapshots). Written only when set. |
 | `valid_from` | date or `null` | `null` | First date the document's claim was true **in the world**. Valid time, not transaction time — see [below](#valid_from--valid_until--valid-time). |
 | `valid_until` | date or `null` | `null` | First date the claim was **no longer** true — the window is half-open, so this day is excluded. `null` with a `valid_from` means open-ended, not unknown. |
+| `said_at` | date-time or date, or absent | absent | When the source message a distilled claim came from was said. A fact about the source, not valid time — see [below](#said_at--when-the-source-said-it). Written only when known. |
 | `tags` | list of strings | `[]` | Free-form tags. `vault_index` can filter by them conjunctively. |
 | `describes` | list of strings | `[]` | Code paths this document documents — doc-to-code bindings. See [below](#describes--doc-to-code-bindings). |
+| `amends` | list of strings | absent | Vault-relative paths of earlier documents this one amends or fulfils without replacing them. See [below](#amends--amending-without-replacing). Written only when non-empty. |
 | `questions_answered` | list of strings | `[]` | Questions this document settles. The tool-queryable form of the `## Questions Answered` body section — see [below](#the-questions-answered--questions-raised-pattern). |
 | `questions_raised` | list of strings | `[]` | Open questions this document leaves. `vault_index` filters on it via `has_unanswered`; `vault_lint` flags any entry no document answers. |
 
@@ -75,9 +78,9 @@ always valid even though you never typed those two fields.
 | Status | Meaning |
 |--------|---------|
 | `draft` | In progress. Where new knowledge starts. Lives anywhere, often in `_drafts/`. |
-| `canonical` | Vetted and trusted. Reached only via `vault_promote`, which requires complete frontmatter. |
-| `deprecated` | No longer current. Set by `vault_deprecate` with a required reason. Kept, not deleted. |
-| `superseded` | Replaced by a specific newer document. Typically paired with `superseded_by`. |
+| `canonical` | Vetted and trusted. Reached via `vault_promote`, which requires a draft with complete frontmatter. Setting `canonical` on a new or non-canonical document needs the role's `promote` grant on every write path — `vault_write` (create or update), `vault_merge` (override or a status inherited from `path_a` into a target that was not already canonical), and `vault_ratify` of a staged write or merge, where the ratifier needs the grant. A role with the grant may write a document as `canonical` directly; a role without it is refused and pointed at `vault_promote`. Editing an already-canonical document without changing its status needs only `write`. Leaving `canonical` needs the same grant: `vault_deprecate` or `vault_supersede` of a canonical document, a `vault_merge` that supersedes a canonical source or gives a canonical target a non-canonical status, a `vault_write` status change away from `canonical`, and `vault_ratify` of any of these (the ratifier needs the grant). A role without it can stage the change with `vault_stage_action` for a ratifier with `promote`. |
+| `deprecated` | No longer current. Set by `vault_deprecate` with a required reason. Kept, not deleted. Deprecating a non-canonical document needs only `write`; deprecating a canonical one needs `promote` (see `canonical`). |
+| `superseded` | Replaced by a specific newer document. Typically paired with `superseded_by`. Set by `vault_supersede` or `vault_merge`; superseding a canonical document needs `promote`, as does reversing a supersession with `vault_unsupersede`. |
 | `archived` | Retired from active curation but retained for the record. |
 
 ### `provenance` — how the content was obtained
@@ -95,7 +98,7 @@ document had before the field existed.
 
 | Value | Meaning |
 |-------|---------|
-| `source` | Raw ingested material. The body is immutable to **every** writer; `vault_write` and `vault_merge` refuse body changes. `vault_append` still works. |
+| `source` | Raw ingested material. The body is immutable to **every** writer; `vault_write`, `vault_patch`, and `vault_merge` refuse body changes. `vault_append` still works. |
 | `compiled` | Agent-maintained synthesis. No enforcement — named so a compilation pass can assert what it is allowed to regenerate. |
 | `manual` | Human-authored canon. Body rewrites require a `human:*` identity; agents can still `vault_append`. |
 
@@ -108,8 +111,8 @@ provenance log and `vault_lint` surfaces every demotion off `source` under
   `manual` is a consent boundary only a human may lift. Moving away from
   `source` is open to any identity, loudly.
 - On a document currently tiered `source` or `manual`, the tier can only be
-  changed via `vault_set_tier` — `vault_write` refuses frontmatter payloads
-  that touch it, so the reason requirement cannot be dodged.
+  changed via `vault_set_tier` — `vault_write` and `vault_patch` refuse
+  frontmatter payloads that touch it, so the reason requirement cannot be dodged.
 
 `tier` is orthogonal to `provenance`: provenance describes how content was
 obtained (self-reported, advisory); tier controls who may rewrite it
@@ -227,6 +230,99 @@ built-in field, which means a closed, day-granular valid-time interval. If your
 field meant something else, rename the extension (for example
 `effective_from`) and the vault will load.
 
+### `said_at` — when the source said it
+
+`daftari distill` stamps `said_at` on each proposed belief: the timestamp of the
+source message the claim was extracted from, or the earliest one when a claim
+draws on several. The extraction model cites message timestamps from the
+transcript window; only a timestamp that matches a real message in that window
+is accepted, and the field is omitted when none does.
+
+```yaml
+said_at: '2026-05-01T10:02:00'
+```
+
+The value is an ISO 8601 date-time as the source recorded it, with no timezone
+normalization: chat exports carry the exporting device's local time, Claude
+session logs carry UTC. A hand-written date (`2026-05-01`) is also accepted.
+
+**It is not valid time.** `said_at` records when something was said, which is
+a fact about the source. It says nothing about when the claim held in the
+world, so nothing copies it into `valid_from`, the same rule as above: valid
+time is authored, never inferred. A decision recorded on 1 May can describe a
+policy that started in March.
+
+Like `valid_from`, it never blocks a write. A malformed string is kept
+verbatim with no issue; only a non-string value (a number, a list) is flagged.
+The field is written only when set, so documents without it are unchanged. A
+`said_at` schema extension now collides with the built-in field and fails
+config load; rename it.
+
+### `amends` — amending without replacing
+
+Some later entries change what a reader should conclude from an earlier one
+without making it false. "This setting stays off until re-enabled" is still true
+as written after the setting is re-enabled, so `vault_supersede` would be wrong,
+but a reader of that entry alone gets the wrong current state.
+
+`amends` records this on the **later** document:
+
+```yaml
+amends:
+  - decisions/setting-off.md
+```
+
+Set it through `vault_write`'s `frontmatter`; `amends: null` clears it. Nothing
+writes to the earlier file: its bytes, `updated` date, and review clock stay
+exactly as they were. The relation is inverted at index time, so search hits and
+`vault_read` on the earlier document show the later one under `amendedBy`, with
+its title, status, and a preview. The search summary line reads
+`amended by: <path>`.
+
+- **Fulfilled counts too.** There is one relation, because a reader does the same
+  thing either way: go read the later document. What changed belongs in its body.
+- **Not supersession.** An amended document keeps its status and is never demoted
+  in search. A document can be both superseded and amended; each shows separately.
+- **One hop.** Only direct amenders are listed, each with its own status. An
+  amender's supersession chain is not followed.
+- **Access.** An amender the caller cannot read is omitted, with no marker and no
+  count, so a narrow role sees the earlier document as if nothing amended it.
+- **Enriched surfaces only.** The raw file, its git history, `daftari asof`, and
+  `vault_read` on a federated mount show nothing on the earlier document.
+- **Bad paths.** A target that resolves to no readable document, or that names the
+  document itself, returns `amends_warnings` on the write and appears under
+  `vault_lint`'s `danglingAmends`. The write still lands.
+
+### `series` — dated snapshots
+
+A weekly review is written once and never edited. Its `ttl_days: 14` is not a
+promise to re-check that one document; it is a promise that another review will
+exist in two weeks. Give every snapshot the same `series` and the TTL moves to
+the run as a whole:
+
+```yaml
+series: weekly-review
+ttl_days: 14
+```
+
+Staleness is then judged on the newest member only. With four weekly reviews and
+the newest nine days old, `vault_lint` lists none of them. With the newest twenty
+days old, it lists that one, because no new review has been written.
+
+- **Newest means latest `created`**, not `updated`. A typo fix on an old snapshot
+  is not a new snapshot. Ties go to the later path, so dated filenames order
+  correctly.
+- **The newest member's own `ttl_days` and `updated` apply.** With a null
+  `ttl_days` on the newest member, the series makes no freshness promise.
+- **A `deprecated`, `superseded` or `archived` member cannot be newest.** A
+  withdrawn snapshot does not keep the series fresh.
+- **Only the documents you can read count.** A newer member in a collection you
+  cannot read does not silence an older one you can.
+
+`vault_lint`, `vault_status`, the board, `daftari sleep` and `daftari interview`
+all judge a series this way. The per-document decay banner on `vault_read` and
+`vault_search` does not read `series` yet, so an old snapshot can still show one.
+
 ## Markdown body conventions
 
 The body is ordinary markdown. Two conventions make a vault more useful to the
@@ -281,7 +377,7 @@ frontmatter is what tooling reads.
 ### Links: wikilinks vs. markdown links
 
 Daftari parses **both** internal link styles when it builds the inter-document
-link graph for `vault_lint`'s orphan and deprecated-still-linked checks:
+link graph for `vault_lint`'s orphan and retired-still-linked checks:
 
 | Style | Example | Resolved by |
 |-------|---------|-------------|
@@ -293,9 +389,23 @@ External URLs and pure `#anchor` links are ignored — they do not create graph
 edges. Prefer wikilinks for cross-references within the vault: they survive a
 document being moved between collections, since they resolve by basename.
 
-A document that no other document links to is reported as an **orphan** by
+A `sources` entry that resolves to a vault document also counts as an inbound
+edge for the orphan check. It does not feed retired-still-linked: a canonical
+document citing a deprecated source is reported as a `lifecycleConflicts`
+finding instead.
+
+A vault path in backticks is not an edge. A code span is literal text and can't
+be told apart from a path quoted in a command or a counterexample. When an
+orphan is named that way, its lint finding lists the documents that do it, so
+you can add a wikilink or a `sources` entry there.
+
+A document that nothing links to or cites is reported as an **orphan** by
 `vault_lint` — not an error, but a signal that a piece of knowledge is
 disconnected from the rest of the vault.
+
+`vault_lint` also returns `orphanSummary`, with the two counts either side of
+`orphanFiles`: `noInboundLink` (no wikilink or markdown link points here) and
+`nothingRefers` (an orphan that no backticked path names either).
 
 ## A complete example
 

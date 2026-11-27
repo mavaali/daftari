@@ -298,8 +298,13 @@ export interface DistillConfig {
   model: string;
   /** Hard cap on total LLM calls per distill invocation. */
   maxLlmCalls: number;
-  /** Maximum raw claims the extract stage may produce per run. */
-  maxClaims: number;
+  /**
+   * Maximum raw claims the extract stage may produce per run. Set only when
+   * declared (`max_claims`) or overridden (`--max-claims`), and then
+   * authoritative. Unset ⇒ the run scales the cap with source size
+   * (resolveMaxClaims in src/distill/extract.ts).
+   */
+  maxClaims?: number;
   /** Maximum verbatim-quoted characters across all claims per run. */
   maxVerbatimChars: number;
   /**
@@ -329,7 +334,6 @@ export const DEFAULT_CORROBORATION_THRESHOLD = 0.8;
 
 export const DISTILL_NUMERIC_DEFAULTS: Omit<DistillConfig, "model"> = {
   maxLlmCalls: 100,
-  maxClaims: 50,
   maxVerbatimChars: 8000,
   inCallInputCap: 16000,
   corroborationThreshold: DEFAULT_CORROBORATION_THRESHOLD,
@@ -367,6 +371,11 @@ export const RESERVED_MOUNT_ALIASES: readonly string[] = ["local"];
 
 export interface DaftariConfig {
   roles: Record<string, RoleConfig>;
+  // The role a stdio server runs as when started without --role (kg64).
+  // null (absent) keeps the deny-all guest. `daftari --init` scaffolds
+  // `default_role: admin` so a fresh local vault works out of the box;
+  // `daftari serve` ignores it — network principals come from server.auth.
+  defaultRole: string | null;
   schemaExtensions: SchemaExtension[];
   indexedFields: IndexedFieldDeclaration[];
   // Vault-owner-supplied pre-write hooks. v1 lists pre-write only; future
@@ -385,6 +394,11 @@ export interface DaftariConfig {
   // check (manifest mtimes vs disk) still runs regardless and remains the
   // reconciliation backstop when events are dropped.
   watch: boolean;
+  // Vault-relative paths or globs of files that are not vault documents (#646)
+  // — a README, a clippings folder. Normalized at load: no trailing slash.
+  // `listFiles` applies it, so status, lint, search and every other walker
+  // inherit it; see isIgnoredVaultPath for the match semantics.
+  ignore: string[];
   // When true, the server kicks off a background load of the embedding model
   // after startup so the first user search doesn't pay the cold-start cost.
   // When false, the model loads lazily only on the first miss — useful for
@@ -501,6 +515,12 @@ export interface DaftariConfig {
   // (leniently parsed; not required). Used by isConfiguredPrincipal to gate
   // board owner/reassign actions to known identities only.
   principals: string[];
+  // Bead 9mpe: optional `principal_kinds:` mapping of authenticated principal
+  // → human | agent | unknown, read by the review journal to stamp
+  // decided_by_kind on review decisions (see curation/review-log.ts). Absent
+  // ⇒ undefined; unmapped principals fall back to the session-login identity
+  // (human) and the agent:/system: prefixes (agent), else unknown.
+  principalKinds?: Record<string, "human" | "agent" | "unknown">;
 }
 
 export type GraphExpandSubset = "trigger" | "all" | "tensions";
@@ -562,11 +582,13 @@ const VEC_KNN_K_MAX = 4096;
 function emptyConfig(): DaftariConfig {
   return {
     roles: {},
+    defaultRole: null,
     schemaExtensions: [],
     indexedFields: [],
     hooks: { preWrite: [], preWriteTransform: [] },
     autoCommit: true,
     watch: true,
+    ignore: [],
     warmEmbeddings: true,
     embeddingProvider: "local-minilm",
     search: { ...SEARCH_TUNING_DEFAULTS },
@@ -813,6 +835,36 @@ function asStringArray(value: unknown, where: string): Result<string[], Error> {
   return ok(value as string[]);
 }
 
+// `ignore` patterns are vault-relative. `!` is refused rather than left to the
+// matcher: gitignore readers expect it to un-ignore, and glob negation would
+// ignore everything EXCEPT the named file.
+function validateIgnore(raw: unknown): Result<string[], Error> {
+  const list = asStringArray(raw, "'ignore'");
+  if (!list.ok) return list;
+  const patterns: string[] = [];
+  for (const entry of list.value) {
+    const pattern = entry.trim().replace(/\/+$/, "");
+    const segments = pattern.split("/");
+    if (
+      pattern.length === 0 ||
+      pattern.startsWith("/") ||
+      pattern.startsWith("!") ||
+      pattern.includes("\\") ||
+      segments.includes(".") ||
+      segments.includes("..")
+    ) {
+      return err(
+        new Error(
+          `'ignore' entries must be vault-relative paths or globs ` +
+            `(got ${JSON.stringify(entry)})`,
+        ),
+      );
+    }
+    patterns.push(pattern);
+  }
+  return ok(patterns);
+}
+
 function validateRole(name: string, raw: unknown): Result<RoleConfig, Error> {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     return err(new Error(`role '${name}' must be a mapping`));
@@ -1007,6 +1059,17 @@ function validateExtension(field: string, raw: unknown): Result<SchemaExtension,
           "are read as-is by the built-in field, which is a closed, day-granular valid-time " +
           `interval. If your '${field}' means something else, rename your extension ` +
           "(e.g. 'effective_from') and the vault will load.",
+      ),
+    );
+  }
+  if (field === "series") {
+    return err(
+      new Error(
+        `${where}: 'series' is now a built-in frontmatter field. Remove it from ` +
+          "schema_extensions in .daftari/config.yaml — existing string values in your " +
+          "documents are read as-is by the built-in field, which judges staleness on the " +
+          "newest member of each series. If your 'series' means something else, rename " +
+          "your extension (e.g. 'series_name') and the vault will load.",
       ),
     );
   }
@@ -2162,6 +2225,19 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     }
   }
 
+  let defaultRole: string | null = null;
+  if (root.default_role !== undefined && root.default_role !== null) {
+    if (typeof root.default_role !== "string" || !Object.hasOwn(roles, root.default_role)) {
+      return err(
+        new Error(
+          `malformed config: 'default_role' must name a role declared under 'roles' ` +
+            `(got ${JSON.stringify(root.default_role)})`,
+        ),
+      );
+    }
+    defaultRole = root.default_role;
+  }
+
   const extensions = validateExtensions(root.schema_extensions);
   if (!extensions.ok) return err(new Error(`malformed config: ${extensions.error.message}`));
 
@@ -2249,6 +2325,9 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     }
     watch = root.watch;
   }
+
+  const ignore = validateIgnore(root.ignore);
+  if (!ignore.ok) return err(new Error(`malformed config: ${ignore.error.message}`));
 
   let warmEmbeddings = true;
   if (root.warm_embeddings !== undefined) {
@@ -2449,13 +2528,31 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     return err(new Error(`malformed config: ${principalsList.error.message}`));
   }
 
+  // Optional `principal_kinds:` mapping (bead 9mpe). Absent ⇒ undefined.
+  let principalKinds: Record<string, "human" | "agent" | "unknown"> | undefined;
+  if (root.principal_kinds !== undefined && root.principal_kinds !== null) {
+    const map = requireMapping(root.principal_kinds, "'principal_kinds'");
+    if (!map.ok) return err(new Error(`malformed config: ${map.error.message}`));
+    principalKinds = Object.create(null) as Record<string, "human" | "agent" | "unknown">;
+    for (const [name, kind] of Object.entries(map.value)) {
+      if (kind !== "human" && kind !== "agent" && kind !== "unknown") {
+        return err(
+          new Error(`malformed config: 'principal_kinds.${name}' must be human | agent | unknown`),
+        );
+      }
+      principalKinds[name] = kind;
+    }
+  }
+
   return ok({
     roles,
+    defaultRole,
     schemaExtensions: extensions.value,
     indexedFields: indexedFields.value,
     hooks: hooks.value,
     autoCommit,
     watch,
+    ignore: ignore.value,
     warmEmbeddings,
     embeddingProvider,
     search,
@@ -2479,5 +2576,6 @@ function loadConfigUncached(vaultRoot: string): Result<DaftariConfig, Error> {
     federation: federationConfig.value,
     integrations: integrationsConfig.value,
     principals: principalsList.value,
+    ...(principalKinds !== undefined ? { principalKinds } : {}),
   });
 }

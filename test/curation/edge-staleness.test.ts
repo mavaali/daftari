@@ -3,6 +3,7 @@ import type { ConsumesEdge } from "../../src/curation/consumes.js";
 import {
   changedFieldsSince,
   compiledUpstreamStaleness,
+  SOURCE_DELETED_REASON,
   summarizeUpstream,
   upstreamStaleness,
 } from "../../src/curation/edge-staleness.js";
@@ -204,5 +205,32 @@ describe("edge staleness (#234)", () => {
       pending_broken: 1,
       unverifiable: 0,
     });
+  });
+
+  it("out-of-band: a hash mismatch with no logged write is pending-broken; missing is deleted", () => {
+    const hashes: Record<string, string | null> = { "a/unit.md": "h-now" };
+    const hasher = (u: string) => hashes[u] ?? null;
+    const stamped = [edge({ unit_hash: "h-then" })];
+
+    const changed = compiledUpstreamStaleness("a/artifact.md", stamped, [], undefined, hasher)[0];
+    expect(changed?.staleness).toBe("pending-broken");
+    expect(changed?.reason).toContain("outside Daftari");
+
+    hashes["a/unit.md"] = "h-then";
+    expect(
+      compiledUpstreamStaleness("a/artifact.md", stamped, [], undefined, hasher)[0]?.staleness,
+    ).toBe("current");
+
+    // No hasher, or a pre-hash edge: provenance-only, as before.
+    hashes["a/unit.md"] = "h-now";
+    expect(compiledUpstreamStaleness("a/artifact.md", stamped, [])[0]?.staleness).toBe("current");
+    expect(
+      compiledUpstreamStaleness("a/artifact.md", [edge()], [], undefined, hasher)[0]?.staleness,
+    ).toBe("current");
+
+    hashes["a/unit.md"] = null;
+    const gone = compiledUpstreamStaleness("a/artifact.md", stamped, [], undefined, hasher)[0];
+    expect(gone?.staleness).toBe("unverifiable");
+    expect(gone?.reason).toBe(SOURCE_DELETED_REASON);
   });
 });

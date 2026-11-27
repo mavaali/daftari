@@ -52,8 +52,25 @@
 //              artifact → no baseline → pending-unchecked (never checked).
 //   earned   — the edge's lastRederived: the last time the derivation
 //              survived a re-test.
+//
+// Out-of-band changes (T06): the provenance log only sees Daftari's own
+// writes. A compiled edge also carries the unit's content hash at compile
+// time (unit_hash), so when a UnitHasher is supplied the unit is re-hashed
+// from disk: no logged write but a different hash means the unit was edited
+// outside Daftari, and it runs the same tier-1 dispatch an in-Daftari write
+// does, over-approximating that every consumed field changed (the changed
+// fields are unknowable). A unit missing from disk is unverifiable with a
+// "deleted" reason. Edges without unit_hash (minted before it existed) keep
+// provenance-only detection. Known gap: once a Daftari write to the unit is
+// logged, the hash no longer isolates the out-of-band part, so a later
+// out-of-band edit on top of bookkeeping-only churn reads as that churn.
 
-import { type ConsumesEdge, forwardConsumes, listConsumesEdges } from "./consumes.js";
+import {
+  type ConsumesEdge,
+  forwardConsumes,
+  listConsumesEdges,
+  type UnitHasher,
+} from "./consumes.js";
 import { type ProvenanceEntry, readProvenanceLog } from "./provenance.js";
 import { bucketHiddenDownstream, type HiddenDownstream } from "./tension-blast.js";
 import {
@@ -83,6 +100,12 @@ export interface UpstreamStaleness {
   changed_fields: string[];
   reason: string;
 }
+
+// Reason on an unverifiable row whose unit is gone from disk. Only callers
+// who can read every collection (and the no-access operator) ever see it
+// named; a restricted reader gets the coarse hidden bucket (#416).
+export const SOURCE_DELETED_REASON =
+  "source deleted from the vault since this document was compiled";
 
 export interface UpstreamStalenessSummary {
   current: number;
@@ -123,18 +146,22 @@ function classifyEdge(input: {
   compiledEdge?: ConsumesEdge;
   verdicts?: Tier2Verdict[];
   isVerifiable?: (unit: string) => boolean;
+  unitHash?: UnitHasher;
 }): UpstreamStaleness {
   const base = {
     unit: input.unit,
     edge_class: input.edgeClass,
     baseline: input.baseline,
   };
-  if (input.isVerifiable && !input.isVerifiable(input.unit)) {
+  // Compiled edges only: the hash baseline is minted with the edge.
+  const onDiskHash = input.compiledEdge && input.unitHash ? input.unitHash(input.unit) : undefined;
+  const deleted = onDiskHash === null;
+  if (deleted || (input.isVerifiable && !input.isVerifiable(input.unit))) {
     return {
       ...base,
       staleness: "unverifiable",
       changed_fields: [],
-      reason: "source not in your readable vault",
+      reason: deleted ? SOURCE_DELETED_REASON : "source not in your readable vault",
     };
   }
   // The tier-2 residual: a covering semantic verdict decides what structure
@@ -175,6 +202,30 @@ function classifyEdge(input: {
     );
   }
   const { changed, writes } = changedFieldsSince(input.provenance, input.unit, input.baseline);
+  const baselineHash = input.compiledEdge?.unit_hash;
+  if (
+    writes === 0 &&
+    input.compiledEdge &&
+    baselineHash &&
+    onDiskHash &&
+    onDiskHash !== baselineHash
+  ) {
+    const verdict = tier1Dispatch({
+      unit: input.unit,
+      changedFields: input.compiledEdge.fields,
+      compiled: [input.compiledEdge],
+      declaredDependents: [],
+      earnedDependents: [],
+    })[0];
+    return {
+      ...base,
+      staleness: verdict?.verdict === "unaffected" ? "pending-compatible" : "pending-broken",
+      changed_fields: contentChangedFields(input.compiledEdge.fields),
+      reason:
+        "changed outside Daftari since this document was compiled (content hash differs " +
+        `from the compile-time baseline, no Daftari write logged)${verdict ? ` — ${verdict.reason}` : ""}`,
+    };
+  }
   if (writes === 0) {
     return {
       ...base,
@@ -235,11 +286,15 @@ export async function loadCompiledStaleContext(
 // `consumes` may be the full log or an already-collapsed current set: the
 // newest-compile-group collapse is idempotent, so batch callers (search)
 // collapse once and pass the result through per hit.
+//
+// `unitHash` (consumes.unitHasher) turns on out-of-band detection. Omitting
+// it keeps the provenance-only behaviour.
 export function compiledUpstreamStaleness(
   artifact: string,
   consumes: ConsumesEdge[],
   provenance: ProvenanceEntry[],
   isVerifiable?: (unit: string) => boolean,
+  unitHash?: UnitHasher,
 ): UpstreamStaleness[] {
   return forwardConsumes(consumes, artifact)
     .filter((e) => e.unit !== artifact)
@@ -252,6 +307,7 @@ export function compiledUpstreamStaleness(
         provenance,
         compiledEdge: e,
         isVerifiable,
+        unitHash,
       }),
     );
 }
@@ -270,12 +326,14 @@ export function upstreamStaleness(input: {
   // do, so the residual reflects judgments already paid for.
   verdicts?: Tier2Verdict[];
   isVerifiable?: (unit: string) => boolean;
+  unitHash?: UnitHasher;
 }): UpstreamStaleness[] {
   const rows = compiledUpstreamStaleness(
     input.artifact,
     input.consumes,
     input.provenance,
     input.isVerifiable,
+    input.unitHash,
   );
 
   // Declared baseline: the artifact's own latest landed write.
@@ -331,10 +389,14 @@ export function upstreamStaleness(input: {
 // is gone); that guess can diverge from the collection it had while alive,
 // which would make "deleted" distinguishable from "RBAC-hidden" — an
 // existence oracle (#416). The operator (no-access) path bypasses this
-// split entirely and still receives named rows.
+// split entirely and still receives named rows, and so does a caller whose
+// role reads every collection (`seesAll`): with nothing hidden from them,
+// deleted cannot be confused with hidden, so the oracle does not exist and
+// a lost source is named instead of reported as "outside your read scope".
 export function splitUpstreamVisibility(
   rows: UpstreamStaleness[],
   isReadable: (unit: string) => boolean,
+  seesAll = false,
 ): { visible: UpstreamStaleness[]; hiddenPending: HiddenDownstream } {
   const visible: UpstreamStaleness[] = [];
   let hiddenPendingCount = 0;
@@ -346,11 +408,11 @@ export function splitUpstreamVisibility(
     // from "hidden", an existence oracle (#416/#217). They fold into the
     // coarse bucket, identical to a hidden-but-alive unit. The operator
     // (no-access) path bypasses this split and still sees named rows.
-    if (r.staleness === "unverifiable") {
+    if (r.staleness === "unverifiable" && !seesAll) {
       hiddenPendingCount += 1;
       continue;
     }
-    if (isReadable(r.unit)) visible.push(r);
+    if (seesAll || isReadable(r.unit)) visible.push(r);
     else if (r.staleness !== "current") hiddenPendingCount += 1;
   }
   return { visible, hiddenPending: bucketHiddenDownstream(hiddenPendingCount) };

@@ -8,6 +8,8 @@
 // This is advisory only. Nothing here edits a file or changes a status; it
 // reports a number the curator (vault_lint, vault_status) can act on.
 
+import type { Frontmatter } from "../frontmatter/types.js";
+
 const MS_PER_DAY = 86_400_000;
 
 // Whole days between an ISO date (YYYY-MM-DD) and `now`. Negative if the date
@@ -46,4 +48,50 @@ export function computeStaleness(
   const ratio = ageDays / ttlDays;
   const score = Math.min(1, Math.max(0, ratio));
   return { score, ageDays, ttlDays, expired: ageDays >= ttlDays };
+}
+
+const RETIRED_STATUSES: ReadonlySet<string> = new Set(["deprecated", "superseded", "archived"]);
+
+export interface SeriesMember {
+  path: string;
+  frontmatter: Pick<Frontmatter, "series" | "status" | "created" | "updated">;
+}
+
+// Epoch ms a member entered the vault. A missing `created` falls back to
+// `updated`; a member with neither sorts oldest.
+function writtenAt(fm: SeriesMember["frontmatter"]): number {
+  const t = Date.parse(`${fm.created || fm.updated}T00:00:00Z`);
+  return Number.isNaN(t) ? Number.NEGATIVE_INFINITY : t;
+}
+
+function isNewer(a: SeriesMember, b: SeriesMember): boolean {
+  const aAt = writtenAt(a.frontmatter);
+  const bAt = writtenAt(b.frontmatter);
+  return aAt > bAt || (aAt === bAt && a.path > b.path);
+}
+
+// The series members whose TTL no longer applies (#645). A dated snapshot is
+// written once and never edited, so the TTL fires on the newest member only:
+// callers pass `ttl_days: null` to computeStaleness for every path returned.
+//
+// Newest is by `created`, not `updated` — a typo fix on an old snapshot, or
+// tagging old snapshots with `series`, is not a new snapshot. Ties go to the
+// later path, so dated filenames order correctly. A retired member cannot be
+// newest: a withdrawn snapshot must not keep the series fresh.
+//
+// Pass only the documents the caller can read. A newer member in an unreadable
+// collection must not silence a readable one, or the silence discloses it.
+export function olderSeriesMembers(docs: SeriesMember[]): Set<string> {
+  const newest = new Map<string, SeriesMember>();
+  const older = new Set<string>();
+  for (const doc of docs) {
+    const series = doc.frontmatter.series?.trim();
+    if (!series) continue;
+    older.add(doc.path);
+    if (RETIRED_STATUSES.has(doc.frontmatter.status)) continue;
+    const head = newest.get(series);
+    if (!head || isNewer(doc, head)) newest.set(series, doc);
+  }
+  for (const head of newest.values()) older.delete(head.path);
+  return older;
 }

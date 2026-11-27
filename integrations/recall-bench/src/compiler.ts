@@ -14,7 +14,7 @@ import { withCallBudget } from "../../../dist/consolidate/call-budget.js";
 import { listStagedActions } from "../../../dist/curation/staged-actions.js";
 import type { NormalizedMessage } from "../../../dist/distill/adapters/types.js";
 import { chunkMessages } from "../../../dist/distill/chunk.js";
-import { extractClaims } from "../../../dist/distill/extract.js";
+import { DISTILL_MAX_CLAIMS_FLOOR, extractClaims } from "../../../dist/distill/extract.js";
 import { proposeAllClaims } from "../../../dist/distill/propose.js";
 import type { CompleteWithToolsResult, LlmClient, ToolDef } from "../../../dist/eval/llm.js";
 import { vaultRatify } from "../../../dist/tools/staged-actions.js";
@@ -235,7 +235,9 @@ export function makeDistillCompiler(
       withCallBudget(llm, DISTILL_NUMERIC_DEFAULTS.maxLlmCalls),
       {
         model: cfg.authoringModel,
-        maxClaims: DISTILL_NUMERIC_DEFAULTS.maxClaims,
+        // Pinned at the historical flat cap so recall numbers stay comparable
+        // across builds (the CLI default now scales with source size).
+        maxClaims: DISTILL_MAX_CLAIMS_FLOOR,
         inCallInputCap: DISTILL_NUMERIC_DEFAULTS.inCallInputCap,
       },
     );

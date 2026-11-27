@@ -91,6 +91,12 @@ export interface BuiltinFrontmatter {
   sources: string[];
   superseded_by: string | null;
   ttl_days: number | null;
+  // Names the run of dated snapshots this document belongs to (#645). A
+  // snapshot is written once and never edited, so its TTL is a promise about
+  // the series: only the newest member is judged (curation/staleness.ts).
+  // Optional so hand-built Frontmatter literals stay valid; null/absent = not
+  // in a series.
+  series?: string | null;
   // Valid time — when the fact is true IN THE WORLD, as distinct from the
   // transaction time carried by created/updated and git history.
   //
@@ -109,11 +115,25 @@ export interface BuiltinFrontmatter {
   // must not be collapsed.
   valid_from: string | null; // YYYY-MM-DD
   valid_until: string | null; // YYYY-MM-DD
+  // When the source message a distilled claim was extracted from was SAID —
+  // an ISO 8601 date-time as the source recorded it (or a date). A fact about
+  // the source, not world-validity: nothing derives valid_from from it (valid
+  // time stays authored, never inferred). Optional so hand-built Frontmatter
+  // literals stay valid; null/absent = unknown. Earliest message when a claim
+  // spans several.
+  said_at?: string | null;
   tags: string[];
   // Doc-to-code bindings: code paths this doc describes, each `repo:path` or
   // `repo:path::symbol` (a bare `path` resolves against the doc's own repo).
   // A first-class relationship like `sources` / `superseded_by`. Default [].
   describes: string[];
+  // Earlier documents this one amends or fulfils without replacing them: the
+  // earlier claim stays true as written, but its readers should also read
+  // this. Declared here on the LATER document and inverted by the index, so
+  // the earlier file is never written (unlike superseded_by, a lifecycle
+  // change to the predecessor). Optional so hand-built Frontmatter literals
+  // stay valid; absent means none.
+  amends?: string[];
   // Optional epistemic-surface fields. They mirror the body's `## Questions
   // Answered` / `## Questions Raised` convention as structured, tool-queryable
   // metadata. Default to [] when absent.
@@ -150,10 +170,13 @@ export const BUILTIN_FRONTMATTER_FIELDS = [
   "sources",
   "superseded_by",
   "ttl_days",
+  "series",
   "valid_from",
   "valid_until",
+  "said_at",
   "tags",
   "describes",
+  "amends",
   "questions_answered",
   "questions_raised",
   "subjects",

@@ -9,12 +9,20 @@
 // Locks live in their own .daftari/locks.db (separate from the search index)
 // so a reindex never disturbs them. The file is still ephemeral: every lock
 // expires within a minute, so a lost locks.db costs nothing.
+//
+// Dead same-host holders (54pq). A minted holder records its pid and a tag of
+// its host (leaseHostTag), so a lease left by a crashed process need not wedge
+// the path for the full TTL: when the holder's host tag is ours and its pid is
+// dead (`process.kill(pid, 0)` → ESRCH), acquireLock purges the lease at once.
+// A lease from another host, or one whose holder records no host (an older
+// daftari, a raw agent string), is never judged by pid — it waits out the TTL.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import { hostId, isProcessAlive } from "../lifecycle/lock.js";
 
 export type LockDb = Database.Database;
 
@@ -85,7 +93,26 @@ function purgeExpired(db: LockDb, now: number): void {
 // its paired releaseLock; a fresh mint at the release site unpairs them and
 // releaseLock silently no-ops instead of erroring.
 export function mintLeaseHolder(agent: string): string {
-  return `${process.pid}:${randomUUID()}:${agent}`;
+  return `${process.pid}@${leaseHostTag()}:${randomUUID()}:${agent}`;
+}
+
+// This host's tag in a lease holder: a short hash of the process lock's host
+// identity (hostname, plus boot id and pid namespace on Linux, so sandboxes
+// or containers sharing a kernel never read each other's pids as local).
+// Hashed so the holder stays `:`-free up to the nonce.
+let cachedHostTag: string | undefined;
+export function leaseHostTag(): string {
+  cachedHostTag ??= createHash("sha256").update(hostId()).digest("hex").slice(0, 12);
+  return cachedHostTag;
+}
+
+// True when `holder` was minted on this host by a process that has since
+// died — its lease can never be released or renewed by its owner.
+function isDeadLocalHolder(holder: string): boolean {
+  const m = /^(\d+)@([0-9a-f]+):/.exec(holder);
+  if (!m || m[2] !== leaseHostTag()) return false;
+  const pid = Number(m[1]);
+  return pid > 0 && pid !== process.pid && !isProcessAlive(pid);
 }
 
 // Acquires an exclusive lock on `path` for `holder`. Fails if the file is held
@@ -105,29 +132,35 @@ export function acquireLock(
     return err(new Error("acquireLock requires a non-empty holder"));
   }
   try {
-    purgeExpired(db, now);
-    const existing = db.prepare("SELECT * FROM locks WHERE path = ?").get(path) as
-      | LockRow
-      | undefined;
-    if (existing && existing.holder !== holder) {
-      return err(
-        new Error(
-          `file is locked by ${existing.holder}: ${path} ` +
-            `(expires in ${Math.max(0, existing.expires_at - now)}ms)`,
-        ),
-      );
-    }
-    const lock: Lock = {
-      path,
-      holder,
-      acquiredAt: now,
-      expiresAt: now + LOCK_TTL_MS,
-    };
-    db.prepare(
-      `INSERT OR REPLACE INTO locks (path, holder, acquired_at, expires_at)
-       VALUES (?, ?, ?, ?)`,
-    ).run(lock.path, lock.holder, lock.acquiredAt, lock.expiresAt);
-    return ok(lock);
+    // One IMMEDIATE transaction: the purge, the check and the claim see one
+    // state, so a purge of a dead holder can never clobber a live claimer.
+    const claim = db.transaction((): Result<Lock, Error> => {
+      purgeExpired(db, now);
+      const existing = db.prepare("SELECT * FROM locks WHERE path = ?").get(path) as
+        | LockRow
+        | undefined;
+      if (existing && existing.holder !== holder && !isDeadLocalHolder(existing.holder)) {
+        return err(
+          new Error(
+            `file is locked by ${existing.holder}: ${path} ` +
+              `(expires in ${Math.max(0, existing.expires_at - now)}ms)`,
+          ),
+        );
+      }
+      // A dead same-host holder's row (54pq) is simply replaced here.
+      const lock: Lock = {
+        path,
+        holder,
+        acquiredAt: now,
+        expiresAt: now + LOCK_TTL_MS,
+      };
+      db.prepare(
+        `INSERT OR REPLACE INTO locks (path, holder, acquired_at, expires_at)
+         VALUES (?, ?, ?, ?)`,
+      ).run(lock.path, lock.holder, lock.acquiredAt, lock.expiresAt);
+      return ok(lock);
+    });
+    return claim.immediate();
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     return err(new Error(`cannot acquire lock: ${reason}`));

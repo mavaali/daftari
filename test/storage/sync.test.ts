@@ -2,11 +2,13 @@
 // exclusion of rebuildable state, and restore into an empty directory.
 
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -135,6 +137,37 @@ describe("storage sync engine (#6)", () => {
     expect(manifest.ok && manifest.value !== null).toBe(true);
   });
 
+  it("lease-lock side files never sync, and a poisoned manifest cannot restore them", async () => {
+    const sideFiles = [
+      "process.lock.hb-n1",
+      "process.lock.hb-n1.tmp",
+      "process.lock.succ-abc",
+      "process.lock.gone-abc",
+    ];
+    for (const f of sideFiles) writeFileSync(join(vault, ".daftari", f), "{}");
+
+    expect((await syncVault(vault, backend)).ok).toBe(true);
+    const keys = await backend.list("tree/.daftari/");
+    expect(keys.ok).toBe(true);
+    if (!keys.ok) return;
+    expect(keys.value.some((k) => k.startsWith("tree/.daftari/process.lock"))).toBe(false);
+
+    await backend.put("tree/.daftari/process.lock.hb-n1", Buffer.from("{}"));
+    const manifestRaw = await backend.get(MANIFEST_KEY);
+    if (!manifestRaw.ok || manifestRaw.value === null) throw new Error("manifest missing");
+    const manifest = JSON.parse(manifestRaw.value.toString());
+    manifest.files[".daftari/process.lock.hb-n1"] = "00";
+    await backend.put(MANIFEST_KEY, Buffer.from(JSON.stringify(manifest)));
+
+    const target = join(mkdtempSync(join(tmpdir(), "daftari-restore-lease-")), "vault");
+    const restored = await restoreVault(target, backend);
+    expect(restored.ok).toBe(true);
+    if (!restored.ok) return;
+    expect(restored.value.skippedExcluded).toBe(1);
+    expect(existsSync(join(target, ".daftari", "process.lock.hb-n1"))).toBe(false);
+    rmSync(target, { recursive: true, force: true });
+  });
+
   it("second push is incremental: only the changed file re-uploads, removals delete", async () => {
     expect((await syncVault(vault, backend)).ok).toBe(true);
 
@@ -220,6 +253,43 @@ describe("storage sync engine (#6)", () => {
     const restored = await restoreVault(join(target, "vault"), backend);
     expect(restored.ok).toBe(false);
     if (!restored.ok) expect(restored.error.message).toContain("escapes restore root");
+    rmSync(target, { recursive: true, force: true });
+  });
+
+  // ozor: restore used to write every file with the default mode, so the
+  // 0600 secrets (session-audience, integration state) came back 0644.
+  it("restore keeps owner-only (0600) files owner-only and leaves others at the default", async () => {
+    writeFileSync(join(vault, ".daftari", "session-audience"), "aud\n");
+    chmodSync(join(vault, ".daftari", "session-audience"), 0o600);
+    writeFileSync(join(vault, ".daftari", "custom.secret"), "s\n");
+    chmodSync(join(vault, ".daftari", "custom.secret"), 0o600);
+    chmodSync(join(vault, "notes", "a.md"), 0o644);
+    expect((await syncVault(vault, backend)).ok).toBe(true);
+
+    const target = join(mkdtempSync(join(tmpdir(), "daftari-restore-mode-")), "vault");
+    const restored = await restoreVault(target, backend);
+    expect(restored.ok).toBe(true);
+    const mode = (p: string) => statSync(join(target, p)).mode & 0o777;
+    expect(mode(".daftari/session-audience")).toBe(0o600);
+    expect(mode(".daftari/custom.secret")).toBe(0o600);
+    expect(mode("notes/a.md") & 0o077).not.toBe(0); // not tightened
+    rmSync(target, { recursive: true, force: true });
+  });
+
+  it("a backing written before modes were recorded still restores known secret files 0600", async () => {
+    writeFileSync(join(vault, ".daftari", "session-audience"), "aud\n");
+    chmodSync(join(vault, ".daftari", "session-audience"), 0o600);
+    expect((await syncVault(vault, backend)).ok).toBe(true);
+    // Strip the mode record to simulate an older manifest.
+    const raw = await backend.get(MANIFEST_KEY);
+    if (!raw.ok || raw.value === null) throw new Error("no manifest");
+    const legacy = JSON.parse(raw.value.toString("utf-8"));
+    delete legacy.ownerOnly;
+    await backend.put(MANIFEST_KEY, Buffer.from(JSON.stringify(legacy)));
+
+    const target = join(mkdtempSync(join(tmpdir(), "daftari-restore-legacy-")), "vault");
+    expect((await restoreVault(target, backend)).ok).toBe(true);
+    expect(statSync(join(target, ".daftari", "session-audience")).mode & 0o777).toBe(0o600);
     rmSync(target, { recursive: true, force: true });
   });
 });

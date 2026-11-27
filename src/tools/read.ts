@@ -4,15 +4,27 @@
 // plus an MCP ToolDefinition that wraps it. server.ts registers the
 // definitions; tests call the logic functions directly.
 
-import { type AccessContext, canRead, filterByReadPermission } from "../access/rbac.js";
+import {
+  type AccessContext,
+  canRead,
+  filterByReadPermission,
+  readableCollections,
+} from "../access/rbac.js";
 import { type DescribesPin, parseDescribesEntry } from "../audit/describes.js";
+import { unitHasher } from "../curation/consumes.js";
 import { computeDecay, type DecayState } from "../curation/decay.js";
 import {
   compiledUpstreamStaleness,
   loadCompiledStaleContext,
+  SOURCE_DELETED_REASON,
   splitUpstreamVisibility,
   type UpstreamStaleness,
 } from "../curation/edge-staleness.js";
+import {
+  GROUNDING_AT_RISK_SCHEMA,
+  type GroundingAtRisk,
+  groundingFromIndex,
+} from "../curation/grounding.js";
 import {
   ensureLedgerWritable,
   leakLedgerPath,
@@ -26,7 +38,7 @@ import {
   type SourceVerifiabilityAnnotation,
   sourceVerifiabilityAnnotations,
 } from "../curation/source-refs.js";
-import { computeStaleness } from "../curation/staleness.js";
+import { computeStaleness, olderSeriesMembers } from "../curation/staleness.js";
 import { type StructuralDecay, structuralDecay } from "../curation/structural.js";
 import { DEFAULT_TENSION_STATUS, listTensions, TENSION_KINDS } from "../curation/tension.js";
 import { sourceReadable, sourceVerifiable, visibleTensions } from "../curation/tension-access.js";
@@ -56,10 +68,17 @@ import {
   TIERS,
   type ValidationReport,
 } from "../frontmatter/types.js";
+import {
+  type AmendedBy,
+  type AmendedByEntry,
+  amendedByCountSchema,
+  amendedByFor,
+  amendedBySchema,
+} from "../search/amended-by.js";
 import { type ContestedTension, contestedFor } from "../search/contested.js";
 import { getProvider } from "../search/vector.js";
 import { countDimMismatches, getMeta, openIndexDb } from "../storage/index-db.js";
-import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
+import { collectionOfPath, listFiles, readFile, resolveVaultPath } from "../storage/local.js";
 import { loadConfig } from "../utils/config.js";
 import { sha256Hex } from "../utils/hash.js";
 import { readRunId } from "../utils/run-id.js";
@@ -160,11 +179,22 @@ export interface VaultReadResult {
   // the materialized inbound-link graph, computed from the caller's vantage.
   // Null when there is nothing to say (same contract as `decay`).
   structural: StructuralDecay | null;
+  // #643: visible documents declaring they amend this one, the same shape
+  // (and RBAC omission) as search hits' amendedBy. Absent when none.
+  amendedBy?: AmendedByEntry[];
+  amendedByCount?: number;
   // #8: unresolved tensions involving this document, the same shape (and
   // RBAC omission rules) as search hits' contested annotations. Absent when
   // none are visible.
   contested?: ContestedTension[];
   contestedCount?: number;
+  // nlzr: grounding at risk — a vault source this document cites one hop up
+  // is contested, past its TTL or validity, superseded, or retracted. Names
+  // each source and reason; sources the caller cannot read are omitted
+  // entirely (no path, title, or state). Absent when nothing is at risk, or
+  // when the index is unavailable (the same degrade-to-silence as
+  // `contested`). Advisory: never mutates this document.
+  grounding_at_risk?: GroundingAtRisk;
   // U-7 (LD-7): the positional contest block — distinct from `contested`
   // (tension annotations). Present ONLY on a contested doc with no
   // ratified org_position; absent otherwise (upstream_staleness's
@@ -350,8 +380,17 @@ export async function vaultRead(
   // of the logs (ephemeral, rebuildable — the edges.jsonl materialization
   // precedent), not caching bolted on here.
   const staleCtx = await loadCompiledStaleContext(vaultRoot);
+  // One memoized hasher per serve: both classifications below re-hash each
+  // compiled unit at most once (out-of-band edit detection, T06).
+  const hashOf = unitHasher(vaultRoot);
   const rows: UpstreamStaleness[] | null = staleCtx
-    ? compiledUpstreamStaleness(resolved.value.relPath, staleCtx.consumes, staleCtx.provenance)
+    ? compiledUpstreamStaleness(
+        resolved.value.relPath,
+        staleCtx.consumes,
+        staleCtx.provenance,
+        undefined,
+        hashOf,
+      )
     : null;
 
   // Every served read is logged — the broken-read rate needs its denominator
@@ -432,6 +471,8 @@ export async function vaultRead(
   let upstream: UpstreamReadStaleness | null = null;
   let structural: StructuralDecay | null = null;
   let contestedResult: { contested: ContestedTension[]; contestedCount: number } | null = null;
+  let amended: AmendedBy | null = null;
+  let grounding: GroundingAtRisk | null = null;
   try {
     // Reader-facing surface: visible edges by omission, hidden pending edges
     // coarsened (#217 — an exact count over unreadable units is a small-cell
@@ -445,17 +486,25 @@ export async function vaultRead(
             staleCtx.consumes,
             staleCtx.provenance,
             isVerifiable,
+            hashOf,
           )
         : rows;
       const {
         visible,
         hiddenPending,
       }: { visible: UpstreamStaleness[]; hiddenPending: HiddenDownstream } = access
-        ? splitUpstreamVisibility(verifiedRows, (unit) => sourceReadable(db, access, unit))
+        ? splitUpstreamVisibility(
+            verifiedRows,
+            (unit) => sourceReadable(db, access, unit),
+            readableCollections(access.role) === undefined,
+          )
         : { visible: verifiedRows, hiddenPending: "none" };
       if (visible.length > 0 || hiddenPending !== "none") {
         const pendingBroken = visible.filter((r) => r.staleness === "pending-broken").length;
         const unverifiable = visible.filter((r) => r.staleness === "unverifiable").length;
+        const deleted = visible.filter(
+          (r) => r.staleness === "unverifiable" && r.reason === SOURCE_DELETED_REASON,
+        ).length;
         const clauses: string[] = [];
         if (pendingBroken > 0) {
           clauses.push(
@@ -463,9 +512,15 @@ export async function vaultRead(
               `changed incompatibly since this document was compiled — this content may predate them`,
           );
         }
-        if (unverifiable > 0) {
+        if (deleted > 0) {
           clauses.push(
-            `${unverifiable} upstream input${unverifiable === 1 ? "" : "s"} can no longer be ` +
+            `${deleted} upstream input${deleted === 1 ? " was" : "s were"} deleted from the ` +
+              `vault since this document was compiled`,
+          );
+        }
+        if (unverifiable - deleted > 0) {
+          clauses.push(
+            `${unverifiable - deleted} upstream input${unverifiable - deleted === 1 ? "" : "s"} can no longer be ` +
               `verified (source not in your readable vault)`,
           );
         }
@@ -494,6 +549,8 @@ export async function vaultRead(
       access,
     });
     if (db) contestedResult = contestedFor(vaultRoot, db, resolved.value.relPath, access);
+    if (db) amended = amendedByFor(db, resolved.value.relPath, access);
+    if (db) grounding = groundingFromIndex(vaultRoot, db, resolved.value.relPath, access);
   } finally {
     db?.close();
   }
@@ -649,9 +706,11 @@ export async function vaultRead(
     upstream_staleness: upstream,
     ...(sourceVerifiability.length > 0 ? { source_verifiability: sourceVerifiability } : {}),
     structural,
+    ...(amended ?? {}),
     ...(contestedResult
       ? { contested: contestedResult.contested, contestedCount: contestedResult.contestedCount }
       : {}),
+    ...(grounding ? { grounding_at_risk: grounding } : {}),
     ...(contestedPositions ? { contested_positions: contestedPositions } : {}),
     ...(ratifiedView ? { ratified_view: ratifiedView } : {}),
     ...(contestedInputs ? { contested_inputs: contestedInputs } : {}),
@@ -770,15 +829,14 @@ export interface VaultIndexResult {
 }
 
 // A document's collection is its frontmatter `collection`, falling back to the
-// top-level directory of its vault-relative path.
+// top-level directory of its vault-relative path. A root file with neither has
+// no collection ("").
 //
 // Exported because the MCP resource layer (src/resources.ts) gates
 // `resources/read` on the same predicate vault_read uses. One visibility rule,
 // not two that can drift apart.
 export function collectionOf(relPath: string, fm: Frontmatter): string {
-  if (fm.collection) return fm.collection;
-  const top = relPath.split("/")[0];
-  return top ?? "";
+  return fm.collection || collectionOfPath(relPath);
 }
 
 // One parsed document from a whole-vault scan. Shared by vaultIndex and
@@ -969,7 +1027,11 @@ export async function vaultStatus(
   const byCollection = new Map<string, number>();
   let invalidCount = 0;
   for (const entry of indexEntries.entries) {
-    byCollection.set(entry.collection, (byCollection.get(entry.collection) ?? 0) + 1);
+    // A root file with no declared collection still counts toward fileCount;
+    // it is just not in a collection.
+    if (entry.collection) {
+      byCollection.set(entry.collection, (byCollection.get(entry.collection) ?? 0) + 1);
+    }
     if (!entry.valid) invalidCount += 1;
   }
 
@@ -992,6 +1054,11 @@ export async function vaultStatus(
   // monitor must never widen the denominator past what the caller can read,
   // or the count leaks vault size.
   const validityCoverage: ValidityCoverage = { authored: 0, unknown: 0, total: 0 };
+  const olderMembers = olderSeriesMembers(
+    scan.value
+      .filter((doc) => visiblePaths.has(doc.relPath))
+      .map((doc) => ({ path: doc.relPath, frontmatter: doc.frontmatter })),
+  );
   for (const doc of scan.value) {
     if (!visiblePaths.has(doc.relPath)) continue;
     stalenessDistribution.total += 1;
@@ -1004,7 +1071,7 @@ export async function vaultStatus(
     const score = computeStaleness(
       {
         updated: doc.frontmatter.updated,
-        ttl_days: doc.frontmatter.ttl_days,
+        ttl_days: olderMembers.has(doc.relPath) ? null : doc.frontmatter.ttl_days,
       },
       scanNow,
     ).score;
@@ -1157,6 +1224,11 @@ export const FRONTMATTER_SCHEMA: Record<string, unknown> = {
     ttl_days: { type: ["number", "null"] },
     tags: { type: "array", items: { type: "string" } },
     describes: { type: "array", items: { type: "string" } },
+    amends: {
+      type: "array",
+      items: { type: "string" },
+      description: "Vault-relative paths of earlier documents this one amends or fulfils",
+    },
     questions_answered: { type: "array", items: { type: "string" } },
     questions_raised: { type: "array", items: { type: "string" } },
     subjects: { type: "array", items: { type: "string" } },
@@ -1372,10 +1444,13 @@ export const readTools: ToolDefinition[] = [
       "changed since this document was compiled and what tier 1 says about " +
       "the pending change: current / pending-compatible / pending-broken; " +
       "null when there is nothing to report), a structural report (#8 — " +
-      "orphan: nothing you can read links here; retired_still_linked: " +
+      "orphan: nothing you can read links here or cites this in sources; retired_still_linked: " +
       "canonical docs still lean on this retired (deprecated/superseded) one; null when healthy), " +
       "any unresolved tensions involving the document (contested, same " +
-      "shape as search hits), a contested_positions block when principals " +
+      "shape as search hits), a grounding_at_risk block when a vault source " +
+      "this document cites one hop up is contested, past its TTL or " +
+      "validity, superseded, or retracted (each reason names the source; " +
+      "sources you cannot read are omitted), a contested_positions block when principals " +
       "hold conflicting live positions and no org position is ratified, " +
       "a ratified_view block when an org position IS ratified (the org's " +
       "belief at its confidence, with the surviving minority carried as " +
@@ -1480,7 +1555,7 @@ export const readTools: ToolDefinition[] = [
           properties: {
             orphan: {
               type: "boolean",
-              description: "No document the caller can read links here",
+              description: "No document the caller can read links here or cites this in sources",
             },
             retired_still_linked: {
               type: ["object", "null"],
@@ -1493,6 +1568,9 @@ export const readTools: ToolDefinition[] = [
           },
           required: ["orphan", "retired_still_linked", "banner"],
         },
+        // Absent (both fields) when no visible document amends this one.
+        amendedBy: amendedBySchema,
+        amendedByCount: amendedByCountSchema,
         // Absent (both fields) when no visible unresolved tension touches the
         // document. `contested` is capped; `contestedCount` is the true total.
         contested: {
@@ -1514,6 +1592,7 @@ export const readTools: ToolDefinition[] = [
           },
         },
         contestedCount: { type: "integer", minimum: 0 },
+        grounding_at_risk: GROUNDING_AT_RISK_SCHEMA,
         // U-7: present only on a contested doc with no ratified org_position;
         // absent otherwise (same absent-key discipline as upstream_staleness).
         contested_positions: {

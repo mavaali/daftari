@@ -232,6 +232,22 @@ federation:
     expect(result.error.message).toContain('already mounted as "research"');
   });
 
+  it("refuses a shadowing canonical file even when `ignore` hides it (#646)", async () => {
+    makeVault("ref", REF_CONFIG);
+    writeFileSync(join(canonical, "research:notes.md"), "# shadow\n");
+    writeFileSync(join(canonical, ".daftari", "config.yaml"), "ignore:\n  - 'research:*'\n");
+    clearConfigCache();
+    const result = await loadMounts(
+      canonical,
+      mountsOf({ research: "../ref" }),
+      "human:mihir",
+      () => {},
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("shadows the mount's path prefix");
+  });
+
   it("refuses a canonical file that shadows a declared alias prefix", async () => {
     makeVault("ref", REF_CONFIG);
     writeFileSync(join(canonical, "research:notes.md"), "# shadow\n");

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { withCallBudget } from "../consolidate/call-budget.js";
 import { chunkMessages } from "../distill/chunk.js";
-import { type ExtractOutcome, extractClaims } from "../distill/extract.js";
+import { type ExtractOutcome, extractClaims, resolveMaxClaims } from "../distill/extract.js";
 import { type ResolvedDistill, resolveDistillClient } from "../distill/index.js";
 import { makeOverlapHinter } from "../distill/propose.js";
 import {
@@ -150,7 +150,7 @@ function preparedIntegrationDistill(
     try {
       extracted = await deps.extract(chunks, budgeted, {
         model: config.model,
-        maxClaims: config.maxClaims,
+        maxClaims: resolveMaxClaims(config.maxClaims, chunks.length),
         inCallInputCap: config.inCallInputCap,
       });
     } catch {
@@ -167,7 +167,9 @@ function preparedIntegrationDistill(
     const upserted = await deps.upsert(vaultRoot, {
       sourceId: input.providerSourceId,
       sourceContent: input.text,
-      claims: extracted.claims,
+      // The chunk timestamps here are the ingestion time (deps.now()), not when
+      // anything was said — drop said_at rather than stamp a false source time.
+      claims: extracted.claims.map(({ said_at: _syntheticTime, ...claim }) => claim),
       runId: id,
       overlapSearch: makeOverlapHinter(vaultRoot),
       collection: input.targetCollection,

@@ -248,7 +248,10 @@ describe("daftari sleep — retracted source wake", () => {
     expect(r.value.wake.map((w) => w.path)).not.toContain("analysis/dep3.md");
   });
 
-  it("does NOT wake a draft (non-canonical) doc even if it cites a retracted source", async () => {
+  // nlzr changed this: a draft whose grounding is retracted IS woken now —
+  // decisions are often drafts, and Stage 2 showed a draft decision silent on
+  // every surface. It wakes with the grounding reason, not the canonical copy.
+  it("wakes a draft (non-canonical) doc that cites a retracted source, with the grounding reason", async () => {
     mdRetracted(vault, "refs/old-spec.md", { status: "deprecated" });
     mdRetracted(vault, "analysis/draft-dep.md", {
       status: "draft",
@@ -258,7 +261,22 @@ describe("daftari sleep — retracted source wake", () => {
     const r = await runSleepCycle(vault, NOW);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.value.wake.map((w) => w.path)).not.toContain("analysis/draft-dep.md");
+    const task = r.value.wake.find((w) => w.path === "analysis/draft-dep.md");
+    expect(task?.reason).toContain("draft, grounding at risk: refs/old-spec.md — retracted");
+    expect(task?.reason).not.toContain("canonical, cites retracted");
+  });
+
+  it("still does NOT wake a retired doc that cites a retracted source", async () => {
+    mdRetracted(vault, "refs/old-spec.md", { status: "deprecated" });
+    mdRetracted(vault, "analysis/archived-dep.md", {
+      status: "archived",
+      sources: ["refs/old-spec.md"],
+    });
+
+    const r = await runSleepCycle(vault, NOW);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.wake.map((w) => w.path)).not.toContain("analysis/archived-dep.md");
   });
 
   it("does not wake a dangling qualified source ref through a same-basename retracted doc", async () => {

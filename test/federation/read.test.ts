@@ -207,6 +207,23 @@ describe("vault_status federation block", () => {
     expect(mount?.lastRefresh).toBeNull();
   });
 
+  it("honours the referenced vault's own ignore list (#646)", async () => {
+    const ref = join(base, "ref");
+    mkdirSync(join(ref, "Clippings"), { recursive: true });
+    writeFileSync(join(ref, "Clippings", "saved.md"), PRICING_DOC);
+    await mountRef("human:mihir");
+    const counted = await vaultStatus(canonical);
+    if (!counted.ok) throw counted.error;
+    expect(counted.value.federation?.[0]?.readableDocCount).toBe(2);
+
+    writeFileSync(join(ref, ".daftari", "config.yaml"), `${REF_CONFIG}ignore:\n  - Clippings\n`);
+    clearConfigCache();
+    await mountRef("human:mihir");
+    const ignored = await vaultStatus(canonical);
+    if (!ignored.ok) throw ignored.error;
+    expect(ignored.value.federation?.[0]?.readableDocCount).toBe(1);
+  });
+
   it("reports zero readable docs for a guest-resolved principal", async () => {
     await mountRef("human:stranger");
     const result = await vaultStatus(canonical);

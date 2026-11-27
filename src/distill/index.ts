@@ -34,12 +34,8 @@ export {
 // Imports
 // ---------------------------------------------------------------------------
 
-import { createAnthropicClient, type LlmClient } from "../eval/llm.js";
-import {
-  createOpenRouterClient,
-  type LlmTransport,
-  resolveTransport,
-} from "../eval/llm-openrouter.js";
+import type { LlmClient } from "../eval/llm.js";
+import { type LlmTransport, resolveTransport } from "../eval/llm-openrouter.js";
 import { createTransportClient } from "../eval/transport.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { type DistillConfig, loadConfig } from "../utils/config.js";

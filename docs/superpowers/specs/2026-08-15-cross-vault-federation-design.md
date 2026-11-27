@@ -94,10 +94,11 @@ contributes nothing.
 ignored. Chained mounts multiply every question in this spec — identity
 mapping through two hops, index cost, cycles — for no named need.
 
-**From the referenced vault's config, the mounting process reads exactly two
+**From the referenced vault's config, the mounting process reads exactly three
 things:** the policy surface (`roles` plus the new `federation.principals`
-block, Decision 2) and `schema_extensions` (for Decision 5's validation
-report). Everything else — `hooks`, `server`, `embeddings`, `lint_voice`,
+block, Decision 2), `schema_extensions` (for Decision 5's validation report),
+and `ignore` (#646 — which files are that vault's documents is its own call).
+Everything else — `hooks`, `server`, `embeddings`, `lint_voice`,
 `watch` — is ignored. The hooks exclusion is load-bearing security, not
 tidiness: loading vault-supplied modules from a mounted vault would execute
 foreign code in the canonical process. This is a MUST NOT with a test.

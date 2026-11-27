@@ -31,7 +31,7 @@ describe("vault_lint — repository source references", () => {
   });
 
   it("registers repository verification as advisory, not tier 0", () => {
-    expect(LINT_CHECKS.at(-1)).toBe("unverifiableSourceRefs");
+    expect(LINT_CHECKS).toContain("unverifiableSourceRefs");
     expect(TIER0_LINT_CHECKS).not.toContain("unverifiableSourceRefs");
   });
 

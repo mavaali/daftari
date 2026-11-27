@@ -23,12 +23,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { resolveAccess } from "../access/rbac.js";
 import { sourceReadable } from "../curation/tension-access.js";
-import { createAnthropicClient, type LlmClient } from "../eval/llm.js";
-import {
-  createOpenRouterClient,
-  type LlmTransport,
-  resolveTransport,
-} from "../eval/llm-openrouter.js";
+import type { LlmClient } from "../eval/llm.js";
+import { type LlmTransport, resolveTransport } from "../eval/llm-openrouter.js";
 import { createTransportClient } from "../eval/transport.js";
 import { ok } from "../frontmatter/types.js";
 import { openIndexForActiveProvider, vaultSearchRelated } from "../tools/search.js";

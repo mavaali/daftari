@@ -20,6 +20,7 @@
 import { writeFile } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { resolve } from "node:path";
+import { cliPrincipal, principalKindForVault, recordShown } from "../curation/review-log.js";
 import {
   CALLER_RESOLUTION_KINDS,
   type ResolutionKind,
@@ -171,7 +172,11 @@ async function runRule(argv: string[], vaultRoot: string): Promise<number> {
     .filter((s) => s.length > 0);
   if (references && references.length > 0) resolution.references = references;
 
-  const ruled = await resolveTension(vaultRoot, id, resolution);
+  // decided_by_kind comes from the CLI principal (cli:<os user>) mapped in
+  // principal_kinds — never from --by, which is free text.
+  const ruled = await resolveTension(vaultRoot, id, resolution, {
+    decidedByKind: principalKindForVault(vaultRoot, cliPrincipal()),
+  });
   if (!ruled.ok) {
     process.stderr.write(`daftari court: ${ruled.error.message}\n`);
     return 2;
@@ -234,6 +239,14 @@ export async function runCourt(argv: string[]): Promise<number> {
     process.stderr.write(`daftari court: write failed: ${reason}\n`);
     return 3;
   }
+
+  // Bead 9mpe: the docket surfaced these open tensions to a reviewer.
+  recordShown(
+    vaultRoot,
+    "docket",
+    docket.value.entries.flatMap((e) => (e.id !== null ? [e.id] : [])),
+    principalKindForVault(vaultRoot, cliPrincipal()),
+  );
 
   return 0;
 }

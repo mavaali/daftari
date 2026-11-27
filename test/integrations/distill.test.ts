@@ -92,6 +92,56 @@ describe("integration distillation", () => {
     );
   });
 
+  it("does not stamp said_at from the synthetic ingestion-time timestamp", async () => {
+    const extract = vi.fn(async () => ({
+      claims: [
+        {
+          claim_key: "anchor:claim-1",
+          statement: "The connector stages claims.",
+          proposed_frontmatter: { title: "The connector stages claims." },
+          said_at: "2026-08-24T12:00:00",
+        },
+      ],
+      budget_exhausted: false,
+      llmCalls: 1,
+      chunkErrors: [],
+    }));
+    const upsert = vi.fn(async () =>
+      ok({
+        noop: false,
+        skipped: [],
+        updated: [],
+        created: ["anchor:claim-1"],
+        propose: null,
+        stateWritten: true,
+      }),
+    );
+    const distill = createIntegrationDistill(vault, {
+      resolve: () =>
+        ok({
+          client: { complete: vi.fn(), completeJson: vi.fn(), completeWithTools: vi.fn() },
+          config: {
+            model: "test-model",
+            maxLlmCalls: 2,
+            maxClaims: 3,
+            maxVerbatimChars: 100,
+            inCallInputCap: 64,
+            corroborationThreshold: 0.8,
+          },
+          transport: "anthropic",
+        }),
+      extract,
+      upsert,
+      now: () => new Date("2026-08-24T12:00:00.000Z"),
+      runNonce: () => "nonce",
+    });
+    const result = await distill({ providerSourceId: "google:doc-1", revision: "r1", text: "A" });
+    expect(result.ok).toBe(true);
+    const claims = (upsert.mock.calls[0] as unknown as [string, { claims: object[] }])[1].claims;
+    expect(claims).toHaveLength(1);
+    expect("said_at" in (claims[0] as object)).toBe(false);
+  });
+
   it("does not advance the source when extraction is partial", async () => {
     const upsert = vi.fn();
     const distill = createIntegrationDistill(vault, {

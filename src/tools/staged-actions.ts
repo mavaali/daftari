@@ -9,18 +9,26 @@
 // vault_ratify is the human's approve/reject gate. On approve it dispatches to
 // the matching write tool for the action type. Every action type now applies on
 // ratify: promote → vault_promote, deprecate → vault_deprecate, supersede →
-// vault_supersede, confidence-up → vault_set_confidence, merge → vault_merge
-// (the §11.4 write tools). A dispatch failure (including a malformed
+// vault_supersede, unsupersede → vault_unsupersede, confidence-up →
+// vault_set_confidence, merge → vault_merge. A dispatch failure (including a malformed
 // proposed_diff) leaves the action pending so it can be retried.
+//
+// Decisions are exclusive (8i1l): each runs under withStagedActionDecision, an
+// approve records `applying` before it dispatches, and an approve interrupted
+// between its write and its decision is refused — never re-applied — until a
+// human resolves it with resolve_interrupted.
 
+import { acquireLock, mintLeaseHolder, openLockDb, releaseLock } from "../access/locks.js";
 import { type AccessContext, canRatify, canRead, canWrite, isProposeOnly } from "../access/rbac.js";
 import {
   getStagedActionById,
   nowISO,
   recordDecision,
   STAGED_ACTION_TYPES,
+  type StagedAction,
   type StagedActionType,
   stageActionWithConflictCheck,
+  withStagedActionDecision,
 } from "../curation/staged-actions.js";
 import { bucketHiddenDownstream } from "../curation/tension-blast.js";
 import { tier0DeprecateGate, tier0PromoteGate } from "../curation/tier0.js";
@@ -30,17 +38,19 @@ import { validateFrontmatter } from "../frontmatter/schema.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { readFile, resolveVaultPath } from "../storage/local.js";
 import { loadConfig } from "../utils/config.js";
-import { log as gitLog } from "../utils/git.js";
+import { commit, log as gitLog, isGitRepo, statusPorcelain } from "../utils/git.js";
 import { readRunId } from "../utils/run-id.js";
 import type { ToolDefinition } from "./read.js";
 import { computeRepin } from "./repin.js";
 import {
+  commitIdentity,
   isStaleWriteError,
   vaultDeprecate,
   vaultMerge,
   vaultPromote,
   vaultSetConfidence,
   vaultSupersede,
+  vaultUnsupersede,
   vaultWrite,
   type WriteResult,
 } from "./write.js";
@@ -254,12 +264,162 @@ export async function vaultStageAction(
 
 export interface RatifyResult {
   action_id: string;
-  decision: "approve" | "reject";
+  // `resolve` (8i1l): the call settled an interrupted approval instead of
+  // deciding a pending action — see resolved_interrupted.
+  decision: "approve" | "reject" | "resolve";
   applied: boolean;
   commit?: string;
   // True when the vault runs shadow_mode (§11.5): the dispatch was computed
   // and shadow-logged but nothing was written, so the action stays pending.
   shadow?: boolean;
+  // Set on a resolve: `landed` recorded the action ratified, `not-landed`
+  // returned it to pending. Neither applies anything.
+  resolved_interrupted?: "landed" | "not-landed";
+}
+
+// The answer to any decision on an action whose approval was interrupted
+// between its write and its decision record (8i1l). The write may or may not
+// have landed, so neither approve (could apply twice) nor reject (could stand
+// over a landed write) nor the expiry sweep may touch it.
+function interruptedError(action: StagedAction): Error {
+  const since = action.ratifiedAt ? ` since ${action.ratifiedAt}` : "";
+  const by = action.ratifiedBy ? ` by ${action.ratifiedBy}` : "";
+  return new Error(
+    `vault_ratify: staged action ${action.id} was interrupted mid-approval ` +
+      `(applying${since}${by}) — its ${action.actionType} of ${action.targetPath} may or ` +
+      `may not have landed, so it is not applied again. Inspect ${action.targetPath} ` +
+      `(vault_read, vault_provenance, git log), then call vault_ratify with ` +
+      `resolve_interrupted: "landed" (records it ratified and commits the write if it ` +
+      `never reached git; applies nothing again) or ` +
+      `"not-landed" (returns it to pending to approve or reject again).`,
+  );
+}
+
+// The vault-relative paths an action's dispatch writes: the target, plus a
+// merge's two sources (vault_merge rewrites them to point at the target).
+function actionWritePaths(action: StagedAction): string[] {
+  const diff =
+    action.proposedDiff && typeof action.proposedDiff === "object"
+      ? (action.proposedDiff as Record<string, unknown>)
+      : {};
+  const paths = [action.targetPath];
+  if (action.actionType === "merge" && Array.isArray(diff.merge_from)) {
+    for (const p of diff.merge_from) if (typeof p === "string") paths.push(p);
+  }
+  return paths;
+}
+
+// resolve_interrupted: "landed" (54pq). A crash can fall after the dispatched
+// write but before its git commit, leaving the file on disk and uncommitted;
+// recording that action ratified without committing would leave the landed
+// content out of history. So, under the action's decision lease and the
+// written paths' file leases:
+//   - the target must exist on disk, and for an action that carries the
+//     content it writes (write, merge) its body must match that payload —
+//     otherwise "landed" is refused and the human is pointed at "not-landed";
+//   - every written path that differs from HEAD (or is untracked) is
+//     committed through the normal commit path, authored as the approver
+//     whose interrupted write it was.
+// Returns the commit's short hash, or null when there was nothing to commit
+// (already in HEAD, or the vault sets auto_commit: false).
+async function settleLandedWrite(
+  vaultRoot: string,
+  action: StagedAction,
+  resolver: string,
+): Promise<Result<string | null, Error>> {
+  const refuse = (why: string): Error =>
+    new Error(
+      `vault_ratify: cannot resolve ${action.id} as "landed" — ${why}. If its ` +
+        `${action.actionType} did not land, resolve it with resolve_interrupted: "not-landed".`,
+    );
+  const absPaths = new Map<string, string>(); // relPath → absPath, target first
+  for (const p of actionWritePaths(action)) {
+    const resolved = resolveVaultPath(vaultRoot, p);
+    if (!resolved.ok) return err(refuse(`cannot resolve ${p}: ${resolved.error.message}`));
+    absPaths.set(resolved.value.relPath, resolved.value.absPath);
+  }
+  const paths = [...absPaths.keys()];
+  const target = paths[0] as string;
+
+  const opened = openLockDb(vaultRoot);
+  if (!opened.ok) return opened;
+  const db = opened.value;
+  const holder = mintLeaseHolder(resolver);
+  const held: string[] = [];
+  try {
+    for (const p of [...paths].sort()) {
+      const lease = acquireLock(db, p, holder);
+      if (!lease.ok) return lease;
+      held.push(p);
+    }
+
+    const onDisk = await readFile(absPaths.get(target) as string);
+    if (!onDisk.ok) return err(refuse(`${target} is not on disk`));
+    const diff =
+      action.proposedDiff && typeof action.proposedDiff === "object"
+        ? (action.proposedDiff as Record<string, unknown>)
+        : {};
+    if (
+      (action.actionType === "write" || action.actionType === "merge") &&
+      typeof diff.body === "string"
+    ) {
+      const parsed = parseDocument(onDisk.value);
+      if (!parsed.ok || parsed.value.content.trim() !== diff.body.trim()) {
+        return err(refuse(`${target} on disk differs from the action's proposed body`));
+      }
+    }
+
+    const config = loadConfig(vaultRoot);
+    if (!config.ok) return config;
+    if (!config.value.autoCommit) return ok(null);
+
+    // Only paths still on disk: a missing merge source is not this action's
+    // doing, and committing its deletion would put it in this action's name.
+    const present: string[] = [];
+    for (const p of paths) if ((await readFile(absPaths.get(p) as string)).ok) present.push(p);
+    let uncommitted = present;
+    if (await isGitRepo(vaultRoot)) {
+      uncommitted = [];
+      for (const p of present) {
+        const st = await statusPorcelain(vaultRoot, [p]);
+        if (!st.ok) return st;
+        if (st.value.length > 0) uncommitted.push(p);
+      }
+    }
+    if (uncommitted.length === 0) return ok(null);
+
+    const agent = action.ratifiedBy ?? resolver;
+    const identity = commitIdentity(agent, action.decidedByPrincipal ?? undefined);
+    const committed = await commit(
+      vaultRoot,
+      uncommitted,
+      `vault_ratify: ${action.actionType} ${target} landed (${action.id}, interrupted ` +
+        `approval resolved by ${resolver}) by ${agent}` +
+        identity.trailer,
+      identity.author,
+      { gitDir: config.value.gitDir },
+    );
+    if (!committed.ok) {
+      return err(
+        new Error(
+          `vault_ratify: ${action.id} could not be resolved as "landed" — committing ` +
+            `${uncommitted.join(", ")} failed (${committed.error.message}); it stays 'applying'`,
+        ),
+      );
+    }
+    return ok(committed.value.hash);
+  } finally {
+    for (const p of held) releaseLock(db, p, holder);
+    db.close();
+  }
+}
+
+function notPendingError(action: StagedAction): Error {
+  if (action.status === "applying") return interruptedError(action);
+  return new Error(
+    `vault_ratify: staged action ${action.id} is '${action.status}', not 'pending' — ` +
+      "it cannot be ratified",
+  );
 }
 
 // The two tier-0 gate problem assemblies, shared by the four ratify gate
@@ -342,14 +502,7 @@ export async function describeRatifyElicitation(
   if (!found.ok) return found;
   const action = found.value;
   if (!action) return err(new Error(`vault_ratify: unknown staged action: ${id.value}`));
-  if (action.status !== "pending") {
-    return err(
-      new Error(
-        `vault_ratify: staged action ${id.value} is '${action.status}', not 'pending' — ` +
-          "it cannot be ratified",
-      ),
-    );
-  }
+  if (action.status !== "pending") return err(notPendingError(action));
   // HEAD at proposal time rides the signed state for the audit trail; the
   // dispatch path re-validates pending/conflict-free on resubmit regardless,
   // so a missing HEAD (no git yet) degrades to null rather than blocking.
@@ -396,12 +549,30 @@ export async function vaultRatify(
 
   const id = requireString(args, "id", "vault_ratify");
   if (!id.ok) return id;
-  const decisionRaw = requireString(args, "decision", "vault_ratify");
-  if (!decisionRaw.ok) return decisionRaw;
-  if (decisionRaw.value !== "approve" && decisionRaw.value !== "reject") {
-    return err(new Error("vault_ratify 'decision' must be 'approve' or 'reject'"));
+
+  // resolve_interrupted (8i1l) settles an approval that was interrupted
+  // between its write and its decision record. It replaces `decision`.
+  let resolution: "landed" | "not-landed" | undefined;
+  if (args.resolve_interrupted !== undefined && args.resolve_interrupted !== null) {
+    if (args.resolve_interrupted !== "landed" && args.resolve_interrupted !== "not-landed") {
+      return err(new Error("vault_ratify 'resolve_interrupted' must be 'landed' or 'not-landed'"));
+    }
+    if (args.decision !== undefined && args.decision !== null) {
+      return err(
+        new Error("vault_ratify: pass either 'decision' or 'resolve_interrupted', not both"),
+      );
+    }
+    resolution = args.resolve_interrupted;
   }
-  const decision = decisionRaw.value;
+  let decision: "approve" | "reject" = "reject";
+  if (resolution === undefined) {
+    const decisionRaw = requireString(args, "decision", "vault_ratify");
+    if (!decisionRaw.ok) return decisionRaw;
+    if (decisionRaw.value !== "approve" && decisionRaw.value !== "reject") {
+      return err(new Error("vault_ratify 'decision' must be 'approve' or 'reject'"));
+    }
+    decision = decisionRaw.value;
+  }
   const principal = requireString(args, "principal", "vault_ratify");
   if (!principal.ok) return principal;
 
@@ -414,30 +585,81 @@ export async function vaultRatify(
     if (trimmed.length > 0) reason = trimmed;
   }
 
+  // Everything from the status check to the last decision record runs as the
+  // only decider of this action, in this process and across processes.
+  return withStagedActionDecision(vaultRoot, id.value, principal.value, () =>
+    decideLocked(vaultRoot, id.value, decision, resolution, principal.value, reason, access),
+  );
+}
+
+// vault_ratify's body, run under the action's decision lock.
+async function decideLocked(
+  vaultRoot: string,
+  actionId: string,
+  decision: "approve" | "reject",
+  resolution: "landed" | "not-landed" | undefined,
+  principalName: string,
+  reason: string | undefined,
+  access?: AccessContext,
+): Promise<Result<RatifyResult, Error>> {
+  const id = { value: actionId };
+  const principal = { value: principalName };
+
   // Validate the action exists and is still open.
   const found = await getStagedActionById(vaultRoot, id.value);
   if (!found.ok) return found;
   const action = found.value;
   if (!action) return err(new Error(`vault_ratify: unknown staged action: ${id.value}`));
-  if (action.status !== "pending") {
-    return err(
-      new Error(
-        `vault_ratify: staged action ${id.value} is '${action.status}', not 'pending' — ` +
-          "it cannot be ratified",
-      ),
+
+  const attribution = {
+    ratifiedAt: nowISO(),
+    ratifiedBy: principal.value,
+    ...(reason ? { reason } : {}),
+    ...(access?.user != null ? { decidedByPrincipal: access.user } : {}),
+  };
+
+  // --- resolve an interrupted approval: record the human's finding, apply nothing ---
+  if (resolution !== undefined) {
+    if (action.status !== "applying") {
+      return err(
+        new Error(
+          `vault_ratify: staged action ${id.value} is not interrupted (it is ` +
+            `'${action.status}') — resolve_interrupted applies only to an 'applying' action`,
+        ),
+      );
+    }
+    // 54pq: "landed" is a claim about the working tree, so check it. The
+    // target must be on disk (and match the payload, for actions that carry
+    // one); a write that landed but never reached git is committed now.
+    let landedCommit: string | null = null;
+    if (resolution === "landed") {
+      const settledWrite = await settleLandedWrite(vaultRoot, action, principal.value);
+      if (!settledWrite.ok) return settledWrite;
+      landedCommit = settledWrite.value;
+    }
+    const settled = await recordDecision(
+      vaultRoot,
+      id.value,
+      { status: resolution === "landed" ? "ratified" : "pending", ...attribution },
+      { expect: "applying" },
     );
+    if (!settled.ok) return settled;
+    return ok({
+      action_id: id.value,
+      decision: "resolve",
+      applied: false,
+      resolved_interrupted: resolution,
+      ...(landedCommit ? { commit: landedCommit } : {}),
+    });
   }
 
-  const decidedAt = nowISO();
+  if (action.status !== "pending") return err(notPendingError(action));
 
   // --- reject: record and apply nothing ---
   if (decision === "reject") {
     const recorded = await recordDecision(vaultRoot, id.value, {
       status: "rejected",
-      ratifiedAt: decidedAt,
-      ratifiedBy: principal.value,
-      ...(reason ? { reason } : {}),
-      ...(access?.user != null ? { decidedByPrincipal: access.user } : {}),
+      ...attribution,
     });
     if (!recorded.ok) return recorded;
     return ok({ action_id: id.value, decision, applied: false });
@@ -587,7 +809,10 @@ export async function vaultRatify(
     }
   }
 
-  let dispatched: Result<WriteResult, Error>;
+  // Plan the dispatch first: every payload check that can fail without
+  // touching the vault runs before the applying marker, so a malformed
+  // proposal leaves no trace in the log.
+  let run: () => Promise<Result<WriteResult, Error>>;
   switch (action.actionType as StagedActionType) {
     case "write": {
       // Payload validated above (writePayload is always set for this type).
@@ -597,34 +822,32 @@ export async function vaultRatify(
       if (!writePayload) {
         return err(new Error(`vault_ratify: write action ${id.value} lost its payload`));
       }
-      dispatched = await vaultWrite(
-        vaultRoot,
-        {
-          path: action.targetPath,
-          frontmatter: writePayload.frontmatter,
-          body: writePayload.body,
-          agent: principal.value,
-          ...(action.runId ? { run_id: action.runId } : {}),
-          // LD-13 ratify staleness guard: a 'write' proposal's frontmatter is a
-          // (possibly full-field) snapshot computed against the document as it
-          // stood when the proposal was staged. Passing that as base_version
-          // makes vaultWrite's existing stale-write check (write.ts) reject a
-          // replay against a document that changed since staging, instead of
-          // silently overwriting the change. Absent on
-          // proposals staged before this field existed — old records keep
-          // today's behavior (no staleness check, last-write-wins).
-          ...(action.baseVersion ? { base_version: action.baseVersion } : {}),
-        },
-        access,
-      );
+      run = () =>
+        vaultWrite(
+          vaultRoot,
+          {
+            path: action.targetPath,
+            frontmatter: writePayload.frontmatter,
+            body: writePayload.body,
+            agent: principal.value,
+            ...(action.runId ? { run_id: action.runId } : {}),
+            // LD-13 ratify staleness guard: a 'write' proposal's frontmatter is a
+            // (possibly full-field) snapshot computed against the document as it
+            // stood when the proposal was staged. Passing that as base_version
+            // makes vaultWrite's existing stale-write check (write.ts) reject a
+            // replay against a document that changed since staging, instead of
+            // silently overwriting the change. Absent on
+            // proposals staged before this field existed — old records keep
+            // today's behavior (no staleness check, last-write-wins).
+            ...(action.baseVersion ? { base_version: action.baseVersion } : {}),
+          },
+          access,
+        );
       break;
     }
     case "promote":
-      dispatched = await vaultPromote(
-        vaultRoot,
-        { path: action.targetPath, agent: principal.value },
-        access,
-      );
+      run = () =>
+        vaultPromote(vaultRoot, { path: action.targetPath, agent: principal.value }, access);
       break;
     case "deprecate": {
       const deprecateArgs: Record<string, unknown> = {
@@ -636,7 +859,7 @@ export async function vaultRatify(
       if (typeof diff.superseded_by === "string") {
         deprecateArgs.superseded_by = diff.superseded_by;
       }
-      dispatched = await vaultDeprecate(vaultRoot, deprecateArgs, access);
+      run = () => vaultDeprecate(vaultRoot, deprecateArgs, access);
       break;
     }
     case "supersede": {
@@ -646,18 +869,28 @@ export async function vaultRatify(
           new Error(`vault_ratify: supersede action ${id.value} needs proposed_diff.superseded_by`),
         );
       }
-      dispatched = await vaultSupersede(
-        vaultRoot,
-        {
-          old_path: action.targetPath,
-          new_path: diff.superseded_by,
-          reason: action.rationale,
-          agent: principal.value,
-        },
-        access,
-      );
+      run = () =>
+        vaultSupersede(
+          vaultRoot,
+          {
+            old_path: action.targetPath,
+            new_path: diff.superseded_by,
+            reason: action.rationale,
+            agent: principal.value,
+          },
+          access,
+        );
       break;
     }
+    case "unsupersede":
+      // proposed_diff carries nothing: the rationale is the reversal's reason.
+      run = () =>
+        vaultUnsupersede(
+          vaultRoot,
+          { path: action.targetPath, reason: action.rationale, agent: principal.value },
+          access,
+        );
+      break;
     case "confidence-up": {
       // proposed_diff = { confidence: "<low|medium|high>" }. The enum name is
       // confidence-up; the tool that applies it is vault_set_confidence.
@@ -668,16 +901,17 @@ export async function vaultRatify(
           ),
         );
       }
-      dispatched = await vaultSetConfidence(
-        vaultRoot,
-        {
-          path: action.targetPath,
-          confidence: diff.confidence,
-          reason: action.rationale,
-          agent: principal.value,
-        },
-        access,
-      );
+      run = () =>
+        vaultSetConfidence(
+          vaultRoot,
+          {
+            path: action.targetPath,
+            confidence: diff.confidence,
+            reason: action.rationale,
+            agent: principal.value,
+          },
+          access,
+        );
       break;
     }
     case "merge": {
@@ -707,7 +941,7 @@ export async function vaultRatify(
       if (diff.frontmatter && typeof diff.frontmatter === "object") {
         mergeArgs.frontmatter = diff.frontmatter;
       }
-      dispatched = await vaultMerge(vaultRoot, mergeArgs, access);
+      run = () => vaultMerge(vaultRoot, mergeArgs, access);
       break;
     }
     case "repin": {
@@ -775,24 +1009,54 @@ export async function vaultRatify(
       );
       const newDescribes = currentDescribes.map((entry) => replacementMap.get(entry) ?? entry);
 
-      dispatched = await vaultWrite(
-        vaultRoot,
-        {
-          path: action.targetPath,
-          frontmatter: { describes: newDescribes },
-          body: currentParsed.value.content,
-          agent: principal.value,
-          ...(action.runId ? { run_id: action.runId } : {}),
-        },
-        access,
-      );
+      run = () =>
+        vaultWrite(
+          vaultRoot,
+          {
+            path: action.targetPath,
+            frontmatter: { describes: newDescribes },
+            body: currentParsed.value.content,
+            agent: principal.value,
+            ...(action.runId ? { run_id: action.runId } : {}),
+          },
+          access,
+        );
       break;
     }
     default:
       return err(new Error(`vault_ratify: no dispatch for action type '${action.actionType}'`));
   }
 
+  // Mark the approval in flight, then apply. If the process dies after the
+  // write and before the terminal record, the action stays `applying` and is
+  // never re-applied blindly (interruptedError).
+  const marked = await recordDecision(vaultRoot, id.value, { status: "applying", ...attribution });
+  if (!marked.ok) return marked;
+  const dispatched = await run();
+
+  // A dispatch that did not apply returns the action to pending. If even that
+  // record fails, the action stays `applying` — the safe side: it is surfaced
+  // for a human instead of being re-applied.
+  const release = async (why: string): Promise<Error | null> => {
+    const reopened = await recordDecision(
+      vaultRoot,
+      id.value,
+      { status: "pending", ...attribution, reason: why },
+      { expect: "applying" },
+    );
+    return reopened.ok ? null : reopened.error;
+  };
+
   if (!dispatched.ok) {
+    const releaseError = await release(`approval did not apply: ${dispatched.error.message}`);
+    if (releaseError) {
+      return err(
+        new Error(
+          `${dispatched.error.message} — and the action could not be returned to pending ` +
+            `(${releaseError.message}); it stays 'applying' until resolved with resolve_interrupted`,
+        ),
+      );
+    }
     // LD-13: a base_version mismatch means the document changed since this
     // proposal was staged — the underlying rejection (write.ts) is correct
     // but generic ("stale write: <path> changed since base_version"). Name
@@ -819,17 +1083,29 @@ export async function vaultRatify(
   // landed would be false history — leave the action pending so a live-mode
   // ratification can really apply it later.
   if (dispatched.value.shadow) {
+    const releaseError = await release("shadow mode: computed, not applied");
+    if (releaseError) return err(releaseError);
     return ok({ action_id: id.value, decision, applied: false, shadow: true });
   }
 
-  const recorded = await recordDecision(vaultRoot, id.value, {
-    status: "ratified",
-    ratifiedAt: decidedAt,
-    ratifiedBy: principal.value,
-    ...(reason ? { reason } : {}),
-    ...(access?.user != null ? { decidedByPrincipal: access.user } : {}),
-  });
-  if (!recorded.ok) return recorded;
+  const recorded = await recordDecision(
+    vaultRoot,
+    id.value,
+    { status: "ratified", ...attribution },
+    { expect: "applying" },
+  );
+  if (!recorded.ok) {
+    // The write landed but its decision did not: the action stays `applying`,
+    // which is exactly what a later decision needs to see.
+    return err(
+      new Error(
+        `vault_ratify: ${action.actionType} of ${action.targetPath} was applied` +
+          (dispatched.value.commit ? ` (commit ${dispatched.value.commit})` : "") +
+          ` but the decision could not be recorded (${recorded.error.message}); ` +
+          `${id.value} stays 'applying' — resolve it with resolve_interrupted: "landed"`,
+      ),
+    );
+  }
 
   return ok({
     action_id: id.value,
@@ -871,7 +1147,7 @@ const ratifyOutputSchema: Record<string, unknown> = {
   type: "object",
   properties: {
     action_id: { type: "string" },
-    decision: { type: "string", enum: ["approve", "reject"] },
+    decision: { type: "string", enum: ["approve", "reject", "resolve"] },
     applied: {
       type: "boolean",
       description: "True only when the dispatch actually wrote; false on reject and in shadow mode",
@@ -880,6 +1156,8 @@ const ratifyOutputSchema: Record<string, unknown> = {
     // §11.5: computed and shadow-logged but not written — the action stays
     // pending for a live ratification later.
     shadow: { type: "boolean" },
+    // 8i1l: present when the call settled an interrupted approval.
+    resolved_interrupted: { type: "string", enum: ["landed", "not-landed"] },
   },
   required: ["action_id", "decision", "applied"],
   additionalProperties: false,
@@ -899,10 +1177,12 @@ export const stagedActionTools: ToolDefinition[] = [
       "vault_ratify. The action waits in a pending queue and auto-expires after " +
       "ttl_days (default 14). This is the producer side of the staged-action " +
       "queue — normally called by the curation loop or an agent, not by a human " +
-      "directly. Action types: promote, deprecate, supersede, merge, " +
+      "directly. Action types: promote, deprecate, supersede, unsupersede, merge, " +
       "confidence-up, write, repin. proposed_diff carries the per-action payload " +
-      "replayed on ratification: supersede → {superseded_by}, confidence-up → " +
-      "{confidence}, merge → {merge_from: [path_a, path_b], body, frontmatter?}, " +
+      "replayed on ratification: supersede → {superseded_by}, unsupersede → {} " +
+      "(the rationale becomes the reversal's reason; the document returns to " +
+      "draft), confidence-up → {confidence}, merge → " +
+      "{merge_from: [path_a, path_b], body, frontmatter?}, " +
       "write → {frontmatter, body} (full content; the target may be a new " +
       "document), repin → {} or {replacements: [{old, new}]} (advisory; " +
       "stage time runs computeRepin and stamps in the computed old→new pairs; " +
@@ -963,8 +1243,8 @@ export const stagedActionTools: ToolDefinition[] = [
     description:
       "Approve or reject a single pending staged action. On approve, dispatches " +
       "to the matching write tool (promote → vault_promote, deprecate → " +
-      "vault_deprecate, supersede → vault_supersede, confidence-up → " +
-      "vault_set_confidence, merge → vault_merge, write → vault_write, " +
+      "vault_deprecate, supersede → vault_supersede, unsupersede → " +
+      "vault_unsupersede, confidence-up → vault_set_confidence, merge → vault_merge, write → vault_write, " +
       "repin → recomputes pins fresh and lands via vault_write) and " +
       "auto-commits. On reject, " +
       "records the rejection and applies nothing. A dispatch failure leaves the " +
@@ -978,7 +1258,10 @@ export const stagedActionTools: ToolDefinition[] = [
       "(already decided or expired). Requires the role's 'ratify' grant. If " +
       "the vault runs shadow_mode, an approved dispatch is computed and " +
       "shadow-logged but NOT applied — the result carries shadow: true and " +
-      "the action stays pending for a live ratification later.",
+      "the action stays pending for a live ratification later. Decisions on one " +
+      "action are exclusive: a concurrent second decision errors instead of " +
+      "racing. An approval interrupted after its write but before its decision " +
+      "is left 'applying' and refused until settled with resolve_interrupted.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1002,6 +1285,17 @@ export const stagedActionTools: ToolDefinition[] = [
         reason: {
           type: "string",
           description: "Optional free-text reason recorded with the decision",
+        },
+        resolve_interrupted: {
+          type: "string",
+          enum: ["landed", "not-landed"],
+          description:
+            "Settle an approval that was interrupted between its write and its " +
+            "decision (status 'applying'), instead of passing a decision. Inspect " +
+            "the target first: 'landed' records the action ratified (refused when " +
+            "the target is missing or differs from the proposed body; a landed but " +
+            "uncommitted write is committed), 'not-landed' returns it to pending. " +
+            "Neither re-applies the action.",
         },
       },
       required: ["id", "principal"],

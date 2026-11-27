@@ -183,4 +183,44 @@ describe("f3h H3 proof: distill reader provenance ratifies and persists", () => 
     // And the tier edit did land.
     expect(afterFm.tier).toBe("compiled");
   }, 60_000);
+
+  it("said_at survives stage → ratify → set_tier as the same string, with no valid_from", async () => {
+    const claim: ExtractedClaim = {
+      ...makeClaim(makeRunMeta()),
+      claim_key: "chunk-h3:said-at-ratify-proof-1234abcd",
+      said_at: "2026-05-01T10:02:00",
+    };
+    const outcome = await proposeAllClaims(vault, [claim], {
+      sourceId: "chat-export-said-at",
+      runId: "run-said-at-proof",
+    });
+    const [staged] = outcome.results;
+    if (!staged) throw new Error("expected a staged result");
+    const ratified = await vaultRatify(vault, {
+      id: staged.id,
+      decision: "approve",
+      principal: HUMAN,
+      reason: "said_at proof",
+    });
+    if (!ratified.ok) throw ratified.error;
+    expect(ratified.value.applied).toBe(true);
+
+    const landed = loadYaml(
+      (await readFile(join(vault, staged.targetPath), "utf-8")).split("---")[1] ?? "",
+    ) as Record<string, unknown>;
+    expect(landed.said_at).toBe("2026-05-01T10:02:00");
+    expect(landed.valid_from).toBeNull();
+
+    const setTier = await vaultSetTier(vault, {
+      path: staged.targetPath,
+      agent: HUMAN,
+      reason: "protect the belief",
+      tier: "compiled",
+    });
+    if (!setTier.ok) throw setTier.error;
+    const after = loadYaml(
+      (await readFile(join(vault, staged.targetPath), "utf-8")).split("---")[1] ?? "",
+    ) as Record<string, unknown>;
+    expect(after.said_at).toBe("2026-05-01T10:02:00");
+  }, 60_000);
 });

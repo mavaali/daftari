@@ -553,8 +553,9 @@ describe("vault_merge", () => {
   }, 60_000);
 
   it("authors the merge commit as the authenticated principal", async () => {
-    await seed(vault, "pricing/a.md");
-    await seed(vault, "pricing/b.md");
+    // Draft sources: merging a canonical source away needs promote (w3wy).
+    await seed(vault, "pricing/a.md", { status: "draft" });
+    await seed(vault, "pricing/b.md", { status: "draft" });
     const result = await vaultMerge(
       vault,
       {
@@ -562,6 +563,9 @@ describe("vault_merge", () => {
         path_b: "pricing/b.md",
         target_path: "pricing/merged.md",
         body: "# Merged\n\nCombined content.\n",
+        // A role without promote may only land a draft merge result
+        // (canonical needs the promote grant, mfcr).
+        frontmatter: { status: "draft" },
         agent: AGENT,
       },
       {
@@ -820,7 +824,7 @@ describe("write-side ACL: path vs declared collection (S1)", () => {
       {
         path: "competitive-intel/note.md",
         body: "# Note\n\nBody.\n",
-        frontmatter: frontmatter({ collection: "competitive-intel" }),
+        frontmatter: frontmatter({ collection: "competitive-intel", status: "draft" }),
         agent: AGENT,
         run_id: "test-acl-writable-dir",
       },
@@ -838,7 +842,7 @@ describe("write-side ACL: path vs declared collection (S1)", () => {
       {
         path: "competitive-intel/staged.md",
         body: "# Staged\n\nBody.\n",
-        frontmatter: frontmatter({ collection: "some-future-collection" }),
+        frontmatter: frontmatter({ collection: "some-future-collection", status: "draft" }),
         agent: AGENT,
         run_id: "test-acl-physical-dir",
       },
@@ -870,8 +874,16 @@ describe("write-side ACL: path vs declared collection (S1)", () => {
   });
 
   it("vault_merge allows a merge fully within a writable collection", async () => {
-    await seed(vault, "competitive-intel/a.md", { collection: "competitive-intel" });
-    await seed(vault, "competitive-intel/b.md", { collection: "competitive-intel" });
+    // Draft sources: analyst has no promote, and merging a canonical source
+    // away would retire it (w3wy).
+    await seed(vault, "competitive-intel/a.md", {
+      collection: "competitive-intel",
+      status: "draft",
+    });
+    await seed(vault, "competitive-intel/b.md", {
+      collection: "competitive-intel",
+      status: "draft",
+    });
     const result = await vaultMerge(
       vault,
       {
@@ -879,6 +891,8 @@ describe("write-side ACL: path vs declared collection (S1)", () => {
         path_b: "competitive-intel/b.md",
         target_path: "competitive-intel/merged.md",
         body: "# Merged\n\nCombined.\n",
+        // analyst has no promote grant: the merge result must not be canonical.
+        frontmatter: { status: "draft" },
         agent: AGENT,
       },
       ANALYST,

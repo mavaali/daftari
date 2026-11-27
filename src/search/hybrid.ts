@@ -17,6 +17,7 @@
 // lexical-only and reports vectorUsed: false rather than failing.
 
 import { computeDecay, type DecayState } from "../curation/decay.js";
+import type { GroundingAtRisk } from "../curation/grounding.js";
 import type { ValidityReport } from "../curation/validity.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import {
@@ -27,6 +28,7 @@ import {
   type IndexDb,
 } from "../storage/index-db.js";
 import { SEARCH_TUNING_DEFAULTS } from "../utils/config.js";
+import type { AmendedByEntry } from "./amended-by.js";
 import { buildMatchQuery, tokenize } from "./bm25.js";
 import type { ContestedTension } from "./contested.js";
 import type { CurrentSource } from "./current-source.js";
@@ -83,6 +85,11 @@ export interface HybridHit {
   // not. Tool handler, not ranker.
   validAtSource?: ValidAtSource;
   currentSource?: CurrentSource; // populated by the tool handler, not the ranker
+  // #643: visible documents declaring they amend this one, capped at 3. Tool
+  // handler, not ranker; an amended hit is still current as written, so this
+  // never feeds the score or the suppression pass.
+  amendedBy?: AmendedByEntry[];
+  amendedByCount?: number; // TOTAL visible amenders (may exceed the cap)
   contested?: ContestedTension[]; // unresolved tensions, capped at 3 — tool handler, not ranker
   contestedCount?: number; // TOTAL visible tensions (may exceed the cap)
   // #234: set when the doc has pending-broken compiled upstream edges the
@@ -104,6 +111,9 @@ export interface HybridHit {
   // Tool handler, not ranker.
   orphan?: boolean;
   retiredStillLinked?: boolean;
+  // nlzr: a cited vault source one hop up is contested, expired, superseded,
+  // or retracted — tool handler, not ranker; absent when nothing is at risk.
+  groundingAtRisk?: GroundingAtRisk;
   viaCoverage?: boolean; // true when added by the coverage pass, not the ranker
   coverageReason?: "edge" | "entity-window"; // why it was added (stage 1 sets entity-window)
   // off.1/MAV-154: set when the graph-expansion pass injected this hit (not the

@@ -8,7 +8,9 @@ import { realpathSync } from "node:fs";
 import { readFile as fsReadFile, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { glob } from "glob";
+import { makeRe } from "minimatch";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import { loadConfig } from "../utils/config.js";
 
 // realpath of `p`, resolving symlinks, for symlink-confinement checks. When `p`
 // does not exist (a write to a not-yet-created file), resolve the longest
@@ -143,20 +145,65 @@ export async function readFile(absolutePath: string): Promise<Result<string, Err
   }
 }
 
+// Compiled once per pattern: listFiles runs this for every file on every walk.
+const ignoreMatchers = new Map<string, RegExp[]>();
+
+function compileIgnorePattern(pattern: string): RegExp[] {
+  const compiled = [pattern, `${pattern}/**`].map((glob) =>
+    makeRe(glob, { dot: true, nocomment: true, nonegate: true }),
+  );
+  return compiled.filter((re) => re !== false);
+}
+
+// True when `relPath` is named by a config `ignore` entry (#646). An entry
+// matches a file or everything under a directory, so `Clippings` and
+// `Clippings/**` both cover the folder, and `*/drafts` covers each such folder;
+// `README.md` is the root file only (`**/README.md` for any depth).
+// Case-sensitive. A leading `#` is literal, not a comment.
+export function matchesIgnoreList(relPath: string, ignore: readonly string[]): boolean {
+  return ignore.some((pattern) => {
+    let matchers = ignoreMatchers.get(pattern);
+    if (!matchers) {
+      matchers = compileIgnorePattern(pattern);
+      ignoreMatchers.set(pattern, matchers);
+    }
+    return matchers.some((re) => re.test(relPath));
+  });
+}
+
 // Shared exclusion rule for vault-relative POSIX paths, including directories.
 // Keep reactive indexing and full walks on the same managed-file boundary.
-export function isIgnoredVaultPath(relPath: string): boolean {
-  return relPath
-    .split("/")
-    .some((segment) => segment.startsWith(".") || segment === "node_modules");
+export function isIgnoredVaultPath(relPath: string, ignore: readonly string[] = []): boolean {
+  return (
+    relPath.split("/").some((segment) => segment.startsWith(".") || segment === "node_modules") ||
+    matchesIgnoreList(relPath, ignore)
+  );
+}
+
+// The collection a path implies: its top-level directory. A file at the vault
+// root has none — its filename is not a collection (#646), so it derives "",
+// which RBAC grants to wildcard roles only.
+export function collectionOfPath(relPath: string): string {
+  const slash = relPath.indexOf("/");
+  return slash === -1 ? "" : relPath.slice(0, slash);
 }
 
 // Lists files under vaultRoot matching a glob pattern. Returns vault-relative
-// POSIX-style paths, sorted. The .daftari control directory is always excluded.
+// POSIX-style paths, sorted. The .daftari control directory is always excluded,
+// as is anything the vault's `ignore` config names. `raw` skips the config: for
+// a directory that is not a vault, or a scan of what is physically on disk.
+//
+// A malformed config lists as if `ignore` were empty rather than failing the
+// walk: `schema infer` and lint run before config repair, and every surface
+// that needs a valid config checks it itself. `ignore` is not a security
+// boundary, so the worst case is noise until the config is fixed.
 export async function listFiles(
   vaultRoot: string,
   pattern = "**/*.md",
+  options: { raw?: boolean } = {},
 ): Promise<Result<string[], Error>> {
+  const config = options.raw ? null : loadConfig(vaultRoot);
+  const ignore = config?.ok ? config.value.ignore : [];
   try {
     const matches = await glob(pattern, {
       cwd: resolve(vaultRoot),
@@ -169,7 +216,7 @@ export async function listFiles(
       // versions. .daftari (control dir) and node_modules are excluded too.
       ignore: ["**/.daftari/**", "**/node_modules/**", "**/.obsidian/**", "**/.trash/**"],
     });
-    return ok(matches.filter((path) => !isIgnoredVaultPath(path)).sort());
+    return ok(matches.filter((path) => !isIgnoredVaultPath(path, ignore)).sort());
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     return err(new Error(`cannot list files: ${reason}`));

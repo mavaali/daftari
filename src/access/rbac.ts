@@ -29,7 +29,9 @@ export function resolveAccess(
   user: string,
   roleName: string,
 ): AccessContext {
-  return { user, roleName, role: config.roles[roleName] ?? null };
+  // Own keys only: `--role constructor` must not resolve to Object.prototype.
+  const role = Object.hasOwn(config.roles, roleName) ? config.roles[roleName] : null;
+  return { user, roleName, role: role ?? null };
 }
 
 // A guest AccessContext — no role, no permissions. Used when the server is

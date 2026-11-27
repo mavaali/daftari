@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "daftari": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "daftari@latest",
+        "--vault",
+        "${user_config.vault}",
+        "--init-if-missing",
+        "--user",
+        "me",
+        "--role",
+        "admin",
+        "--tools",
+        "standard"
+      ]
+    }
+  }
+}

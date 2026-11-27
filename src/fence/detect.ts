@@ -44,7 +44,7 @@ const PATTERNS: Record<InjectionClass, readonly RegExp[]> = {
   // expected set from the real ToolDefinition arrays and fails if a
   // destructive tool is added without appearing here.
   "tool-solicitation": [
-    /\bvault_(write|append|merge|set_tier|set_confidence|supersede|deprecate|promote|ratify|stage_action|tension_log|tension_resolve|edge_contest)\s*\(/gi,
+    /\bvault_(write|patch|append|merge|set_tier|set_confidence|supersede|unsupersede|deprecate|promote|ratify|stage_action|tension_log|tension_resolve|edge_contest)\s*\(/gi,
   ],
   exfiltration: [/\b(send|post|upload|exfiltrate|forward)\b[^.\n]{0,60}https?:\/\//gi],
 };

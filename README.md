@@ -7,11 +7,11 @@
 The model is rented. The memory your agents build up — decisions, conventions,
 what was tried and why — should be yours. Daftari keeps it as plain markdown in
 a Git repo on your disk, and Claude Code, Claude Desktop, Cursor, or any other
-MCP client reads and writes the same vault.
+compatible MCP client can read and write the same vault, subject to its role.
 
 Recency never decides what's true. When you or your agent replace a belief,
 Daftari keeps what replaced it and why. When two notes disagree and neither
-replaces the other, the contradiction stays flagged until someone settles it.
+replaces the other, a logged contradiction stays flagged until someone settles it.
 
     npx daftari --init ./my-vault
 
@@ -44,7 +44,7 @@ instead of erasing them.
 
 ## Five-minute quickstart
 
-**Prerequisite:** Node.js 20 or newer.
+**Prerequisite:** Node.js 20.9 or newer.
 
 ### 1. Create a vault
 
@@ -82,9 +82,9 @@ For Claude Desktop on macOS, edit
 ```
 
 Use an absolute vault path, then restart the client. The scaffolded config
-defines an `admin` role. Omit `--role`, or name a role that does not exist,
-and Daftari starts as a guest that can read and write nothing. Other MCP
-clients take the same `command` and `args`.
+defaults to its `admin` role for local stdio. An unknown role, or no role on
+a vault without a configured default, falls back to a guest with no access.
+Other MCP clients take the same `command` and `args`.
 
 ### 3. Ask the vault a question
 
@@ -166,9 +166,9 @@ what clients see in `tools/list`, not the data.
 | To… | Use |
 |---|---|
 | Find notes | `vault_search` (keyword + vector), `vault_search_related`, `vault_themes` |
-| Read with context | `vault_read`, `vault_backlinks`, `vault_consumes` |
-| Write | `vault_write`, `vault_append`, `vault_merge`, `vault_supersede` |
-| Move notes through draft → canonical → retired | `vault_promote`, `vault_deprecate`, `vault_set_confidence`, `vault_set_tier` |
+| Read with context | `vault_read`, `vault_backlinks`, `vault_chains`, `vault_consumes` |
+| Write | `vault_write`, `vault_patch`, `vault_append`, `vault_merge`, `vault_supersede` |
+| Move notes through draft → canonical → retired | `vault_promote`, `vault_deprecate`, `vault_unsupersede`, `vault_set_confidence`, `vault_set_tier` |
 | Track disagreements | `vault_tension_log`, `vault_tension_triage`, `vault_positions`, `vault_canon` |
 | Require a human sign-off | `vault_stage_action`, `vault_ratify`, `vault_consolidate` |
 | Audit history | `vault_receipt`, `vault_provenance`, `vault_witness`, `daftari asof` |

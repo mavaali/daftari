@@ -7,12 +7,17 @@
 // reindex first, so search works without an explicit setup step.
 
 import { type AccessContext, canRead, readableCollections } from "../access/rbac.js";
-import { currentConsumesEdges } from "../curation/consumes.js";
+import { currentConsumesEdges, unitHasher } from "../curation/consumes.js";
 import {
   compiledUpstreamStaleness,
   loadCompiledStaleContext,
   splitUpstreamVisibility,
 } from "../curation/edge-staleness.js";
+import {
+  GROUNDING_AT_RISK_SCHEMA,
+  groundingFromIndex,
+  groundingSummary,
+} from "../curation/grounding.js";
 import {
   ensureLedgerWritable,
   leakLedgerPath,
@@ -34,6 +39,7 @@ import {
   parseFederatedPath,
 } from "../federation/mounts.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import { amendedByCountSchema, amendedByFor, amendedBySchema } from "../search/amended-by.js";
 import { contestedFor } from "../search/contested.js";
 import {
   applyCoveragePass,
@@ -235,6 +241,8 @@ async function annotateAndLogServedHits(
   const staleCtx = loaded
     ? { consumes: currentConsumesEdges(loaded.consumes), provenance: loaded.provenance }
     : null;
+  const hashOf = unitHasher(vaultRoot);
+  const seesAll = access ? readableCollections(access.role) === undefined : true;
   const entries: Parameters<typeof recordReads>[1] = [];
   for (const hit of hits) {
     let broken: number | undefined;
@@ -244,7 +252,13 @@ async function annotateAndLogServedHits(
       // by who read the doc. Computed from BARE rows (no predicate), mirroring
       // vault_read's split (#416). The predicate-enriched rows below drive only
       // the caller-facing display buckets.
-      const bareRows = compiledUpstreamStaleness(hit.path, staleCtx.consumes, staleCtx.provenance);
+      const bareRows = compiledUpstreamStaleness(
+        hit.path,
+        staleCtx.consumes,
+        staleCtx.provenance,
+        undefined,
+        hashOf,
+      );
       broken = bareRows.filter((r) => r.staleness === "pending-broken").length;
       const isVerifiable = (unit: string) => sourceVerifiable(db, access, unit);
       const rows = compiledUpstreamStaleness(
@@ -252,11 +266,12 @@ async function annotateAndLogServedHits(
         staleCtx.consumes,
         staleCtx.provenance,
         isVerifiable,
+        hashOf,
       );
       // `db` is the caller's already-open index handle — the same one the
       // other RBAC enrichments (resolveCurrentSource, contestedFor) read.
       const { visible, hiddenPending } = access
-        ? splitUpstreamVisibility(rows, (unit) => sourceReadable(db, access, unit))
+        ? splitUpstreamVisibility(rows, (unit) => sourceReadable(db, access, unit), seesAll)
         : { visible: rows, hiddenPending: "none" as const };
       const visibleBroken = visible.filter((r) => r.staleness === "pending-broken").length;
       const brokenBucket = bucketHiddenDownstream(visibleBroken);
@@ -266,6 +281,10 @@ async function annotateAndLogServedHits(
       const unverifiableBucket = bucketHiddenDownstream(visibleUnverifiable);
       if (unverifiableBucket !== "none") hit.unverifiableUpstream = unverifiableBucket;
     }
+    // nlzr: grounding at risk — the one shared assessment vault_read and
+    // vault_receipt use, from the caller's vantage on the same open handle.
+    const grounding = groundingFromIndex(vaultRoot, db, hit.path, access);
+    if (grounding) hit.groundingAtRisk = grounding;
     entries.push({
       tool,
       file: hit.path,
@@ -436,6 +455,12 @@ function labelMountHit(hit: HybridHit, alias: string): void {
       path: federatedPathOf(alias, hit.currentSource.path),
     };
   }
+  if (hit.amendedBy) {
+    hit.amendedBy = hit.amendedBy.map((entry) => ({
+      ...entry,
+      path: federatedPathOf(alias, entry.path),
+    }));
+  }
   if (hit.validAtSource?.kind === "resolved") {
     hit.validAtSource = {
       ...hit.validAtSource,
@@ -544,6 +569,11 @@ async function searchMount(
       }
       const cs = resolveCurrentSource(db, hit.path, access);
       if (cs) hit.currentSource = cs;
+      // A mount's own frontmatter over its own index, under the mount's role:
+      // document data, like currentSource above. No cross-mount amendment is
+      // expressible, since `amends` paths are vault-relative.
+      const amended = amendedByFor(db, hit.path, access);
+      if (amended) Object.assign(hit, amended);
       if (opts.validAt !== null) {
         const vas = resolveValidAtSource(db, hit.path, opts.validAt, access);
         if (vas) hit.validAtSource = vas;
@@ -931,6 +961,8 @@ async function searchLocalVault(
     for (const hit of served) {
       const cs = hit.currentSource ?? resolveCurrentSource(db, hit.path, access);
       if (cs) hit.currentSource = cs;
+      const amended = amendedByFor(db, hit.path, access);
+      if (amended) Object.assign(hit, amended);
       // Foreground the chain member covering `valid_at` when this hit's own
       // interval does not. No-ops when the hit covers the date itself.
       if (validAt !== null) {
@@ -1383,6 +1415,8 @@ const hybridHitSchema = {
     snippet: { type: "string" },
     decay: decaySchema,
     currentSource: currentSourceSchema,
+    amendedBy: amendedBySchema,
+    amendedByCount: amendedByCountSchema,
     contested: {
       type: "array",
       description: "Unresolved tensions involving this document, capped at 3.",
@@ -1413,8 +1447,12 @@ const hybridHitSchema = {
         "Coarse bucket of VISIBLE upstream inputs the caller can no longer " +
         "verify (deleted/evicted). Never an exact count (#217/#416).",
     },
-    orphan: { type: "boolean", description: "No inbound links from the caller's vantage." },
+    orphan: {
+      type: "boolean",
+      description: "No inbound links or sources citations from the caller's vantage.",
+    },
     retiredStillLinked: { type: "boolean" },
+    groundingAtRisk: GROUNDING_AT_RISK_SCHEMA,
     viaCoverage: {
       type: "boolean",
       description: "True when the coverage pass added this doc rather than the ranker.",
@@ -1507,7 +1545,17 @@ function summaryLine(rank: number, hit: HybridHit): string {
   const snippet =
     head.length > SUMMARY_SNIPPET_MAX ? `${head.slice(0, SUMMARY_SNIPPET_MAX)}…` : head;
   const tail = snippet.length > 0 ? ` — ${snippet}` : "";
-  return `${rank}. ${hit.path} (${hit.score.toFixed(3)})${tail}`;
+  const grounding = hit.groundingAtRisk ? ` · ${groundingSummary(hit.groundingAtRisk)}` : "";
+  return `${rank}. ${hit.path} (${hit.score.toFixed(3)})${tail}${amendedByTail(hit)}${grounding}`;
+}
+
+// The relation is the whole point of the annotation, so its paths ride the
+// compact channel itself rather than only the trailing structuredContent note.
+function amendedByTail(hit: HybridHit): string {
+  if (!hit.amendedBy) return "";
+  const paths = hit.amendedBy.map((entry) => entry.path).join(", ");
+  const more = (hit.amendedByCount ?? 0) - hit.amendedBy.length;
+  return ` · amended by: ${paths}${more > 0 ? ` +${more} more` : ""}`;
 }
 
 // A single trailing note for the annotations the per-hit lines omit, pointing
@@ -1518,6 +1566,8 @@ function annotationNote(hits: HybridHit[]): string | null {
   if (coverage > 0) parts.push(`${coverage} added by the coverage pass`);
   const sourced = hits.filter((h) => h.currentSource !== undefined).length;
   if (sourced > 0) parts.push(`${sourced} superseded, current source attached`);
+  const amended = hits.filter((h) => h.amendedBy !== undefined).length;
+  if (amended > 0) parts.push(`${amended} amended, amending docs attached`);
   const demoted = hits.filter((h) => h.demoted === "superseded").length;
   if (demoted > 0) parts.push(`${demoted} demoted below the fold as superseded`);
   const foregrounded = hits.filter((h) => h.viaForeground).length;
@@ -1534,8 +1584,8 @@ function summarizeHits(header: string, hits: HybridHit[]): string {
 
 // Hit paths in rank order, plus the path of any RESOLVED current source — a
 // `restricted` one carries no path by construction, so there is none to link
-// and none to leak. Every path here survived the handler's canRead filter, so
-// the emitted links are readable by construction.
+// and none to leak — and of any amender. Every path here survived the
+// handler's canRead filter, so the emitted links are readable by construction.
 function hitDocLinks(hits: HybridHit[]): string[] {
   const seen = new Set<string>();
   const paths: string[] = [];
@@ -1547,6 +1597,7 @@ function hitDocLinks(hits: HybridHit[]): string[] {
   for (const hit of hits) {
     push(hit.path);
     if (hit.currentSource?.kind === "resolved") push(hit.currentSource.path);
+    for (const entry of hit.amendedBy ?? []) push(entry.path);
   }
   return paths;
 }
@@ -1562,9 +1613,15 @@ export const searchTools: ToolDefinition[] = [
       "Optional typed filters over explicitly indexed frontmatter constrain both rankers; " +
       "filters can also run without a text query for deterministic structured retrieval. " +
       "Falls back to lexical-only ranking if embeddings are unavailable. " +
+      "Hits may carry `amendedBy`: later documents that declare they amend or " +
+      "fulfil this one without replacing it, so it stays true as written but is " +
+      "not the whole current state. Unreadable amenders are omitted. " +
       "Hits may carry `contested`: unresolved recorded tensions involving " +
       "the document, with both claims shown (`claimSelf`/`claimOther`), " +
       "capped at 3 per hit; `contestedCount` reports the true total. " +
+      "Hits may carry `groundingAtRisk`: a vault source the document cites " +
+      "one hop up is contested, past its TTL or validity, superseded, or " +
+      "retracted, each reason naming the source (unreadable sources omitted). " +
       "Pass rerank_candidates to also receive a `rerank` block — the top-K " +
       "of the fused ranking as compact judging records plus instructions — " +
       "and act as the reranker yourself: fusion scores measure retrieval " +

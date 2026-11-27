@@ -7,7 +7,7 @@ date, after two notes have started to contradict each other and nobody noticed.
 
 Most of this document is about the hard job. The easy job fits in a paragraph:
 Daftari is a single MCP server, holding one writable vault under one process
-lock, running as one access identity for its lifetime, serving 42 tools over
+lock, running as one access identity for its lifetime, serving 46 tools over
 stdio. (Federation, #297, lets that process additionally mount other vaults
 read-only — the invariant is one *writable* vault, one lock, one identity, not
 one directory; mounts expose documents, never vault state, and nothing is ever
@@ -104,7 +104,7 @@ consumer's own frontmatter.
 
 ```
                       ┌─────────────────────────────┐
-   MCP client  ──────▶ │  MCP server (stdio, 42 tools)│
+   MCP client  ──────▶ │  MCP server (stdio, 46 tools)│
    (agent)             └──────────────┬──────────────┘
                                       │  every call
                        ┌──────────────▼──────────────┐
@@ -163,7 +163,11 @@ Three things sit alongside the markdown:
 - **SQLite index** (`.daftari/index.db`). Holds the lexical (FTS5) and
   vector (sqlite-vec) indexes that power hybrid search. It is **ephemeral**
   — it can be rebuilt from the markdown files at any time with
-  `vault_reindex`, and it is git-ignored.
+  `vault_reindex`, and it is git-ignored. The rebuild covers the documents;
+  the tables reindex fills from governance journals (`staged_actions`,
+  `derives_from_edges`) come back only if those journals are present, and a
+  git clone does not carry them (see "What Git carries vs what a Daftari
+  backup carries" in deployment.md).
 
   Lexical ranking lives in two FTS5 virtual tables — `chunks_fts` over
   chunk text and `documents_fts` over title, tags, and body — kept in
@@ -301,6 +305,20 @@ Three things sit alongside the markdown:
 - **SQLite lock store** (`.daftari/locks.db`). Holds active write locks. Also
   ephemeral.
 
+#### Open-question candidates (`vault_question_candidates`)
+
+A question closes only on an exact (normalized) copy of its text in some
+document's `questions_answered`. This read-only tool proposes where a reworded
+answer may live: per open question, the documents with `updated` on or after
+its earliest raising, ranked by the best cosine between the question and each
+document's title and `questions_answered` entries. `questions_answered` is
+frontmatter and never reaches the FTS or chunk tables, so the corpus is
+embedded in memory through the active provider, with no index change and no
+writes to the embeddings cache, instead of going through `hybridSearch`.
+Openness and candidates both compute from the caller's vantage; hidden
+documents are omitted with no count. Accepting a candidate stays a curator's
+edit.
+
 #### Thematic clustering (`vault_themes`)
 
 `vault_themes` reads the existing `chunks` / `embeddings` tables — no new
@@ -353,13 +371,22 @@ cluster, distinct from the silhouette score used to pick k.
 #### Reactive indexing
 
 The index is kept in sync with the markdown files at write time, not just at
-startup. The write-path tools (`vault_write`, `vault_append`,
+startup. The write-path tools (`vault_write`, `vault_patch`, `vault_append`,
 `vault_promote`, `vault_deprecate`) call `indexDocument()` in-process after
 each successful write, and a `chokidar` watcher runs over the vault root for
 **out-of-band** edits — an editor save, a sync engine pull, a scripted
 writer. The watcher is on by default; set `watch: false` in
 `.daftari/config.yaml` to disable it for read-only or batch-script
 environments.
+
+`ignore` in `.daftari/config.yaml` lists paths or globs that are not vault
+documents. `listFiles` applies it, so status, lint, search and every other
+walker inherit it; the watcher skips those paths and write tools refuse them.
+`daftari interview ask` refuses too, before the first question. `okf import`
+and `import langgraph-store` skip ignored targets and report them, so the rest
+of the batch still lands. Reading one by exact path still works, under RBAC. Adding an entry changes the
+startup manifest, so already-indexed files drop out at the next start or
+`vault_reindex`. Sync backends are unaffected: they copy the working tree.
 
 Events are debounced per-path with a 500ms window: an editor's atomic-rename
 save burst (write temp, rename onto target, delete temp) coalesces into a
@@ -518,7 +545,12 @@ arrives, and it is the one layer a read cannot skip.
 
 RBAC is config-driven. `.daftari/config.yaml` declares named roles and their
 per-collection `read` / `write` permissions plus two verdict grants: `promote`
-(draft → canonical) and `ratify` (§11.6 — approve/reject staged actions and
+(draft → canonical; the only grant that can set `canonical` on a new or
+non-canonical document, through `vault_promote`, `vault_write`, `vault_merge`,
+or a ratified write/merge — under ratify it is the ratifier's grant that
+counts; it is equally required to move a document out of `canonical`, through
+`vault_deprecate`, `vault_supersede`, `vault_merge`, a `vault_write` status
+change, `vault_unsupersede`, or their ratified forms) and `ratify` (§11.6 — approve/reject staged actions and
 contest derives_from edges; the curation-verdict tier). The server is started
 with `--user` and `--role`. There is no user-management system to administer:
 the policy lives in one file and the identity lives in one flag.
@@ -658,8 +690,8 @@ bill of materials.
 
 **Optimistic concurrency** closes that gap. `vault_read` returns a `version`
 token — the SHA-256 of the file as read, frontmatter included. Every write
-tool (`vault_write`, `vault_append`, `vault_promote`, `vault_deprecate`)
-accepts an optional `base_version`. When supplied, the server re-hashes the
+tool (`vault_write`, `vault_patch`, `vault_append`, `vault_promote`,
+`vault_deprecate`) accepts an optional `base_version`. When supplied, the server re-hashes the
 file *inside the write lock* and, if the hash no longer matches, rejects the
 write with a `stale write:` error — nothing is written, committed, or
 indexed, and a `rejected_stale` entry is appended to the provenance log.
@@ -717,7 +749,8 @@ Three of its concerns are simple enough to state in a line:
 
 - **Staleness.** Each document has a `ttl_days`. Past it, the document is
   flagged stale with a decay score. Stale does not mean deleted — it means "a
-  human or agent should re-verify this."
+  human or agent should re-verify this." A `series` of dated snapshots is judged
+  on its newest member only, so old snapshots do not stay flagged forever.
 - **Lint.** `vault_lint` runs cross-vault checks and produces a report.
   The originals: stale files, orphans, old drafts, stagnant low-confidence
   files, deprecated-but-still-linked, and questions raised but unanswered
@@ -798,7 +831,7 @@ proposed diff, and a TTL (default 14 days). `vault_ratify` is the consumer: a
 human `approve`s or `reject`s one pending action. On approve it dispatches to the
 matching write tool, which auto-commits — `promote` → `vault_promote`,
 `deprecate` → `vault_deprecate`, `supersede` → `vault_supersede`,
-`confidence-up` → `vault_set_confidence`, `merge` → `vault_merge` (the §11.4
+`unsupersede` → `vault_unsupersede`, `confidence-up` → `vault_set_confidence`, `merge` → `vault_merge` (the §11.4
 write tools). A dispatch failure, including a malformed proposed diff, leaves the
 action pending so it can be retried. (The legacy `ratified-pending-tool` status,
 from before §11.4 wired up the last three tools, is no longer produced.)
@@ -809,6 +842,58 @@ Storage mirrors the rest of Daftari: an append-only canonical log at
 surfaces pending actions soonest-to-expire first and expires past-TTL ones as a
 housekeeping sweep on each run — the queue can grow stale, but it never grows
 unbounded.
+
+**One decision per action.** An approve takes tens of milliseconds (gates, the
+dispatched write, its commit), so two decisions on one action used to race:
+approve and reject could both succeed, and two approves could apply a write
+twice. Every decision now runs as the only decider of its action — approve,
+reject, the expiry sweep, and the interrupted-approval resolution below. Inside
+a process, decisions on one action queue on an in-process chain; a queued
+caller re-reads the status when its turn comes, so the loser of a race gets
+"not pending". Across processes, the decider holds a `.daftari/locks.db` lease
+on the action (`__staged_action__:<id>`, the usual 60s TTL); a second process
+finding it held is refused ("being decided by another process") rather than
+made to wait, and the sweep skips that action until its next run. Under all of
+that, the log append itself re-checks the collapsed status and refuses to
+record a decision over anything but the status it expects, so the log stays
+single-disposition even for a writer that skipped the lock. `daftari distill
+--review --yes` and `daftari distill --propose` are the batch writers outside
+the servers; each stages or ratifies only while holding the vault process lock
+(mode `cli`), refuses with exit 6 when a live serve or stdio session holds the
+vault, and is never SIGTERMed by a stdio start. `--propose` takes the lock
+before extraction, so a busy vault costs no LLM calls.
+
+**Interrupted approvals.** An approve appends an `applying` record before it
+dispatches and its terminal `ratified` record after. A dispatch that fails, a
+shadow-mode dispatch, and a stale write each append a record that returns the
+action to `pending`, so a retry works as before. If the process dies between
+the write and the terminal record, the action stays `applying`. That status
+means "the write may or may not have landed": approve refuses it (it could
+apply twice), reject refuses it (it could stand over a landed write), the
+expiry sweep leaves it alone, and `vault_lint` lists it first with
+`interrupted: true`. A human inspects the target (`vault_read`,
+`vault_provenance`, `git log`) and calls `vault_ratify` with
+`resolve_interrupted: "landed"` — recorded as ratified, nothing re-applied — or
+`"not-landed"`, which returns it to `pending` to approve or reject again.
+"Landed" is checked, not taken on faith. The target must be on disk, and for an
+action that carries the content it writes (`write`, `merge`) its body must
+match the proposed body; otherwise the resolution is refused and points at
+`"not-landed"`. A crash can also fall between the write and its git commit,
+leaving the file on disk but uncommitted; "landed" then commits every path the
+action writes that differs from `HEAD` (pathspec-scoped, so nothing else is
+swept in), authored as the approver whose write it was, under a `vault_ratify:`
+subject naming the action, before recording the decision. Vaults with
+`auto_commit: false` skip that commit. Logs written before this change have no
+`applying` records and collapse as before; a daftari that predates it reads
+`applying` as a non-pending status, so it neither re-applies nor expires the
+action. A crash during a decision leaves its lease behind, but a retry on the
+same host does not wait out the 60s TTL: each lease holder records its pid and
+a host tag (a hash of the process lock's host identity), and `acquireLock`
+purges a lease whose host tag is ours and whose pid is dead
+(`process.kill(pid, 0)` fails with ESRCH). A lease from another host, or one
+written by an older daftari without a host tag, still expires only by TTL —
+until then a retry is refused as "being decided by another process". The same
+rule frees file leases left by a crashed writer.
 
 #### derives_from edges
 
@@ -852,8 +937,9 @@ source of truth, with a derived `derives_from_edges` table in the ephemeral inde
 (rebuilt on reindex, materialized at startup) for the loop's traversal engine.
 Distill run receipts (provider, ZDR, cost, model, and the staging `runId` that
 joins to produced artifacts) are persisted separately to
-`.daftari/distill-receipts.jsonl` — operator-local and gitignored, never exposed
-through MCP tools.
+`.daftari/distill-receipts.jsonl` — operator-local and gitignored (an older vault
+`.gitignore` may lack the rule; `ensureVaultGitignore` appends it),
+carried by `daftari sync`, never exposed through MCP tools.
 
 ## The consolidation loop
 
@@ -1146,13 +1232,22 @@ quietly settled. That is the entire product, in one fact's lifetime.
      leaking neither path nor title. daftari authors the relation; the
      successor snippet is read verbatim from indexed content, never
      synthesized.
+   - **Amendment foregrounding.** A document that stays true as written
+     but has a later document declaring `amends` on it gains `amendedBy`:
+     direct amenders only, each with its status. The relation is declared
+     on the later document and inverted by the `doc_amends` index table, so
+     the earlier file is never written. Unreadable amenders are omitted
+     with no marker: unlike a superseded document, an amended one carries
+     no mark of its own for a marker to restate. It is never an input to
+     ranking or to the suppression pass.
 
-A **write** (`vault_write`, `vault_append`, `vault_promote`,
-`vault_deprecate`, `vault_supersede`, `vault_merge`, `vault_set_confidence`):
+A **write** (`vault_write`, `vault_patch`, `vault_append`, `vault_promote`,
+`vault_deprecate`, `vault_supersede`, `vault_unsupersede`, `vault_merge`,
+`vault_set_confidence`):
 
 1. The server receives the tool call.
-2. **Layer 2** checks the role's `write` permission (and `promote` for
-   promotions).
+2. **Layer 2** checks the role's `write` permission (and `promote` for any
+   transition into or out of `canonical`).
 3. **Layer 3** acquires the file's write lock. If another holder owns it, the
    call fails cleanly here.
 4. On an update, the existing document's frontmatter is merged under the payload

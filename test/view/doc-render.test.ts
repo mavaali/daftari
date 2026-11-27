@@ -70,7 +70,9 @@ describe("renderDocBody code syntax highlighting (R11)", () => {
     const { html } = renderDocBody(
       "```js\nfunction foo() { const x = 'a\"b<c'; }\nclass Bar {}\n```\n",
     );
-    const classNames = [...html.matchAll(/class="([^"]*)"/g)].flatMap((m) => m[1]!.split(/\s+/));
+    const classNames = [...html.matchAll(/class="([^"]*)"/g)].flatMap((m) =>
+      (m[1] ?? "").split(/\s+/),
+    );
     // the nested-scope compound classes must actually be present — otherwise this
     // is a false-confidence test (it passed before only because the fixture had
     // no nesting, so `function_`/`class_` were never emitted to check).

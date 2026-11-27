@@ -10,6 +10,8 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import { isIgnoredVaultPath } from "../storage/local.js";
+import { loadConfig } from "../utils/config.js";
 
 const run = promisify(execFile);
 
@@ -71,13 +73,12 @@ export async function resolveAsofCommit(
   return ok({ hash: fullHash ?? hash, date: date ?? "", subject: subject ?? "" });
 }
 
-// Path segments the live loader never sees (listFiles ignores dotfiles,
-// .daftari, node_modules, .obsidian, .trash) — the historical tree must be
-// filtered identically or then/now diffs would report phantom drift.
-function isManagedDocPath(path: string): boolean {
-  if (!path.endsWith(".md")) return false;
-  const segments = path.split("/");
-  return segments.every((s) => !s.startsWith(".") && s !== "node_modules");
+// Paths the live loader never sees (listFiles skips dotfiles, .daftari,
+// node_modules, .obsidian, .trash, and the config's `ignore` list) — the
+// historical tree must be filtered identically or then/now diffs would report
+// phantom drift. So today's `ignore` applies to every commit.
+function isManagedDocPath(path: string, ignore: readonly string[]): boolean {
+  return path.endsWith(".md") && !isIgnoredVaultPath(path, ignore);
 }
 
 // Vault-relative paths of the managed markdown documents in the tree at
@@ -88,7 +89,9 @@ export async function listTreeDocs(
 ): Promise<Result<string[], Error>> {
   const listed = await git(vaultRoot, ["ls-tree", "-r", "--name-only", "-z", commit]);
   if (!listed.ok) return listed;
-  const paths = listed.value.split("\0").filter((p) => p.length > 0 && isManagedDocPath(p));
+  const config = loadConfig(vaultRoot);
+  const ignore = config.ok ? config.value.ignore : [];
+  const paths = listed.value.split("\0").filter((p) => p.length > 0 && isManagedDocPath(p, ignore));
   paths.sort();
   return ok(paths);
 }

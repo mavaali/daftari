@@ -28,10 +28,12 @@
 //   precise; the edge-type-distribution experiment decides if finer
 //   granularity pays.
 
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { appendFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { err, ok, type Result } from "../frontmatter/types.js";
+import { sha256Hex } from "../utils/hash.js";
+import { canonicalRel } from "../utils/paths.js";
 import { readReadLog, readsForRun } from "./read-log.js";
 
 export const CONSUMES_EDGE_TYPES = ["whole-doc-read"] as const;
@@ -44,6 +46,43 @@ export interface ConsumesEdge {
   fields: string[]; // ["*"] = whole doc (v1)
   run_id: string;
   compile_ts: string; // ISO 8601 — when the write landed
+  // Content hash of the unit as it stood at compile time (unitContentHash).
+  // Lets staleness see a change made OUTSIDE Daftari (an editor, Obsidian,
+  // git pull), which never reaches the provenance log. Absent on edges
+  // minted before it existed and when the unit could not be read at mint
+  // time; those edges fall back to provenance-only detection.
+  unit_hash?: string;
+}
+
+// sha256 of the unit's raw file text with CRLF folded to LF, so a Windows
+// re-checkout (git autocrlf) is not a change. Every other byte counts: a
+// whitespace-only edit is a change, the same as it is to vault_write's
+// body_changed.
+export function unitContentHash(text: string): string {
+  return sha256Hex(text.replace(/\r\n/g, "\n"));
+}
+
+// Current content hash of a vault unit, read from disk: null when the file is
+// gone (or the path is not a plain vault-relative path). Memoized per hasher,
+// so one request hashes each unit at most once however many rows name it.
+export type UnitHasher = (unit: string) => string | null;
+
+export function unitHasher(vaultRoot: string): UnitHasher {
+  const memo = new Map<string, string | null>();
+  return (unit) => {
+    const canonical = canonicalRel(unit);
+    if (canonical.length === 0 || canonical.startsWith("..")) return null;
+    const seen = memo.get(canonical);
+    if (seen !== undefined) return seen;
+    let hash: string | null;
+    try {
+      hash = unitContentHash(readFileSync(join(vaultRoot, canonical), "utf-8"));
+    } catch {
+      hash = null;
+    }
+    memo.set(canonical, hash);
+    return hash;
+  };
 }
 
 export interface CompiledEdgeCoverageSummary {
@@ -73,16 +112,19 @@ export async function mintConsumesEdges(
   if (units.length === 0) return ok({ minted: 0 });
 
   const compileTs = input.timestamp ?? new Date().toISOString();
-  const lines = units.map((unit) =>
-    JSON.stringify({
+  const hashOf = unitHasher(vaultRoot);
+  const lines = units.map((unit) => {
+    const unitHash = hashOf(unit);
+    return JSON.stringify({
       artifact: input.artifact,
       unit,
       edge_type: "whole-doc-read",
       fields: ["*"],
       run_id: input.runId,
       compile_ts: compileTs,
-    } satisfies ConsumesEdge),
-  );
+      ...(unitHash ? { unit_hash: unitHash } : {}),
+    } satisfies ConsumesEdge);
+  });
   try {
     mkdirSync(join(vaultRoot, ".daftari"), { recursive: true });
     await appendFile(consumesPath(vaultRoot), `${lines.join("\n")}\n`);

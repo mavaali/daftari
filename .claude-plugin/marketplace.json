@@ -1,0 +1,15 @@
+{
+  "name": "daftari",
+  "description": "Daftari: memory you own, as a markdown + Git vault on your disk.",
+  "owner": {
+    "name": "Mihir Wagle",
+    "url": "https://github.com/mavaali"
+  },
+  "plugins": [
+    {
+      "name": "daftari",
+      "source": "./plugins/daftari",
+      "description": "Memory you own, as markdown files on your disk"
+    }
+  ]
+}

@@ -22,7 +22,7 @@ import { materializeEdges } from "./curation/edges.js";
 import { materializeStagedActions } from "./curation/staged-actions.js";
 import { buildMountIndexes } from "./federation/mount-index.js";
 import { getMountRegistry, loadMounts, setMountRegistry } from "./federation/mounts.js";
-import { acquireLock, releaseLock } from "./lifecycle/lock.js";
+import { acquireLock, EXIT_LEASE_LOST, releaseLock } from "./lifecycle/lock.js";
 import { setCoverageEnabled } from "./search/coverage.js";
 import { setGraphExpandConfig } from "./search/graph-expansion.js";
 import { setDefaultWeights, setVecKnnK } from "./search/hybrid.js";
@@ -85,7 +85,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // stdio daftari is holding this vault, SIGTERM it and wait briefly for it
   // to exit; a live `daftari serve` holder REFUSES the takeover (#5 spec
   // Decision 4). See docs/superpowers/plans/2026-05-20-process-lockfile.md.
-  const lockResult = await acquireLock(vaultRoot, DAFTARI_VERSION, { mode: "stdio" });
+  // A lost lease (another process took the vault over while this one was
+  // stalled) shuts down rather than leave two writers on one index.db.
+  let shutdown: ((exitCode?: number) => void) | undefined;
+  const lockResult = await acquireLock(vaultRoot, DAFTARI_VERSION, {
+    mode: "stdio",
+    onLeaseLost: () => shutdown?.(EXIT_LEASE_LOST),
+  });
   if (!lockResult.ok) {
     process.stderr.write(`daftari: failed to acquire vault lock: ${lockResult.error.message}\n`);
     process.exitCode = 1;
@@ -93,7 +99,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
   // Install shutdown handlers immediately so the lock is released even if
   // startup fails between here and the transport opening.
-  installShutdownHandlers(vaultRoot);
+  shutdown = installShutdownHandlers(vaultRoot);
 
   // Load the RBAC config. A malformed config fails loud: the server must not
   // start serving content under a policy it could not parse.
@@ -126,9 +132,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   setGraphExpandConfig(config.value.search.graphExpand);
 
   // Resolve the access identity. With no --role the server runs as the
-  // deny-all guest; an unknown role name resolves the same way.
+  // config's default_role (kg64 — `--init` scaffolds admin for local use), else
+  // the deny-all guest; an unknown role name resolves to the guest too.
   const user = parseFlag(argv, "user") ?? "guest";
-  const roleName = parseFlag(argv, "role") ?? GUEST_ROLE;
+  const roleFlag = parseFlag(argv, "role");
+  const roleName = roleFlag ?? config.value.defaultRole ?? GUEST_ROLE;
+  if (roleFlag === null && config.value.defaultRole !== null) {
+    // Omitting --role is a privilege decision now — make it visible.
+    process.stderr.write(
+      `daftari: no --role given — using default_role '${config.value.defaultRole}' from config\n`,
+    );
+  }
   const access = resolveAccess(config.value, user, roleName);
   if (access.role === null && roleName !== GUEST_ROLE) {
     process.stderr.write(
@@ -321,12 +335,14 @@ let shuttingDown = false;
 // not begin writing while the old server is still draining.
 const SHUTDOWN_DRAIN_TIMEOUT_MS = 2_000;
 
+// Returns the shutdown routine so a lost vault lease can trigger it too, with
+// a non-zero exit code (EXIT_LEASE_LOST). Signals exit 0.
 export function installShutdownHandlers(
   vaultRoot: string,
   extra?: () => void | Promise<void>,
-): void {
+): (exitCode?: number) => void {
   let shutdownStarted = false;
-  const onShutdown = () => {
+  const onShutdown = (exitCode = 0) => {
     if (shutdownStarted) return;
     shutdownStarted = true;
     shuttingDown = true;
@@ -370,12 +386,14 @@ export function installShutdownHandlers(
       // resumable reindex writes: a kill mid-reindex cannot corrupt index.db
       // (uncommitted work rolls back; the next startup resumes from the
       // committed batches).
-      process.exit(0);
+      process.exit(exitCode);
     })();
   };
-  process.once("SIGTERM", onShutdown);
-  process.once("SIGINT", onShutdown);
+  // Wrapped: a signal listener receives the signal name as its first argument.
+  process.once("SIGTERM", () => onShutdown());
+  process.once("SIGINT", () => onShutdown());
   process.once("exit", () => releaseLock(vaultRoot));
+  return onShutdown;
 }
 
 // Spawns the chokidar watcher when config.watch !== false. Wired here, not
@@ -392,7 +410,8 @@ function maybeStartWatcher(vaultRoot: string, watchEnabled: boolean): void {
     return;
   }
   if (activeWatcher) return;
-  activeWatcher = startWatcher(vaultRoot);
+  const config = loadConfig(vaultRoot);
+  activeWatcher = startWatcher(vaultRoot, { ignore: config.ok ? config.value.ignore : [] });
   process.stderr.write(`daftari: watching vault for out-of-band edits\n`);
 }
 

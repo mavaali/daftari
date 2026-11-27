@@ -48,7 +48,7 @@ import {
   createConfiguredIntegrationRuntime,
   type IntegrationRuntime,
 } from "../integrations/runtime.js";
-import { acquireLock, releaseLock } from "../lifecycle/lock.js";
+import { acquireLock, EXIT_LEASE_LOST, releaseLock } from "../lifecycle/lock.js";
 import { setCoverageEnabled } from "../search/coverage.js";
 import { setGraphExpandConfig } from "../search/graph-expansion.js";
 import { setDefaultWeights, setVecKnnK } from "../search/hybrid.js";
@@ -58,7 +58,7 @@ import { createServer, resolveToolExposure, SERVER_VERSION } from "../server.js"
 import { createBackend, type StorageBackend } from "../storage/backend.js";
 import { directoryExists } from "../storage/local.js";
 import { syncVault } from "../storage/sync.js";
-import { vaultBoardDispose, vaultBoardResolve } from "../tools/board.js";
+import { recordBoardShown, vaultBoardDispose, vaultBoardResolve } from "../tools/board.js";
 import { type DaftariConfig, loadConfig } from "../utils/config.js";
 import { ensureVaultGitignore } from "../utils/vault-gitignore.js";
 import { renderBoardPage } from "../view/board-page.js";
@@ -78,7 +78,7 @@ import {
   tryTake,
 } from "./limits.js";
 import { type CidrRange, parseTrustedProxies, resolvePublicRemote } from "./proxy-trust.js";
-import { signSession, verifySession } from "./session.js";
+import { sessionAudience, signSession, verifySession } from "./session.js";
 
 export const DEFAULT_PORT = 8787;
 export const DEFAULT_BIND = "127.0.0.1";
@@ -641,6 +641,7 @@ export function startHttpServer(
 ): Promise<ServeHandle> {
   const oauth = config.server.oauth;
   const session = opts.session ?? null;
+  const sessionAud = sessionAudience(vaultRoot);
   const authConfigured = tokens.length > 0 || oauth !== undefined || session !== null;
 
   // The ops floor (multi-user item 6). Process-local in-memory state is
@@ -761,16 +762,27 @@ export function startHttpServer(
       }
     }
     // Browser-session cookie (bead 7q9): consulted ONLY when no valid bearer
-    // matched. A verifying cookie whose role is still declared authenticates
-    // the request; anything else falls through to the 401 below (an invalid
-    // cookie is never a guest downgrade). The double-submit CSRF check is NOT
+    // matched. A cookie authenticates only if it verifies for THIS vault's
+    // audience and carries exactly the configured session identity (3p4.8) —
+    // a shared signing key alone is not enough. Anything else falls through to
+    // the 401 below (an invalid cookie is never a guest downgrade). The double-submit CSRF check is NOT
     // done here — authentication and CSRF are separate concerns; the board
     // route layer enforces CSRF on cookie-authed state-changing requests.
     if (session !== null) {
       const cookie = cookiesFrom(req).get(SESSION_COOKIE);
       if (cookie !== undefined) {
-        const verified = verifySession(cookie, session.key, Math.floor(Date.now() / 1000));
-        if (verified.ok && verified.value.role in config.roles) {
+        const verified = verifySession(
+          cookie,
+          session.key,
+          Math.floor(Date.now() / 1000),
+          sessionAud,
+        );
+        if (
+          verified.ok &&
+          verified.value.user === session.user &&
+          verified.value.role === session.roleName &&
+          verified.value.role in config.roles
+        ) {
           cookieAuthedReqs.add(req);
           return resolveAccess(config, verified.value.user, verified.value.role);
         }
@@ -1054,7 +1066,7 @@ export function startHttpServer(
         const nowSec = Math.floor(Date.now() / 1000);
         const maxAgeSec = Math.floor(session.lifetimeMs / 1000);
         const token = signSession(
-          { user: session.user, role: session.roleName, exp: nowSec + maxAgeSec },
+          { user: session.user, role: session.roleName, exp: nowSec + maxAgeSec, aud: sessionAud },
           session.key,
         );
         const csrf = randomBytes(18).toString("base64url");
@@ -1172,6 +1184,7 @@ export function startHttpServer(
       if (url.pathname === "/api/board" && req.method === "GET") {
         // GET /api/board → JSON board result
         const result = await listBoard(vaultRoot, boardAccess, hasFilters ? filters : undefined);
+        recordBoardShown(vaultRoot, boardAccess, result);
         writeJson(res, 200, result);
         return;
       }
@@ -1179,6 +1192,7 @@ export function startHttpServer(
       if (url.pathname === "/board" && req.method === "GET") {
         // GET /board → rendered HTML page
         const result = await listBoard(vaultRoot, boardAccess, hasFilters ? filters : undefined);
+        recordBoardShown(vaultRoot, boardAccess, result);
         const html = renderBoardPage(result, hasFilters ? filters : undefined);
         writeHtml(res, 200, html);
         return;
@@ -1583,10 +1597,14 @@ export async function runServe(argv: string[]): Promise<number> {
     return 2;
   }
 
+  // A lost lease (taken over while this server was stalled) shuts down
+  // rather than leave two writers on one vault.
+  let shutdown: ((exitCode?: number) => void) | undefined;
   const lock = await acquireLock(vaultRoot, SERVER_VERSION, {
     mode: "serve",
     bind: `${bind}:${port}`,
     takeover: argv.includes("--takeover"),
+    onLeaseLost: () => shutdown?.(EXIT_LEASE_LOST),
   });
   if (!lock.ok) {
     process.stderr.write(`daftari serve: ${lock.error.message}\n`);
@@ -1596,7 +1614,7 @@ export async function runServe(argv: string[]): Promise<number> {
   // a failure between here and the listener opening must still release the
   // lock on exit. `handle` is assigned once the listener is up.
   let handle: ServeHandle | null = null;
-  installShutdownHandlers(vaultRoot, async () => {
+  shutdown = installShutdownHandlers(vaultRoot, async () => {
     if (handle) await handle.close();
   });
 

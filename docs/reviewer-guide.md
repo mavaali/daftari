@@ -105,7 +105,7 @@ Reports findings across six checks. On this vault expect:
 - **staleFiles**: `helios-credits-model.md` (past its TTL by months) and `cirrus-realtime-preview.md` (past TTL, but kept as a deprecated provenance note).
 - **retiredStillLinked**: `cirrus-realtime-preview.md` is still linked from the canonical GA write-up.
 - **unansweredQuestions**: `cirrus-capacity-tiers.md` raises a workload-mix breakeven question no other doc answers; several other docs have similarly orphaned questions.
-- **orphanFiles**: a handful of docs with no inbound links (expected on a small vault).
+- **orphanFiles**: a handful of docs with no inbound links or `sources` citations (expected on a small vault).
 - **stagnantLowConfidence**: `cirrus-realtime-preview.md` is low-confidence and old.
 
 The lint report is advisory: nothing is auto-fixed.

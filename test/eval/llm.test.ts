@@ -3,6 +3,7 @@ import {
   completeJsonWithRetry,
   createAnthropicClient,
   type LlmClient,
+  modelRejectsSamplingParams,
   parseModelJson,
   retry,
   stripCodeFence,
@@ -67,6 +68,121 @@ describe("temperature passthrough", () => {
     expect(create.mock.calls[0][0]).toMatchObject({ temperature: 0 });
     await client.complete({ model: "m", system: "s", user: "u" });
     expect(create.mock.calls[1][0].temperature).toBeUndefined();
+  });
+});
+
+describe("sampling-param capability (bead 4v1q)", () => {
+  function makeClientWith(create: ReturnType<typeof vi.fn>) {
+    const prev = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    // biome-ignore lint/suspicious/noExplicitAny: minimal SDK stand-in
+    const client = createAnthropicClient({ messages: { create } } as any);
+    if (prev) process.env.ANTHROPIC_API_KEY = prev;
+    else delete process.env.ANTHROPIC_API_KEY;
+    return client;
+  }
+  const okCreate = () =>
+    vi.fn(async () => ({
+      model: "served",
+      content: [{ type: "text", text: "ok", citations: null }],
+      usage: { input_tokens: 1, output_tokens: 1 },
+      stop_reason: "end_turn",
+    }));
+
+  it.each([
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
+    "claude-sonnet-5",
+    "claude-opus-5",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-fable-5",
+    "claude-fable-5-1",
+    "claude-sonnet-5-5-20260901",
+    "anthropic/claude-sonnet-5.5",
+    "anthropic/claude-opus-4.7",
+    "claude-opus-5-5[1m]",
+  ])("%s rejects sampling params", (model) => {
+    expect(modelRejectsSamplingParams(model)).toBe(true);
+  });
+
+  it.each([
+    "claude-haiku-4-5",
+    "claude-haiku-4-5-20251001",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6",
+    "claude-sonnet-4-5",
+    "anthropic/claude-haiku-4.5",
+    "claude-3-5-sonnet-20241022",
+    "qwen3:8b",
+    "m",
+  ])("%s accepts sampling params", (model) => {
+    expect(modelRejectsSamplingParams(model)).toBe(false);
+  });
+
+  it("does not send temperature to a model that rejects it, and reports none sent", async () => {
+    const create = okCreate();
+    const client = makeClientWith(create);
+    const r = await client.complete({
+      model: "claude-sonnet-5-5",
+      system: "s",
+      user: "u",
+      temperature: 0,
+    });
+    expect("temperature" in create.mock.calls[0][0]).toBe(false);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.effectiveTemperature).toBeUndefined();
+  });
+
+  it("does not send temperature on the tool loop for a model that rejects it", async () => {
+    const create = okCreate();
+    const client = makeClientWith(create);
+    await client.completeWithTools({
+      model: "claude-opus-5-5",
+      system: "s",
+      user: "u",
+      temperature: 0,
+      tools: [],
+      toolHandler: async () => null,
+    });
+    expect("temperature" in create.mock.calls[0][0]).toBe(false);
+  });
+
+  it("the JSON retry does not nudge temperature for a model that rejects it", async () => {
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce({
+        content: [{ type: "text", text: "say", citations: null }],
+        usage: { input_tokens: 1, output_tokens: 1 },
+        stop_reason: "end_turn",
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: "text", text: '{"claims":[]}', citations: null }],
+        usage: { input_tokens: 1, output_tokens: 1 },
+        stop_reason: "end_turn",
+      });
+    const client = makeClientWith(create);
+    const r = await client.completeJson({
+      model: "claude-sonnet-5-5",
+      system: "s",
+      user: "u",
+      schema: { type: "object" },
+      temperature: 0,
+    });
+    expect(create).toHaveBeenCalledTimes(2);
+    expect("temperature" in create.mock.calls[1][0]).toBe(false);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.viaRetry).toBe(true);
+      expect(r.value.effectiveTemperature).toBeUndefined();
+    }
+  });
+
+  it("still sends temperature 0 to a model that accepts it", async () => {
+    const create = okCreate();
+    const client = makeClientWith(create);
+    await client.complete({ model: "claude-haiku-4-5", system: "s", user: "u", temperature: 0 });
+    expect(create.mock.calls[0][0]).toMatchObject({ temperature: 0 });
   });
 });
 

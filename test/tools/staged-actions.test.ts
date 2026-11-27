@@ -399,6 +399,31 @@ describe("vault_ratify", () => {
     expect(action.ok && action.value?.status).toBe("pending");
   }, 60_000);
 
+  it("leaves a loop-closing supersede pending (#639)", async () => {
+    await seedDraft(vault, "pricing/a.md", { status: "superseded", superseded_by: "pricing/b.md" });
+    await seedDraft(vault, "pricing/b.md");
+    const staged = await stageAction(vault, {
+      actionType: "supersede",
+      targetPath: "pricing/b.md",
+      proposedBy: AGENT,
+      rationale: "Would close a loop.",
+      proposedDiff: { superseded_by: "pricing/a.md" },
+    });
+    if (!staged.ok) return;
+
+    const result = await vaultRatify(vault, {
+      id: staged.value.id,
+      decision: "approve",
+      principal: HUMAN,
+    });
+    expect(result.ok).toBe(false);
+
+    const action = await getStagedActionById(vault, staged.value.id);
+    expect(action.ok && action.value?.status).toBe("pending");
+    const read = await vaultRead(vault, "pricing/b.md");
+    expect(read.ok && read.value.frontmatter.superseded_by).toBeNull();
+  }, 60_000);
+
   it("leaves a malformed merge pending (merge_from not two paths)", async () => {
     await seedDraft(vault, "pricing/a.md");
     const staged = await stageAction(vault, {

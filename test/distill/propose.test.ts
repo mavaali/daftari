@@ -463,6 +463,45 @@ describe("proposeAllClaims (U4)", () => {
     expect((fm.readers as string[])[0]).toContain("@na|");
   });
 
+  it("stamps said_at from the claim, and never derives valid_from from it (#305)", async () => {
+    const runId = "run-said-at";
+    const claim = makeClaim({
+      claim_key: "chunk-sa:said-at-claim-11223344",
+      statement: "A claim with a known source time.",
+      proposed_frontmatter: { title: "Said at claim" },
+      said_at: "2026-05-01T10:02:00",
+    });
+    await proposeAllClaims(vault, [claim], { sourceId: "chat-export-1", runId });
+    const listed = await listStagedActions(vault, "pending");
+    if (!listed.ok) throw listed.error;
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+    const fm = (action.proposedDiff as Record<string, unknown>).frontmatter as Record<
+      string,
+      unknown
+    >;
+    expect(fm.said_at).toBe("2026-05-01T10:02:00");
+    expect("valid_from" in fm).toBe(false);
+    expect("valid_until" in fm).toBe(false);
+  });
+
+  it("omits said_at when the claim carries none", async () => {
+    const runId = "run-no-said-at";
+    await proposeAllClaims(vault, [makeClaim({ claim_key: "chunk-sa:no-said-at-55443322" })], {
+      sourceId: "chat-export-1",
+      runId,
+    });
+    const listed = await listStagedActions(vault, "pending");
+    if (!listed.ok) throw listed.error;
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+    const fm = (action.proposedDiff as Record<string, unknown>).frontmatter as Record<
+      string,
+      unknown
+    >;
+    expect("said_at" in fm).toBe(false);
+  });
+
   it("defaults reader_via_retry to false when viaRetry is undefined", async () => {
     const runId = "run-reader-retry-default";
     const claim = makeClaim({
@@ -682,6 +721,118 @@ describe("proposeAllClaims (U4)", () => {
       expect(overridden.fm.domain).toBe(defaulted.fm.domain);
       expect(overridden.fm.title).toBe(defaulted.fm.title);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Citation-integrity check surfaced in the Provenance body (mavaali-beads-b7w)
+// ---------------------------------------------------------------------------
+
+describe("proposeAllClaims — citation-integrity check surfaced in body", () => {
+  let vault: string;
+
+  beforeEach(() => {
+    vault = mkdtempSync(join(tmpdir(), "daftari-propose-citation-"));
+  });
+
+  afterEach(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("lists violations in the body when the claim's citation_check has violations", async () => {
+    const runId = "run-citation-violation";
+    const claim = makeClaim({
+      claim_key: "chunk-cite:violation-aabbccdd",
+      statement: "The team estimated 500 hours of work.",
+      proposed_frontmatter: { title: "Citation violation" },
+      citation_check: {
+        ok: false,
+        citations: [{ type: "number", value: "500" }],
+        violations: [{ type: "number", value: "500" }],
+      },
+    });
+
+    const outcome = await proposeAllClaims(vault, [claim], { sourceId: "chat-export-1", runId });
+    expect(outcome.proposed).toBe(1);
+    expect(outcome.errors).toHaveLength(0);
+
+    const listed = await listStagedActions(vault, "pending");
+    if (!listed.ok) throw listed.error;
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+
+    const body = (action.proposedDiff as Record<string, unknown>).body as string;
+    expect(body).toContain("### Citation check");
+    expect(body).toContain("1 violation");
+    expect(body).toContain('number:"500"');
+  });
+
+  it("reports zero violations in the body when the claim's citation_check passes", async () => {
+    const runId = "run-citation-clean";
+    const claim = makeClaim({
+      claim_key: "chunk-cite:clean-eeff0011",
+      statement: "The launch moves to 2026-06-03.",
+      proposed_frontmatter: { title: "Citation clean" },
+      citation_check: {
+        ok: true,
+        citations: [{ type: "date", value: "2026-06-03" }],
+        violations: [],
+      },
+    });
+
+    const outcome = await proposeAllClaims(vault, [claim], { sourceId: "chat-export-1", runId });
+    expect(outcome.proposed).toBe(1);
+
+    const listed = await listStagedActions(vault, "pending");
+    if (!listed.ok) throw listed.error;
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+
+    const body = (action.proposedDiff as Record<string, unknown>).body as string;
+    expect(body).toContain("### Citation check");
+    expect(body).toContain("Violations:** none");
+  });
+
+  it("omits the Citation check section when the claim cites no numbers/dates/quotes", async () => {
+    const runId = "run-citation-none";
+    const claim = makeClaim({
+      claim_key: "chunk-cite:none-99887766",
+      statement: "The team agreed to use Postgres.",
+      proposed_frontmatter: { title: "Citation none" },
+      citation_check: { ok: true, citations: [], violations: [] },
+    });
+
+    const outcome = await proposeAllClaims(vault, [claim], { sourceId: "chat-export-1", runId });
+    expect(outcome.proposed).toBe(1);
+
+    const listed = await listStagedActions(vault, "pending");
+    if (!listed.ok) throw listed.error;
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+
+    const body = (action.proposedDiff as Record<string, unknown>).body as string;
+    expect(body).not.toContain("### Citation check");
+  });
+
+  it("omits the Citation check section when the claim carries no citation_check at all", async () => {
+    const runId = "run-citation-absent";
+    const claim = makeClaim({
+      claim_key: "chunk-cite:absent-55443322",
+      statement: "A legacy claim with no citation_check computed.",
+      proposed_frontmatter: { title: "Citation absent" },
+      // citation_check intentionally omitted.
+    });
+
+    const outcome = await proposeAllClaims(vault, [claim], { sourceId: "chat-export-1", runId });
+    expect(outcome.proposed).toBe(1);
+
+    const listed = await listStagedActions(vault, "pending");
+    if (!listed.ok) throw listed.error;
+    const action = listed.value.find((a) => a.runId === runId);
+    if (!action) throw new Error("expected a staged action for this run");
+
+    const body = (action.proposedDiff as Record<string, unknown>).body as string;
+    expect(body).not.toContain("### Citation check");
   });
 });
 

@@ -1,7 +1,7 @@
 {
   "name": "daftari",
-  "version": "3.16.0",
-  "description": "Memory you own for AI agents: a markdown + Git vault every MCP client can share, with sources, replaced beliefs, and open contradictions kept visible.",
+  "version": "3.20.0",
+  "description": "Rent the brain. Own the memory. A Markdown and Git vault for AI agents that keeps sources, replaced beliefs, and open contradictions visible.",
   "mcpName": "io.github.mavaali/daftari",
   "license": "MIT",
   "author": "Mihir Wagle / mavaali",
@@ -37,6 +37,7 @@
     "lint:fix": "biome check --write src test",
     "format": "biome format --write src test",
     "pack:mcpb": "node scripts/pack-mcpb.mjs",
+    "sync:release": "node scripts/sync-release-metadata.mjs",
     "regression:update-sample-embeddings": "tsx scripts/regression-generate-sample-embeddings.ts",
     "regression:update-baseline": "node scripts/regression-update-baseline.mjs",
     "prepublishOnly": "npm run build",
@@ -59,8 +60,8 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.123.0",
     "@huggingface/transformers": "^4.2.0",
-    "@modelcontextprotocol/node": "^2.0.0",
-    "@modelcontextprotocol/server": "^2.0.0",
+    "@modelcontextprotocol/node": "^2.1.2",
+    "@modelcontextprotocol/server": "^2.4.0",
     "better-sqlite3": "^12.10.0",
     "chokidar": "^4.0.3",
     "fflate": "^0.8.3",
@@ -69,6 +70,7 @@
     "jose": "^6.2.4",
     "js-yaml": "^4.1.1",
     "lowlight": "^3.3.0",
+    "minimatch": "^10.2.2",
     "pdfjs-dist": "^6.3.289",
     "rehype-sanitize": "^6.0.0",
     "rehype-stringify": "^10.0.1",
@@ -81,8 +83,8 @@
   "devDependencies": {
     "@azure/msal-browser": "^5.20.0",
     "@biomejs/biome": "^2.4.15",
-    "@modelcontextprotocol/client": "^2.0.0",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/client": "^2.4.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@types/better-sqlite3": "^7.6.13",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.8.0",
@@ -92,7 +94,7 @@
     "pg": "^8.22.0",
     "tsx": "^4.22.1",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.6"
+    "vitest": "^4.1.12"
   },
   "overrides": {
     "protobufjs": "^7.6.1",

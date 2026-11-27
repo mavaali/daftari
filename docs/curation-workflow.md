@@ -56,8 +56,13 @@ The loop begins with two read-only calls:
 
 `vault_lint` returns findings grouped under six checks. `vault_status` adds the
 staleness distribution and the unresolved-tension count. Together they are the
-loop's worklist. Pass `{ "filter": "<check>" }` to `vault_lint` to work one
-check at a time.
+loop's worklist. The default `vault_lint` result is a summary sized to fit a
+client's result limit: `counts` per check, plus clipped previews of the first
+few findings (a tight budget can leave a check's preview empty; its count
+survives). Pass `{ "filter": "<check>" }` to work one check at a time, 50
+findings per call with details in full, and `limit` and `offset` to page:
+`nextOffset` gives each check's resume point. `{ "filter": "<check>", "limit": 0 }`
+returns the staged and shadow lists whole, which the summary only previews.
 
 A note on the agent's **role**: the loop needs `write` permission on every
 collection it curates, and `promote: true` if it will promote drafts (step 2d).
@@ -116,13 +121,17 @@ is complete, and a confidence level has been explicitly set — and unless the
 loop's role has `promote: true`. A refusal is informative: it tells you exactly
 what is missing. Fix that, then re-promote.
 
-### 2e. `orphanFiles` — no inbound links
+### 2e. `orphanFiles` — no inbound links or `sources` citations
 
-A document no other document links to is disconnected knowledge. For each
-orphan:
+A document no other document links to or cites in `sources` is disconnected
+knowledge. A backticked path doesn't count; the finding lists documents that
+name the orphan that way, which are the first places to look. `orphanSummary`
+counts what is left: `nothingRefers` is the documents with no reference of any
+kind. For each orphan:
 
 - **Still relevant?** Link it in. Add a wikilink to it from a related hub
-  document (`vault_append` a "See also" line, or weave the link into prose).
+  document (`vault_append` a "See also" line, or weave the link into prose), or
+  list it in the `sources` of a document built from it.
   `vault_search_related` against the orphan's path finds good homes for the
   link.
 - **No longer relevant?** Retire it — `vault_deprecate` it, or `vault_write` it
@@ -130,7 +139,7 @@ orphan:
   live knowledge.
 
 > v1 does not track per-document read counts, so orphan triage is driven purely
-> by the inbound-link graph. "Nobody links to it" is the available signal.
+> by the inbound graph. "Nothing links to or cites it" is the available signal.
 
 ### 2f. `unansweredQuestions` — open questions nothing answers
 

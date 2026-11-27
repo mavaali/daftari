@@ -8,6 +8,7 @@ import type { VaultLintResult } from "../../src/tools/curation.js";
 // to zero and cast, keeping fixtures readable.
 function makeReport(overrides: {
   checks?: Partial<Record<LintCheckName, LintFinding[]>>;
+  nextOffset?: Partial<Record<LintCheckName, number>>;
   generatedAt?: string;
   tension?: Partial<{
     total: number;
@@ -33,7 +34,10 @@ function makeReport(overrides: {
   return {
     generatedAt: overrides.generatedAt ?? "2026-07-30T00:00:00.000Z",
     filter: null,
+    mode: "summary",
     checks,
+    counts: Object.fromEntries(Object.entries(checks).map(([c, f]) => [c, f?.length ?? 0])),
+    nextOffset: overrides.nextOffset ?? {},
     totalFindings,
     tensionHealth: {
       total: t.total ?? 0,
@@ -44,6 +48,7 @@ function makeReport(overrides: {
       blastRadiusOfStaleTensions: t.blast ?? 0,
     },
     stagedActions: Array.from({ length: overrides.staged ?? 0 }),
+    stagedActionsTotal: overrides.staged ?? 0,
     shadowActions: { total: overrides.shadowTotal ?? 0, gated: overrides.shadowGated ?? 0 },
     coverageEquity: { backstopOverdue: { count: overrides.backstop ?? 0 } },
     compiledEdgeCoverage: {
@@ -129,5 +134,25 @@ describe("renderLedgerKeeper", () => {
     const out = renderLedgerKeeper(report);
     expect(out).toContain("Entry one.md ");
     expect(out).toContain("Entry two.md ");
+  });
+
+  it("counts from `counts`, so a preview does not shrink the tally", () => {
+    const report = makeReport({
+      checks: { orphanFiles: [{ path: "a.md", detail: "lonely" }] },
+      nextOffset: { orphanFiles: 1 },
+    });
+    report.counts = { orphanFiles: 40 };
+    report.totalFindings = 40;
+    const out = renderLedgerKeeper(report);
+    expect(out).toContain("orphanFiles 40");
+    expect(out).toContain("of 40:");
+    expect(out).toContain("nextOffset");
+  });
+
+  it("does not call a counts-only page clean", () => {
+    const report = makeReport({ nextOffset: { orphanFiles: 0 } });
+    report.counts = { orphanFiles: 40 };
+    report.totalFindings = 40;
+    expect(renderLedgerKeeper(report)).not.toContain("Nothing demands correction");
   });
 });

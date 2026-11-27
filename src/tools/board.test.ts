@@ -176,11 +176,13 @@ const scopedHumanAccess: AccessContext = {
 function makeConfig(roles: Record<string, RoleConfig>, principals: string[] = []): DaftariConfig {
   return {
     roles,
+    defaultRole: null,
     schemaExtensions: [],
     indexedFields: [],
     hooks: { preWrite: [], preWriteTransform: [] },
     autoCommit: false,
     watch: false,
+    ignore: [],
     warmEmbeddings: false,
     embeddingProvider: "local-minilm",
     search: {
@@ -279,12 +281,12 @@ function seedMultiCollectionVault(): string {
   writeDoc(
     vaultRoot,
     "restricted/secret-doc.md",
-    frontmatter({
+    `${frontmatter({
       title: "Secret",
       collection: "restricted",
       updated: "2020-01-01",
       ttl_days: null,
-    }) + "# Secret\n\nNobody can see me if scoped.\n",
+    })}# Secret\n\nNobody can see me if scoped.\n`,
   );
   return vaultRoot;
 }

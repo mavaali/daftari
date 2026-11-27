@@ -86,4 +86,115 @@ describe("ensureVaultGitignore", () => {
       .split("\n");
     expect(ignored).toEqual(paths);
   });
+
+  it("ignores the process lock and its heartbeat/takeover side files (nbrr)", async () => {
+    await ensureVaultGitignore(dir);
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+    mkdirSync(join(dir, ".daftari"), { recursive: true });
+    const paths = [
+      ".daftari/process.lock",
+      ".daftari/process.lock.hb-0123abcd",
+      ".daftari/process.lock.hb-0123abcd.tmp",
+      ".daftari/process.lock.gone-0123abcd",
+    ];
+    for (const relativePath of paths) writeFileSync(join(dir, relativePath), "{}\n");
+    const ignored = execFileSync("git", ["check-ignore", "--stdin"], {
+      cwd: dir,
+      input: `${paths.join("\n")}\n`,
+      encoding: "utf-8",
+    })
+      .trim()
+      .split("\n");
+    expect(ignored).toEqual(paths);
+  });
+
+  it("upgrades an older Daftari block with the process lock rules", async () => {
+    const path = join(dir, ".gitignore");
+    writeFileSync(path, "# old Daftari block\n.daftari/index.db\n");
+    expect(await ensureVaultGitignore(dir)).toBe("appended");
+    const content = readFileSync(path, "utf-8");
+    expect(content).toContain(".daftari/process.lock\n");
+    expect(content).toContain(".daftari/process.lock.*");
+  });
+});
+
+// ozor: the governance journals that were neither ignored nor committed.
+// Policy: "Git carries your knowledge; a Daftari backup carries your
+// governance" — every governance journal is gitignored and carried by sync.
+describe("governance journals (ozor)", () => {
+  let dir: string;
+  const JOURNALS = [
+    ".daftari/tensions.md",
+    ".daftari/board-dispositions.jsonl",
+    ".daftari/distill-receipts.jsonl",
+    // qoez: run and trace journals
+    ".daftari/runs.jsonl",
+    ".daftari/birth-trace.jsonl",
+    ".daftari/revision-trace.jsonl",
+    ".daftari/tension-scan-state.json",
+    ".daftari/morning-report.md",
+  ];
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "daftari-gitignore-ozor-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function checkIgnored(paths: string[]): string[] {
+    try {
+      return execFileSync("git", ["check-ignore", "--stdin"], {
+        cwd: dir,
+        input: `${paths.join("\n")}\n`,
+        encoding: "utf-8",
+      })
+        .trim()
+        .split("\n")
+        .filter((l) => l.length > 0);
+    } catch {
+      return []; // exit 1: nothing ignored
+    }
+  }
+
+  it("a fresh vault template ignores tensions, board dispositions and distill receipts", () => {
+    writeFileSync(join(dir, ".gitignore"), VAULT_GITIGNORE);
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+    mkdirSync(join(dir, ".daftari"), { recursive: true });
+    for (const p of JOURNALS) writeFileSync(join(dir, p), "x\n");
+    expect(checkIgnored(JOURNALS)).toEqual(JOURNALS);
+  });
+
+  it("upgrades an older block with every template rule it lacks, including auth-log", async () => {
+    const path = join(dir, ".gitignore");
+    writeFileSync(path, "# old Daftari block\n.daftari/index.db\n.daftari/curation-log.jsonl\n");
+    expect(await ensureVaultGitignore(dir)).toBe("appended");
+    const lines = new Set(readFileSync(path, "utf-8").split("\n"));
+    for (const p of [...JOURNALS, ".daftari/auth-log.jsonl", ".daftari/wake-queue.jsonl"]) {
+      expect(lines.has(p)).toBe(true);
+    }
+    // Already-present rules are not duplicated.
+    const content = readFileSync(path, "utf-8");
+    expect(content.split("\n").filter((l) => l === ".daftari/curation-log.jsonl")).toHaveLength(1);
+    // Idempotent: a second run leaves the file untouched.
+    expect(await ensureVaultGitignore(dir)).toBe("present");
+    expect(readFileSync(path, "utf-8")).toBe(content);
+  });
+
+  it("never untracks a journal the operator already committed", async () => {
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+    writeFileSync(join(dir, ".gitignore"), "# old Daftari block\n.daftari/index.db\n");
+    mkdirSync(join(dir, ".daftari"), { recursive: true });
+    writeFileSync(join(dir, ".daftari/tensions.md"), "## t\n");
+    execFileSync("git", ["add", "-A"], { cwd: dir });
+    execFileSync(
+      "git",
+      ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "operator add -A"],
+      { cwd: dir },
+    );
+    await ensureVaultGitignore(dir);
+    const tracked = execFileSync("git", ["ls-files", ".daftari"], { cwd: dir, encoding: "utf-8" });
+    expect(tracked).toContain(".daftari/tensions.md");
+  });
 });

@@ -100,7 +100,7 @@ Every tool the router exposes is one of two shapes:
 
 | Shape | Behavior | Examples |
 |---|---|---|
-| **vault-required** | Errors without a `vault` arg or vault-prefixed path | `vault_read`, `vault_write`, `vault_append`, `vault_promote`, `vault_deprecate`, `vault_tension_log`, `vault_search_related`, `vault_provenance` |
+| **vault-required** | Errors without a `vault` arg or vault-prefixed path | `vault_read`, `vault_write`, `vault_patch`, `vault_append`, `vault_promote`, `vault_deprecate`, `vault_tension_log`, `vault_search_related`, `vault_provenance` |
 | **fan-out** | No `vault` arg → run against every child, merge results. With `vault` arg (or a vault-prefixed `path`) → run against one | `vault_search`, `vault_index`, `vault_lint`, `vault_status`, `vault_themes`, `vault_reindex` |
 
 Writes never fan out. If you don't specify a vault for a write, it's rejected.
@@ -236,6 +236,7 @@ when one vault changed under the router (e.g. you pulled new docs into
 |---|---|---|
 | `vault_read` | error | reads from named vault |
 | `vault_write` | error | writes to that vault |
+| `vault_patch` | error | patches in that vault |
 | `vault_append` | error | appends to that vault |
 | `vault_promote` | error | promotes in that vault |
 | `vault_deprecate` | error | deprecates in that vault |

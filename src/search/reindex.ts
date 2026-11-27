@@ -19,8 +19,10 @@
 
 import { stat } from "node:fs/promises";
 import { rebuildEdgesIndex } from "../curation/edges.js";
+import { missingGovernanceJournalsWarning } from "../curation/governance-journals.js";
+import { hasLocalSourceRef, outgoingEdges } from "../curation/source-refs.js";
 import { rebuildStagedActionsIndex } from "../curation/staged-actions.js";
-import { buildPathIndexes, extractLinks, outgoingLinkTargets } from "../curation/vault-docs.js";
+import { buildPathIndexes, extractLinks } from "../curation/vault-docs.js";
 import { parseDocument } from "../frontmatter/parser.js";
 import { validateFrontmatter } from "../frontmatter/schema.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
@@ -30,6 +32,7 @@ import {
   type ChunkRowInput,
   clearEmbeddingsVec,
   clearIndex,
+  type DocEdge,
   deleteDocument,
   documentCount,
   existingEmbeddingHashes,
@@ -46,11 +49,18 @@ import {
   insertEmbeddingVec,
   openIndexDb,
   pruneStaleVecRows,
+  replaceDocAmends,
   replaceDocLinks,
   replaceDocumentFields,
   setMeta,
 } from "../storage/index-db.js";
-import { listFiles, readFile, resolveVaultPath } from "../storage/local.js";
+import {
+  collectionOfPath,
+  listFiles,
+  matchesIgnoreList,
+  readFile,
+  resolveVaultPath,
+} from "../storage/local.js";
 import { mapWithConcurrency } from "../utils/concurrency.js";
 import {
   type DaftariConfig,
@@ -177,6 +187,18 @@ export function readManifest(db: IndexDb): Record<string, number> | null {
   }
 }
 
+// Drops a document from the index and patches the manifest so the next startup
+// freshness check does not read the missing entry as drift. A malformed
+// manifest reads as null — non-fatal; the next full reindex rewrites it.
+export function evictDocument(db: IndexDb, relPath: string): void {
+  deleteDocument(db, relPath);
+  const manifest = readManifest(db);
+  if (manifest && relPath in manifest) {
+    delete manifest[relPath];
+    writeManifest(db, manifest);
+  }
+}
+
 export function writeManifest(db: IndexDb, manifest: Record<string, number>): void {
   setMeta(db, MANIFEST_META_KEY, JSON.stringify(manifest));
 }
@@ -247,6 +269,9 @@ export interface ReindexResult {
   embeddedCount: number;
   cacheHits: number;
   orphansRemoved: number;
+  // Set when the vault has Daftari write history but no governance journals
+  // (the git-clone case, ozor): governance state is gone and IDs restart.
+  governanceWarning?: string;
 }
 
 export interface ReindexOptions {
@@ -297,12 +322,15 @@ export function reindexWarnings(result: ReindexResult): string[] {
     );
     for (const s of result.invalidFrontmatter) lines.push(`  ${s.path}: ${s.reason}`);
   }
+  if (result.governanceWarning) lines.push(result.governanceWarning);
   return lines;
 }
 
 interface StagedDocument {
   doc: IndexedDocument;
+  sources: string[];
   fields: IndexedFieldValue[];
+  amends: string[];
   chunks: string[];
   hashes: string[];
 }
@@ -415,7 +443,7 @@ async function stageOne(
       doc: {
         path: relPath,
         title: fm.title,
-        collection: fm.collection || (relPath.split("/")[0] ?? ""),
+        collection: fm.collection || collectionOfPath(relPath),
         domain: fm.domain,
         status: fm.status,
         confidence: fm.confidence,
@@ -429,7 +457,9 @@ async function stageOne(
         validFrom: fm.valid_from,
         validUntil: fm.valid_until,
       },
+      sources: fm.sources,
       fields: projection.fields,
+      amends: fm.amends ?? [],
       chunks,
       hashes,
     },
@@ -491,10 +521,11 @@ function writeChunkRows(db: IndexDb, staged: StagedDocument[]): number {
   const linkIndexes = buildPathIndexes(staged.map(({ doc }) => ({ path: doc.path })));
   const write = db.transaction(() => {
     clearIndex(db);
-    for (const { doc, fields, chunks, hashes } of staged) {
+    for (const { doc, sources, fields, amends, chunks, hashes } of staged) {
       insertDocument(db, doc);
       replaceDocumentFields(db, doc.path, fields);
-      replaceDocLinks(db, doc.path, outgoingLinkTargets(doc.content, doc.path, linkIndexes));
+      replaceDocLinks(db, doc.path, outgoingEdges(doc.content, sources, doc.path, linkIndexes));
+      replaceDocAmends(db, doc.path, amends);
       chunks.forEach((text, chunkIndex) => {
         const row: ChunkRowInput = {
           path: doc.path,
@@ -643,6 +674,7 @@ export async function reindexVault(
     // pass when nothing on disk has changed.
     const manifest = await buildManifest(vaultRoot);
     if (manifest) writeManifest(db, manifest);
+    const governanceWarning = await missingGovernanceJournalsWarning(vaultRoot);
     return ok({
       documentCount: staged.length,
       chunkCount,
@@ -655,6 +687,7 @@ export async function reindexVault(
       embeddedCount: committedEmbeds,
       cacheHits,
       orphansRemoved,
+      ...(governanceWarning ? { governanceWarning } : {}),
     });
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
@@ -697,6 +730,17 @@ export async function indexDocument(
   if (!dbResult.ok) return dbResult;
   const db = dbResult.value;
 
+  // An ignored path is not a document (#646). Evict rather than skip, so a file
+  // the list newly covers leaves search on its next event, without a restart.
+  if (matchesIgnoreList(relPath, config.value.ignore)) {
+    try {
+      evictDocument(db, relPath);
+      return ok({ chunkCount: 0, vectorEnabled: true, invalidFrontmatter: null });
+    } finally {
+      db.close();
+    }
+  }
+
   if (
     documentCount(db) > 0 &&
     getMeta(db, INDEXED_FIELDS_META_KEY) !== indexedFieldsFingerprint(config.value.indexedFields)
@@ -729,7 +773,7 @@ export async function indexDocument(
     db.close();
     return err(new Error(`cannot index document: ${relPath} (${outcome.reason})`));
   }
-  const { doc, fields, chunks, hashes } = outcome.staged;
+  const { doc, sources, fields, amends, chunks, hashes } = outcome.staged;
 
   const createdAt = new Date().toISOString();
 
@@ -773,21 +817,22 @@ export async function indexDocument(
     // reindex-granularity staleness, #8).
     //
     // The path index is O(vault) to build, so it is constructed only when the
-    // document actually links out — and outside the write transaction either
+    // document actually links out or cites — and outside the write transaction either
     // way, to keep the transaction to row writes. The doc's OWN path is added
     // to the universe (sorted, matching allDocumentPaths' ORDER BY) because a
     // first-time index runs before this doc's row lands: without it, a bare
     // link matching the doc's own basename would resolve to a same-basename
     // sibling instead of being filtered as a self-link.
-    let linkTargets: string[] = [];
-    if (extractLinks(doc.content).length > 0) {
+    let edges: DocEdge[] = [];
+    if (extractLinks(doc.content).length > 0 || hasLocalSourceRef(sources)) {
       const universe = allDocumentPaths(db);
       if (!universe.includes(doc.path)) {
         universe.push(doc.path);
         universe.sort();
       }
-      linkTargets = outgoingLinkTargets(
+      edges = outgoingEdges(
         doc.content,
+        sources,
         doc.path,
         buildPathIndexes(universe.map((p) => ({ path: p }))),
       );
@@ -797,7 +842,8 @@ export async function indexDocument(
       deleteDocument(db, doc.path);
       insertDocument(db, doc);
       replaceDocumentFields(db, doc.path, fields);
-      replaceDocLinks(db, doc.path, linkTargets);
+      replaceDocLinks(db, doc.path, edges);
+      replaceDocAmends(db, doc.path, amends);
       chunks.forEach((text, chunkIndex) => {
         insertChunkRow(db, {
           path: doc.path,

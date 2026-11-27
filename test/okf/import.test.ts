@@ -47,6 +47,52 @@ One row per order.
   });
 
   it.each([false, true])(
+    "skips and reports bundle files the vault ignores (dryRun=%s)",
+    async (dryRun) => {
+      const bundle = mkTmp("okf-bundle-");
+      const vault = mkTmp("okf-vault-");
+      writeDoc(
+        vault,
+        ".daftari/config.yaml",
+        "version: 1\nignore:\n  - 'Clippings/**'\n  - README.md\n",
+      );
+      writeDoc(bundle, "tables/orders.md", foreignDoc);
+      writeDoc(bundle, "README.md", foreignDoc);
+      writeDoc(bundle, "Clippings/saved.md", foreignDoc);
+      // Skipped files are not imported, so a defect in one must not stop the rest.
+      writeDoc(bundle, "Clippings/broken.md", "---\ntitle: [unclosed\n---\n");
+
+      const result = await importBundle(bundle, vault, { dryRun });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.imported).toBe(1);
+      expect(result.value.skipped).toBe(3);
+      expect(result.value.plan.map((item) => item.relPath)).toEqual(["tables/orders.md"]);
+      expect(result.value.warnings).toEqual([
+        "Clippings/broken.md: skipped, excluded by the vault's 'ignore' config",
+        "Clippings/saved.md: skipped, excluded by the vault's 'ignore' config",
+        "README.md: skipped, excluded by the vault's 'ignore' config",
+      ]);
+      expect(existsSync(join(vault, "README.md"))).toBe(false);
+      expect(existsSync(join(vault, "Clippings"))).toBe(false);
+      expect(existsSync(join(vault, "tables/orders.md"))).toBe(!dryRun);
+    },
+  );
+
+  it("refuses to import into a vault with a malformed config", async () => {
+    const bundle = mkTmp("okf-bundle-");
+    const vault = mkTmp("okf-vault-");
+    writeDoc(vault, ".daftari/config.yaml", "version: 1\nignore: 42\n");
+    writeDoc(bundle, "tables/orders.md", foreignDoc);
+
+    const result = await importBundle(bundle, vault);
+
+    expect(result.ok).toBe(false);
+    expect(existsSync(join(vault, "tables"))).toBe(false);
+  });
+
+  it.each([false, true])(
     "rejects an invalid batch before changing any files (dryRun=%s)",
     async (dryRun) => {
       const bundle = mkTmp("okf-bundle-");

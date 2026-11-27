@@ -160,6 +160,39 @@ describe("ttlStalenessAdapter", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Series (#645): only the newest member the caller can read carries the TTL.
+  // -------------------------------------------------------------------------
+  describe("series members", () => {
+    const daysBeforeNow = (n: number) =>
+      new Date(FIXED_NOW.getTime() - n * 86_400_000).toISOString().slice(0, 10);
+    const snapshot = (age: number) =>
+      `${frontmatter({
+        series: "weekly-review",
+        ttl_days: 14,
+        created: daysBeforeNow(age),
+        updated: daysBeforeNow(age),
+      })}\nBody.\n`;
+
+    beforeEach(() => {
+      writeDoc(vaultRoot, "notes/w1.md", snapshot(40));
+      writeDoc(vaultRoot, "notes/w2.md", snapshot(20));
+    });
+
+    it("emits a finding for the newest member only", async () => {
+      const findings = await ttlStalenessAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
+      expect(findings.map((f) => f.target)).toEqual([{ kind: "staleness", path: "notes/w2.md" }]);
+    });
+
+    it("judges the series over the caller's readable docs", async () => {
+      writeDoc(vaultRoot, "restricted/w3.md", snapshot(2));
+      const admin = await ttlStalenessAdapter.list(vaultRoot, adminAccess, FIXED_NOW);
+      expect(admin).toEqual([]);
+      const scoped = await ttlStalenessAdapter.list(vaultRoot, scopedAccess, FIXED_NOW);
+      expect(scoped.map((f) => f.target)).toEqual([{ kind: "staleness", path: "notes/w2.md" }]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Scenario 1: Expired-TTL doc → staleness finding emitted.
   // Identity is stable; fingerprint drifts with score/ageDays.
   // -------------------------------------------------------------------------

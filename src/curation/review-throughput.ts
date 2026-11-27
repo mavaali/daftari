@@ -60,7 +60,7 @@ function ageDays(iso: string | null, now: Date): number | null {
 }
 
 // Nearest-rank percentile over a sorted-ascending sample.
-function nearestRank(sorted: number[], p: number): number | null {
+export function nearestRank(sorted: number[], p: number): number | null {
   if (sorted.length === 0) return null;
   const rank = Math.max(1, Math.ceil(p * sorted.length));
   return sorted[Math.min(rank, sorted.length) - 1] as number;

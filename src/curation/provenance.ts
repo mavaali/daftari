@@ -19,8 +19,9 @@ export interface ProvenanceEntry {
   tool: string; // the write tool that ran, e.g. "vault_write"
   file: string; // vault-relative path
   agent: string; // acting identity, e.g. "agent:claude-code"
-  // "create" | "update" | "append" | "promote" | "deprecate" for a write that
-  // landed; "rejected_stale" for a write refused by the base_version check.
+  // "create" | "update" | "patch" | "append" | "promote" | "deprecate" |
+  // "unsupersede" (among others) for a write that landed; "rejected_stale" for
+  // a write refused by the base_version check.
   action: string;
   // The AUTHENTICATED identity the server runs as (--user), recorded when an
   // AccessContext is present (§11.6). Distinct from `agent`, which is the
@@ -40,10 +41,11 @@ export interface ProvenanceEntry {
   body_changed?: boolean;
   frontmatter_diff?: FrontmatterDiff;
   // Free-text explanation. Set on rejected writes (e.g. the stale-version
-  // mismatch) and on landed-but-uncommitted writes ("commit failed: ..." —
-  // the file is durable on disk and indexed, but absent from git history).
-  // Absent on writes that landed and committed. Rejection is signaled by the
-  // `rejected_*` actions, never by the presence of this field.
+  // mismatch), on landed-but-uncommitted writes ("commit failed: ..." — the
+  // file is durable on disk and indexed, but absent from git history), and
+  // on writes that take a caller reason (vault_patch, vault_unsupersede).
+  // Rejection is signaled by the `rejected_*` actions, never by the presence
+  // of this field.
   reason?: string;
 }
 

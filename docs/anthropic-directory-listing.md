@@ -172,9 +172,11 @@ listing-page editor. Keep ready so we're not scrambling.
 | `vault_themes` | Cluster vault themes | readOnly |
 | `vault_reindex` | Rebuild search index | non-destructive, idempotent |
 | `vault_write` | Create or update a document | destructive |
+| `vault_patch` | Patch fields or text in a document | destructive |
 | `vault_append` | Append to a document | destructive |
 | `vault_promote` | Promote draft to canonical | destructive |
 | `vault_deprecate` | Deprecate a document | destructive |
+| `vault_unsupersede` | Reverse a supersede | destructive |
 | `vault_tension_log` | Log a contradiction | destructive |
 
 ## Pre-submission checklist (from Anthropic docs) — all complete

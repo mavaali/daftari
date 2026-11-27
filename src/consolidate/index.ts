@@ -21,12 +21,8 @@ import { posix, resolve } from "node:path";
 import { type DerivesFromEdge, listEdges } from "../curation/edges.js";
 import { addTension, listTensions } from "../curation/tension.js";
 import { loadDocuments } from "../curation/vault-docs.js";
-import { createAnthropicClient, type LlmClient } from "../eval/llm.js";
-import {
-  createOpenRouterClient,
-  type LlmTransport,
-  resolveTransport,
-} from "../eval/llm-openrouter.js";
+import type { LlmClient } from "../eval/llm.js";
+import { type LlmTransport, resolveTransport } from "../eval/llm-openrouter.js";
 import { createTransportClient } from "../eval/transport.js";
 import { err, ok, type Result } from "../frontmatter/types.js";
 import { vaultSearchRelated } from "../tools/search.js";

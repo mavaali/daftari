@@ -20,6 +20,8 @@ import { mkdirSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { dump } from "js-yaml";
+import { matchesIgnoreList } from "../storage/local.js";
+import { loadConfig } from "../utils/config.js";
 import { commit, ensureGitRepo } from "../utils/git.js";
 
 export type Result<T, E = Error> = { ok: true; value: T } | { ok: false; error: E };
@@ -61,6 +63,10 @@ export interface DerivedNote {
 export interface ImportPlan {
   notes: DerivedNote[];
   skipped: { kind: string; count: number }[];
+  // Derived paths the vault's `ignore` config excludes (#646). They are left
+  // out of `notes`, so neither --plan nor --apply counts or writes them. The
+  // memory stays in the store, so a later --apply can pick it up.
+  ignored: string[];
   byPrefix: Record<string, number>;
 }
 
@@ -101,8 +107,13 @@ function classify(value: unknown): { kind: string; text: string | null } {
   return { kind, text: null };
 }
 
-export function deriveNotes(rows: StoreRow[], opts: LanggraphImportOptions): ImportPlan {
+export function deriveNotes(
+  rows: StoreRow[],
+  opts: LanggraphImportOptions,
+  ignore: readonly string[] = [],
+): ImportPlan {
   const notes: DerivedNote[] = [];
+  const ignored: string[] = [];
   const skippedCounts = new Map<string, number>();
   const byPrefix: Record<string, number> = {};
 
@@ -112,7 +123,6 @@ export function deriveNotes(rows: StoreRow[], opts: LanggraphImportOptions): Imp
       skippedCounts.set(kind, (skippedCounts.get(kind) ?? 0) + 1);
       continue;
     }
-    byPrefix[row.prefix] = (byPrefix[row.prefix] ?? 0) + 1;
 
     const session = row.prefix.split(".").pop() ?? row.prefix;
     const title = text.split(/\s+/).slice(0, 10).join(" ");
@@ -122,6 +132,11 @@ export function deriveNotes(rows: StoreRow[], opts: LanggraphImportOptions): Imp
       session,
       `${slugifyKey(title)}--${row.key.slice(0, 8)}.md`,
     );
+    if (matchesIgnoreList(relPath, ignore)) {
+      ignored.push(relPath);
+      continue;
+    }
+    byPrefix[row.prefix] = (byPrefix[row.prefix] ?? 0) + 1;
 
     const frontmatter = {
       title,
@@ -161,7 +176,7 @@ export function deriveNotes(rows: StoreRow[], opts: LanggraphImportOptions): Imp
   }
 
   const skipped = [...skippedCounts.entries()].map(([kind, count]) => ({ kind, count }));
-  return { notes, skipped, byPrefix };
+  return { notes, skipped, ignored, byPrefix };
 }
 
 // -------------------------------------------------------------------- store
@@ -225,6 +240,10 @@ export async function connectReadOnly(
 
 // -------------------------------------------------------------------- runner
 
+function ignoredLine(plan: ImportPlan): string {
+  return `  skipped (vault 'ignore' config): ${plan.ignored.length} — e.g. ${plan.ignored[0]}`;
+}
+
 export function renderPlan(plan: ImportPlan, opts: LanggraphImportOptions): string {
   const lines: string[] = [];
   lines.push(`langgraph-store import plan (dry-run — nothing written)`);
@@ -236,6 +255,7 @@ export function renderPlan(plan: ImportPlan, opts: LanggraphImportOptions): stri
   for (const s of plan.skipped) {
     lines.push(`  skipped (${s.kind}): ${s.count} — not compiled in v1, logged only`);
   }
+  if (plan.ignored.length > 0) lines.push(ignoredLine(plan));
   if (plan.notes.length > 0) {
     lines.push(``);
     lines.push(`  sample:`);
@@ -297,6 +317,12 @@ export async function runLanggraphImport(vaultRoot: string, argv: string[]): Pro
     return 1;
   }
 
+  const config = loadConfig(vaultRoot);
+  if (!config.ok) {
+    process.stderr.write(`daftari import langgraph-store: ${config.error.message}\n`);
+    return 1;
+  }
+
   const conn = await connectReadOnly(dsn);
   if (!conn.ok) {
     process.stderr.write(`daftari import langgraph-store: ${conn.error.message}\n`);
@@ -317,7 +343,7 @@ export async function runLanggraphImport(vaultRoot: string, argv: string[]): Pro
       apply,
       yes,
     };
-    const derived = deriveNotes(rows.value, opts);
+    const derived = deriveNotes(rows.value, opts, config.value.ignore);
     if (!apply) {
       process.stdout.write(renderPlan(derived, opts));
       return 0;
@@ -335,6 +361,7 @@ export async function runLanggraphImport(vaultRoot: string, argv: string[]): Pro
     for (const s of derived.skipped) {
       process.stdout.write(`  skipped (${s.kind}): ${s.count} — not compiled in v1\n`);
     }
+    if (derived.ignored.length > 0) process.stdout.write(`${ignoredLine(derived)}\n`);
     return 0;
   } finally {
     await conn.value.close();
