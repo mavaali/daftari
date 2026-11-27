@@ -35,10 +35,11 @@ match your own work. Run `--init` with no path and it defaults to
 npx daftari --vault ./my-vault --user me --role admin
 ```
 
-The server speaks the Model Context Protocol over stdio. The `--role` must name
-a role in `.daftari/config.yaml`; the scaffolded config ships with `analyst`,
-`researcher`, and `admin`. With no `--role`, the server runs as a deny-all
-guest and every tool is denied.
+The server speaks the Model Context Protocol over stdio. An explicit `--role`
+must name a role in `.daftari/config.yaml`; the scaffolded config ships with
+`analyst`, `researcher`, and `admin`. If you omit `--role`, a freshly initialized
+local vault uses its configured `admin` default. A vault without a configured
+default, or an unrecognized explicit role, falls back to `guest` with no access.
 
 To rebuild the search index without starting the server:
 

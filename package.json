@@ -1,7 +1,7 @@
 {
   "name": "daftari",
   "version": "3.20.0",
-  "description": "Rent the brain. Own the memory. A Markdown and Git vault for AI agents that keeps sources, replaced beliefs, and open contradictions visible.",
+  "description": "Memory you own for AI agents: a Markdown and Git vault shared across compatible MCP clients, with sources, replaced beliefs, and open contradictions kept visible.",
   "mcpName": "io.github.mavaali/daftari",
   "license": "MIT",
   "author": "Mihir Wagle / mavaali",

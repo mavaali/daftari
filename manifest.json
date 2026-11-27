@@ -3,7 +3,7 @@
   "name": "daftari",
   "version": "3.20.0",
   "display_name": "Daftari",
-  "description": "Rent the brain. Own the memory. A Markdown and Git vault for AI agents.",
+  "description": "Memory you own for AI agents: plain Markdown files shared across compatible MCP clients. Recency alone never replaces a belief.",
   "long_description": "Memory you own for AI agents. Daftari keeps what your agents learn — decisions, conventions, what was tried and why — as plain markdown in a Git repo on your disk, and Claude Code, Claude Desktop, Cursor, or another compatible MCP client can read and write the same vault, subject to its role. Source links stay attached, replaced beliefs stay on the record, and logged contradictions remain open until resolved. Indexed for BM25 + vector search; runs offline by default.",
   "author": {
     "name": "Mihir Wagle",

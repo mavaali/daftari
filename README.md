@@ -15,7 +15,7 @@ replaces the other, a logged contradiction stays flagged until someone settles i
 
     npx daftari --init ./my-vault
 
-Then [connect Claude Code, Cursor, or Claude Desktop →](docs/getting-started.md)
+Then [set up Claude Desktop →](docs/getting-started.md#3-connect-from-claude-desktop).
 
 - **Yours.** Markdown and Git. Readable in any editor. Uninstall Daftari and
   you keep every word.
@@ -142,9 +142,11 @@ Daftari keeps three judgments apart:
 
 One rule follows: **a tension may never masquerade as a supersession.**
 
-Daftari has no LLM of its own. Your agent, or you, spots the contradiction and
-logs it; Daftari stores it, keeps it open, and re-queues notes for review when
-a note they depend on changes.
+By default, Daftari does not use a model to detect contradictions: you or your
+agent can spot and log them. The opt-in `daftari sleep --dream tension-scan`
+uses a model to flag potential contradictions in the tension log, but does not
+resolve them. Daftari keeps logged tensions open and re-queues notes for review
+when a note they depend on changes.
 
 The working loop: search before writing, write a draft with its confidence and
 sources, run lint to find stale notes, weak grounding, abandoned drafts, and
@@ -214,7 +216,6 @@ before you import.
 
 ## What Daftari does not do
 
-- Detect contradictions with its own model. Agents judge; Daftari records.
 - Generate a compromise when notes contradict each other.
 - Auto-fix lint findings or promote agent output on its own.
 - Hide your files behind a proprietary database.
