@@ -2073,13 +2073,16 @@ export async function vaultAppend(
   // one section.
   type AppendAttempt = { written: WriteResult; domain: string };
 
+  const physicalGate = requireWriteAccess(access, targetCollection(vaultRoot, path.value));
+  if (!physicalGate.ok) return physicalGate;
+
   const attemptAppend = async (): Promise<Result<AppendAttempt, Error>> => {
     const target = await loadTargetDocument(vaultRoot, path.value, "vault_append");
     if (!target.ok) return target;
     const extensions = target.value.config.schemaExtensions;
 
     const oldFrontmatter = target.value.parsed.frontmatter;
-    const rbac = requireWriteAccess(access, collectionOf(path.value, oldFrontmatter));
+    const rbac = requireWriteAccess(access, collectionOf(target.value.relPath, oldFrontmatter));
     if (!rbac.ok) return rbac;
     const newFrontmatter: Frontmatter = {
       ...oldFrontmatter,
@@ -2202,6 +2205,8 @@ export async function vaultPromote(
   if (access && !canPromote(access.role)) {
     return err(new Error(`access denied: role '${access.roleName}' cannot promote documents`));
   }
+  const physicalGate = requireWriteAccess(access, targetCollection(vaultRoot, path.value));
+  if (!physicalGate.ok) return physicalGate;
 
   // Read-modify-write over the loaded frontmatter — see
   // retryOnStaleIfDefaulted above. An explicit base_version passes straight
@@ -2214,6 +2219,8 @@ export async function vaultPromote(
     if (!target.ok) return target;
 
     const oldFrontmatter = target.value.parsed.frontmatter;
+    const rbac = requireWriteAccess(access, collectionOf(target.value.relPath, oldFrontmatter));
+    if (!rbac.ok) return rbac;
     if (oldFrontmatter.status !== "draft") {
       return err(
         new Error(
@@ -2374,12 +2381,15 @@ export async function vaultDeprecate(
   // the load-time contentHash and gets one transparent retry, so a concurrent
   // vault_assert's positions array is never silently erased by a clean
   // deprecate commit.
+  const physicalGate = requireWriteAccess(access, targetCollection(vaultRoot, path.value));
+  if (!physicalGate.ok) return physicalGate;
+
   const attemptDeprecate = async (): Promise<Result<WriteResult, Error>> => {
     const target = await loadTargetDocument(vaultRoot, path.value, "vault_deprecate");
     if (!target.ok) return target;
 
     const oldFrontmatter = target.value.parsed.frontmatter;
-    const rbac = requireWriteAccess(access, collectionOf(path.value, oldFrontmatter));
+    const rbac = requireWriteAccess(access, collectionOf(target.value.relPath, oldFrontmatter));
     if (!rbac.ok) return rbac;
     const retireGate = requireCanonicalAuthority(
       access,
@@ -2485,12 +2495,15 @@ export async function vaultSetConfidence(
   // the load-time contentHash and gets one transparent retry, so a concurrent
   // vault_assert's positions array is never silently erased by a clean
   // confidence-set commit.
+  const physicalGate = requireWriteAccess(access, targetCollection(vaultRoot, path.value));
+  if (!physicalGate.ok) return physicalGate;
+
   const attemptSetConfidence = async (): Promise<Result<WriteResult, Error>> => {
     const target = await loadTargetDocument(vaultRoot, path.value, "vault_set_confidence");
     if (!target.ok) return target;
 
     const oldFrontmatter = target.value.parsed.frontmatter;
-    const rbac = requireWriteAccess(access, collectionOf(path.value, oldFrontmatter));
+    const rbac = requireWriteAccess(access, collectionOf(target.value.relPath, oldFrontmatter));
     if (!rbac.ok) return rbac;
 
     // No-op guard: a confidence already at the target would churn a commit for
@@ -2582,12 +2595,15 @@ export async function vaultSetTier(
   // the load-time contentHash and gets one transparent retry, so a concurrent
   // vault_assert's positions array is never silently erased by a clean
   // tier-set commit.
+  const physicalGate = requireWriteAccess(access, targetCollection(vaultRoot, path.value));
+  if (!physicalGate.ok) return physicalGate;
+
   const attemptSetTier = async (): Promise<Result<WriteResult, Error>> => {
     const target = await loadTargetDocument(vaultRoot, path.value, "vault_set_tier");
     if (!target.ok) return target;
 
     const oldFrontmatter = target.value.parsed.frontmatter;
-    const rbac = requireWriteAccess(access, collectionOf(path.value, oldFrontmatter));
+    const rbac = requireWriteAccess(access, collectionOf(target.value.relPath, oldFrontmatter));
     if (!rbac.ok) return rbac;
 
     // The manual consent boundary: only a human identity may lift `manual`.
@@ -2683,6 +2699,9 @@ export async function vaultSupersede(
     return err(new Error("vault_supersede: a document cannot supersede itself"));
   }
 
+  const physicalGate = requireWriteAccess(access, targetCollection(vaultRoot, oldPath.value));
+  if (!physicalGate.ok) return physicalGate;
+
   const resolvedOld = resolveVaultPath(vaultRoot, oldPath.value);
   if (!resolvedOld.ok) return resolvedOld;
   const resolvedNew = resolveVaultPath(vaultRoot, newPath.value);
@@ -2708,7 +2727,7 @@ export async function vaultSupersede(
   if (!successorIgnored.ok) return successorIgnored;
 
   const oldFrontmatter = parsed.value.frontmatter;
-  const rbac = requireWriteAccess(access, collectionOf(oldPath.value, oldFrontmatter));
+  const rbac = requireWriteAccess(access, collectionOf(resolvedOld.value.relPath, oldFrontmatter));
   if (!rbac.ok) return rbac;
   const retireGate = requireCanonicalAuthority(
     access,
@@ -2840,6 +2859,8 @@ export async function vaultUnsupersede(
   if (access && !canPromote(access.role)) {
     return err(new Error(`access denied: role '${access.roleName}' cannot reverse a supersede`));
   }
+  const physicalGate = requireWriteAccess(access, targetCollection(vaultRoot, path.value));
+  if (!physicalGate.ok) return physicalGate;
 
   // Read-modify-write over the loaded frontmatter — see
   // retryOnStaleIfDefaulted above.
@@ -2848,7 +2869,7 @@ export async function vaultUnsupersede(
     if (!target.ok) return target;
 
     const oldFrontmatter = target.value.parsed.frontmatter;
-    const rbac = requireWriteAccess(access, collectionOf(path.value, oldFrontmatter));
+    const rbac = requireWriteAccess(access, collectionOf(target.value.relPath, oldFrontmatter));
     if (!rbac.ok) return rbac;
 
     if (oldFrontmatter.status !== "superseded") {
@@ -2981,6 +3002,17 @@ export async function vaultMerge(
   // strings (and as absPaths, for a symlink), which would otherwise defeat the
   // path_a≠path_b guard and the source-is-target skip below (writing one file
   // twice in a single commit and superseding it against itself).
+  if (access) {
+    for (const col of [
+      targetCollection(vaultRoot, pathA.value),
+      targetCollection(vaultRoot, pathB.value),
+      targetCollection(vaultRoot, targetPath.value),
+    ]) {
+      const physicalGate = requireWriteAccess(access, col);
+      if (!physicalGate.ok) return physicalGate;
+    }
+  }
+
   const resolvedA = resolveVaultPath(vaultRoot, pathA.value);
   if (!resolvedA.ok) return resolvedA;
   const resolvedB = resolveVaultPath(vaultRoot, pathB.value);
@@ -3014,16 +3046,17 @@ export async function vaultMerge(
   // RBAC: a merge writes/mutates all three docs, so the caller needs write on
   // each one's collection.
   if (access) {
-    // path_a and path_b are gated on their existing on-disk collections. The
-    // target is gated on the directory the merged bytes physically land in — the
-    // resolved target path's top-level dir — NOT the caller-declared collection
+    // path_a and path_b are gated on their existing on-disk collections using
+    // their canonical relPath (never the raw caller string). The target is
+    // gated on the directory the merged bytes physically land in — the resolved
+    // target path's top-level dir — NOT the caller-declared collection
     // (override or path_a's raw value). Keying the target gate off a declared
     // string let a role with write on collection A write the merge result into
     // collection B by pointing target_path at B while declaring `collection: A`
     // (S1, same shape as vault_write).
     const collections = [
-      collectionOf(pathA.value, parsedA.value.frontmatter),
-      collectionOf(pathB.value, parsedB.value.frontmatter),
+      collectionOf(resolvedA.value.relPath, parsedA.value.frontmatter),
+      collectionOf(resolvedB.value.relPath, parsedB.value.frontmatter),
       targetCollection(vaultRoot, targetPath.value),
     ];
     for (const collection of collections) {
